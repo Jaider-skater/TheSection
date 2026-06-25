@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-white">
+
+    <!-- Header -->
+    <header class="bg-zinc-900">
+        <div class="max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
+
+            <!-- Left spacer -->
+            <div class="w-9"></div>
+
+            <!-- Centered Logo -->
+            <div>
+                <img id="site-logo"
+                     src="{{ url_for('static', filename='images/TheSectionLogoDark.png') }}"
+                     alt="The Section Logo"
+                     class="h-20 w-auto">
+            </div>
+
+            <!-- Hamburger Menu -->
+            <div class="relative">
+                <button id="hamburger-btn"
+                        class="text-white hover:text-zinc-400 transition-colors p-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-9 w-9" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                    </svg>
+                </button>
+
+                <div id="menu-dropdown" class="hidden absolute right-0 mt-3 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-lg py-2 z-50">
+                    <!-- Menu items can go here later -->
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-6 pt-10 pb-20">
+
+        <!-- NEXT EVENT + FLYER (Wrapped together) -->
+        <div class="max-w-2xl mx-auto border-4 border-white rounded-3xl overflow-hidden mb-16">
+
+            <!-- NEXT EVENT CARD -->
+            <div class="bg-zinc-900 p-8 md:p-10">
+
+                <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">NEXT EVENT</div>
+                <div class="text-5xl font-bold tracking-tighter mb-6">October 24th</div>
+
+                <div class="space-y-3 text-[15px] mb-8">
+                    <div><span class="font-medium">Date:</span> Saturday, October 24th</div>
+                    <div><span class="font-medium">Time:</span> 10:00 PM – 2:00 AM</div>
+                    <div><span class="font-medium">Venue:</span> The Gem, Idaho Falls</div>
+                    <div><span class="font-medium">Price:</span> $10</div>
+                </div>
+
+                <!-- Get Tickets Button -->
+                <a href="#tickets"
+                   class="block w-full text-center py-4 mb-4
+                          border-2 border-white
+                          bg-black text-white text-xl font-semibold rounded-2xl
+                          transition-all duration-500 ease-out
+                          hover:bg-white hover:text-black hover:border-white
+                          hover:scale-[1.015]
+                          hover:shadow-lg">
+                    Get Tickets
+                </a>
+
+                <div class="text-center text-sm text-zinc-400">
+                    21+ • Limited Capacity • $15 at the door
+                </div>
+            </div>
+
+            <!-- FLYER IMAGE -->
+            <div>
+                <img src="{{ url_for('static', filename='images/TheSectionHalloweenFlyer.JPG') }}"
+                     alt="The Section Halloween Flyer"
+                     class="w-full h-auto object-cover">
+            </div>
+        </div>
+
+        <!-- TICKETS SECTION -->
+        <section id="tickets" class="mt-20 pt-16 border-t border-zinc-800">
+            <div class="max-w-md mx-auto text-center">
+                <h2 class="text-4xl font-bold tracking-tight mb-3">Secure Your Spot</h2>
+                <p class="text-xl text-zinc-400 mb-10">Limited tickets available.</p>
+
+                <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 text-left">
+                    <div class="flex justify-between items-end mb-8">
+                        <div>
+                            <div class="text-sm tracking-widest text-zinc-400">GENERAL ADMISSION</div>
+                            <div class="text-6xl font-bold mt-1">$10</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-grey-500 text-sm font-medium">Few left</div>
+                            <div class="text-grey-500 text-sm font-medium">$15 at the door</div>
+                        </div>
+                    </div>
+
+                    <button onclick="window.location.href='#tickets'"
+                            class="w-full py-4 border-2 border-white
+                                   bg-black text-white text-lg font-semibold rounded-2xl
+                                   transition-all duration-500 ease-out
+                                   hover:bg-white hover:text-black hover:border-white
+                                   hover:scale-[1.015]
+                                   hover:shadow-lg">
+                        Buy Ticket
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Powered by Hallie Technologies + Socials -->
+<footer class="mt-16 pt-8 border-t border-zinc-800">
+    <div class="flex flex-col items-center gap-y-4">
+
+        <!-- Social Icons -->
+        <div class="flex items-center gap-x-6">
+
+            <!-- Instagram -->
+            <a href="https://www.instagram.com/thesectionevents/" target="_blank" rel="noopener noreferrer">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white hover:text-zinc-400 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.849.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.667.072 4.947.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.76 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                </svg>
+            </a>
+
+            <!-- Snapchat -->
+            <a href="https://www.snapchat.com/add/soloyuhself" target="_blank" rel="noopener noreferrer">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white hover:text-zinc-400 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2.25c-5.376 0-9.75 4.374-9.75 9.75 0 3.24 1.59 6.12 4.05 7.92v1.83c0 .414.336.75.75.75h9.9c.414 0 .75-.336.75-.75v-1.83c2.46-1.8 4.05-4.68 4.05-7.92 0-5.376-4.374-9.75-9.75-9.75zm3.6 15.6h-7.2c-.414 0-.75-.336-.75-.75v-.6c0-.414.336-.75.75-.75h7.2c.414 0 .75.336.75.75v.6c0 .414-.336.75-.75.75z"/>
+                </svg>
+            </a>
+
+        </div>
+
+        <!-- Powered by Hallie Technologies -->
+        <p class="text-xs text-zinc-400 tracking-wider">
+            Powered by <span class="font-medium text-zinc-300">Hallie Technologies</span>
+        </p>
+
+    </div>
+</footer>
+
+    </main>
+
+    <script src="{{ url_for('static', filename='js/home.js') }}"></script>
+</body>
+</html>
