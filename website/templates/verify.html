@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Door Scanner • The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen p-4">
+    <div class="max-w-md mx-auto text-center">
+        <h1 class="text-4xl font-bold mb-8">🎟️ Door Scanner</h1>
+
+        <div id="reader" class="w-full aspect-square bg-black rounded-3xl overflow-hidden mb-6"></div>
+
+        <div id="result" class="text-xl font-medium min-h-[100px] p-6 rounded-3xl"></div>
+
+        <button onclick="location.reload()"
+                class="mt-4 text-zinc-400 hover:text-white">
+            🔄 Restart Scanner
+        </button>
+    </div>
+
+    <script>
+        let html5QrCode;
+
+        function startScanner() {
+            html5QrCode = new Html5Qrcode("reader");
+
+            html5QrCode.start(
+                { facingMode: "environment" },
+                {
+                    fps: 10,
+                    qrbox: { width: 280, height: 280 },
+                    aspectRatio: 1.0
+                },
+                (decodedText) => {
+                    html5QrCode.stop();
+                    document.getElementById('result').innerHTML =
+                        `<span class="text-yellow-400">Verifying ticket...</span>`;
+
+                    fetch('/verify', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ ticket_data: decodedText })
+                    })
+                    .then(r => r.text())
+                    .then(result => {
+                        document.getElementById('result').innerHTML =
+                            `<span class="${result.includes('Accepted') ? 'text-emerald-400' : 'text-red-400'}">${result}</span>`;
+                    });
+                },
+                (error) => {
+                    console.log(error); // ignore permission errors
+                }
+            ).catch(err => {
+                console.error(err);
+                document.getElementById('result').innerHTML =
+                    `<span class="text-red-400">Camera access denied or unavailable.<br>Please allow camera permission.</span>`;
+            });
+        }
+
+        // Start scanner when page loads
+        window.onload = startScanner;
+    </script>
+</body>
+</html>

@@ -1,2 +1,5 @@
-Flask
+flask
 stripe
+qrcode[pil]
+flask-mail
+gunicorn
