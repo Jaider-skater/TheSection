@@ -1,5 +1,5 @@
-flask
-stripe
-qrcode[pil]
-flask-mail
-gunicorn
+Flask==3.0.3
+stripe==11.0.0
+qrcode[pil]==7.4.2
+Flask-Mail==0.9.1
+gunicorn==23.0.0

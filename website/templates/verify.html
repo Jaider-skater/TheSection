@@ -13,55 +13,43 @@
 
         <div id="reader" class="w-full aspect-square bg-black rounded-3xl overflow-hidden mb-6"></div>
 
-        <div id="result" class="text-xl font-medium min-h-[100px] p-6 rounded-3xl"></div>
+        <div id="result" class="text-xl font-medium min-h-[120px] p-6 rounded-3xl bg-zinc-900"></div>
 
         <button onclick="location.reload()"
-                class="mt-4 text-zinc-400 hover:text-white">
+                class="mt-6 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm">
             🔄 Restart Scanner
         </button>
     </div>
 
     <script>
-        let html5QrCode;
+        const html5QrCode = new Html5Qrcode("reader");
 
-        function startScanner() {
-            html5QrCode = new Html5Qrcode("reader");
+        function onScanSuccess(decodedText) {
+            html5QrCode.stop();
+            document.getElementById('result').innerHTML =
+                `<span class="text-yellow-400">Verifying...</span>`;
 
-            html5QrCode.start(
-                { facingMode: "environment" },
-                {
-                    fps: 10,
-                    qrbox: { width: 280, height: 280 },
-                    aspectRatio: 1.0
-                },
-                (decodedText) => {
-                    html5QrCode.stop();
-                    document.getElementById('result').innerHTML =
-                        `<span class="text-yellow-400">Verifying ticket...</span>`;
-
-                    fetch('/verify', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ ticket_data: decodedText })
-                    })
-                    .then(r => r.text())
-                    .then(result => {
-                        document.getElementById('result').innerHTML =
-                            `<span class="${result.includes('Accepted') ? 'text-emerald-400' : 'text-red-400'}">${result}</span>`;
-                    });
-                },
-                (error) => {
-                    console.log(error); // ignore permission errors
-                }
-            ).catch(err => {
-                console.error(err);
+            fetch('/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ ticket_data: decodedText })
+            })
+            .then(r => r.text())
+            .then(result => {
                 document.getElementById('result').innerHTML =
-                    `<span class="text-red-400">Camera access denied or unavailable.<br>Please allow camera permission.</span>`;
+                    `<span class="${result.includes('Accepted') ? 'text-emerald-400' : 'text-red-400'} text-lg">${result}</span>`;
             });
         }
 
-        // Start scanner when page loads
-        window.onload = startScanner;
+        // Start scanner
+        html5QrCode.start(
+            { facingMode: "environment" },
+            { fps: 12, qrbox: { width: 280, height: 280 } },
+            onScanSuccess
+        ).catch(err => {
+            console.error(err);
+            document.getElementById('result').innerHTML = "Camera error. Tap Restart Scanner above.";
+        });
     </script>
 </body>
 </html>
