@@ -5,10 +5,13 @@ from io import BytesIO
 import base64
 import uuid
 from flask_mail import Mail, Message   # ← Add this
+import os
 
 app = Flask(__name__,
             template_folder='website/templates',
             static_folder='website/static')
+
+base_url = os.getenv('BASE_URL', 'http://10.0.0.199:5000')
 
 # Stripe
 stripe.api_key = "sk_test_51TmPE8GVxxcKcZp9PetRAcpNnLTlSqR3Xfa9h1SZyrtgGdzD09M2WC3QNCOfGhaSQJR0vmrSUYI8WGmHovmSy29u00JF8TStpp"   # Your "The Section" key
@@ -27,6 +30,7 @@ used_tickets = set()
 @app.route('/')
 def home():
     return render_template('home.html')
+
 
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
@@ -49,15 +53,15 @@ def create_checkout_session():
                 'quantity': quantity,
             }],
             mode='payment',
-            success_url="http://10.0.0.199:5000/success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url="http://10.0.0.199:5000/",
+            success_url="https://thesection.onrender.com/success?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url="https://thesection.onrender.com/",
         )
+
         print("Session created successfully:", checkout_session.url)
         return jsonify({'url': checkout_session.url})
     except Exception as e:
         print("Error creating session:", str(e))
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/success')
 def success():
