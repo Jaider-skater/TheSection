@@ -69,69 +69,49 @@ def success():
     session_id = request.args.get('session_id')
     print("Success page called with session_id:", session_id)
 
-    ticket_data = None
-    ticket_id = None
-    customer_email = None
-    quantity = 1
+    if not session_id:
+        return render_template('success.html', error="No session ID")
 
-    if session_id:
-        try:
-            session = stripe.checkout.Session.retrieve(
-                session_id,
-                expand=['line_items']
-            )
+    try:
+        session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
 
-            customer_email = session.customer_details.email if session.customer_details else None
+        customer_email = session.customer_details.email if session.customer_details else None
+        quantity = session.line_items.data[0].quantity if session.line_items and session.line_items.data else 1
 
-            if session.line_items and session.line_items.data:
-                quantity = session.line_items.data[0].quantity
+        ticket_id = str(uuid.uuid4())[:12].upper()
 
-            ticket_id = str(uuid.uuid4())[:12].upper()
+        ticket_info = {"ticket_id": ticket_id, "event": "The Section Oct 24", "quantity": quantity}
 
-            ticket_info = {
-                "ticket_id": ticket_id,
-                "event": "The Section Oct 24",
-                "quantity": quantity,
-                "email": customer_email
-            }
+        # QR Code
+        qr = qrcode.QRCode(version=2, box_size=12, border=6)
+        qr.add_data(str(ticket_info))
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        ticket_data = base64.b64encode(buffered.getvalue()).decode()
 
-            # QR Code
-            qr = qrcode.QRCode(version=2, box_size=12, border=6)
-            qr.add_data(str(ticket_info))
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            ticket_data = base64.b64encode(buffered.getvalue()).decode()
+        # Email (try but don't crash if fails)
+        if customer_email:
+            try:
+                msg = Message("Your The Section Tickets",
+                              sender=app.config['MAIL_USERNAME'],
+                              recipients=[customer_email])
+                msg.body = f"Ticket ID: {ticket_id}\nQuantity: {quantity}"
+                msg.attach("ticket.png", "image/png", base64.b64decode(ticket_data))
+                mail.send(msg)
+            except:
+                print("Email sending failed")
 
-            # Email
-            if customer_email:
-                try:
-                    msg = Message("Your The Section Tickets 🎟️",
-                                  sender=app.config['MAIL_USERNAME'],  # better sender
-                                  recipients=[customer_email])
-                    msg.body = f"""Thank you for your purchase!
+        return render_template('success.html',
+                               email=customer_email,
+                               ticket_data=ticket_data,
+                               ticket_id=ticket_id,
+                               quantity=quantity)
 
-Ticket ID: {ticket_id}
-Quantity: {quantity} ticket(s)
-
-Attached is your scannable QR code.
-
-See you on October 24th!"""
-                    qr_bytes = base64.b64decode(ticket_data)
-                    msg.attach("your-ticket-qr.png", "image/png", qr_bytes)
-                    mail.send(msg)
-                except Exception as e:
-                    print("Email failed:", str(e))
-
-        except Exception as e:
-            print("Success route error:", str(e))
-
-    return render_template('success.html',
-                           email=customer_email,
-                           ticket_data=ticket_data,
-                           ticket_id=ticket_id,
-                           quantity=quantity)
+    except Exception as e:
+        print("Success error:", str(e))
+        return f"Error: {str(e)}", 500
 @app.route('/verify', methods=['GET', 'POST'])
 def verify_ticket():
     if request.method == 'POST':
