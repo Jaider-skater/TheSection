@@ -11,7 +11,7 @@
     <div class="max-w-md mx-auto text-center">
         <h1 class="text-4xl font-bold mb-8">🎟️ Door Scanner</h1>
 
-        <div id="reader" class="w-full aspect-square bg-black rounded-3xl overflow-hidden mb-6"></div>
+         <div id="reader" class="w-full aspect-square bg-black rounded-3xl overflow-hidden mb-6 border-4 border-zinc-700"></div>
 
         <div id="result" class="text-xl font-medium min-h-[120px] p-6 rounded-3xl bg-zinc-900"></div>
 
@@ -21,14 +21,16 @@
         </button>
     </div>
 
-    <script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+<script>
     const html5QrCode = new Html5Qrcode("reader");
 
     function onScanSuccess(decodedText) {
         html5QrCode.stop().catch(() => {});
 
-        document.getElementById('result').innerHTML =
-            `<span class="text-yellow-400">Verifying...</span>`;
+        const resultEl = document.getElementById('result');
+        resultEl.innerHTML = `<span class="text-yellow-400">Verifying ticket...</span>`;
 
         fetch('/verify', {
             method: 'POST',
@@ -37,42 +39,33 @@
         })
         .then(r => r.text())
         .then(result => {
-            const success = result.includes('Accepted') || result.includes('Welcome');
-            document.getElementById('result').innerHTML =
-                `<span class="${success ? 'text-emerald-400' : 'text-red-400'} text-lg">${result}</span>`;
+            const isGood = result.includes('Accepted') || result.includes('Welcome');
+            resultEl.innerHTML = `<span class="${isGood ? 'text-emerald-400' : 'text-red-400'} text-xl">${result}</span>`;
         })
         .catch(() => {
-            document.getElementById('result').innerHTML =
-                `<span class="text-red-400">Network error. Try again.</span>`;
+            resultEl.innerHTML = `<span class="text-red-400">Verification failed - check connection</span>`;
         });
     }
 
-    function onScanFailure(error) {
-        // Called constantly when no code is visible — safe to ignore
+    function onScanFailure() {
+        // Ignore - fires constantly when no QR visible
     }
 
-    // ✅ This is the key fix — always returns a perfect square
-    const qrboxFunction = function (viewfinderWidth, viewfinderHeight) {
-        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-        const qrboxSize = Math.floor(minEdge * 0.72); // ~72% gives nice margins + reliable scanning
-        return {
-            width: qrboxSize,
-            height: qrboxSize
-        };
-    };
-
+    // Try this config - very reliable for square + detection
     html5QrCode.start(
         { facingMode: "environment" },
         {
-            fps: 10,
-            qrbox: qrboxFunction,        // ← Now always a perfect square
+            fps: 12,
+            qrbox: 260,                    // ← Simple number = guaranteed square
+            aspectRatio: 1.0,              // Try to prefer square-ish feed
+            disableFlip: false
         },
         onScanSuccess,
         onScanFailure
     ).catch(err => {
-        console.error(err);
+        console.error("Scanner start error:", err);
         document.getElementById('result').innerHTML =
-            `<span class="text-red-400">Camera error. Allow camera access and tap Restart.</span>`;
+            `<span class="text-red-400">Failed to start camera: ${err}</span>`;
     });
 </script>
 </body>
