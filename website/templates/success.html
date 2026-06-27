@@ -3,25 +3,40 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment Successful</title>
+    <title>Tickets • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center">
-    <div class="text-center">
-    <h1 class="text-4xl font-bold mb-4">🎟️ Your Tickets</h1>
-    {% if ticket_data %}
-    <img src="data:image/png;base64,{{ ticket_data }}"
-         alt="QR Ticket"
-         class="mx-auto border-4 border-white rounded-2xl shadow-2xl mb-6">
-    {% endif %}
+<body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center p-6">
+    <div class="max-w-md w-full text-center">
 
-    {% if ticket_id %}
-    <p class="text-sm text-zinc-400 mb-8">Ticket ID: <strong>{{ ticket_id }}</strong></p>
-    {% endif %}
+        {% if error %}
+            <div class="bg-red-900/50 border border-red-500 p-6 rounded-2xl">
+                <h1 class="text-2xl font-bold mb-4">Something went wrong</h1>
+                <p class="text-red-300">{{ error }}</p>
+            </div>
+        {% else %}
+            <h1 class="text-4xl font-bold mb-2">🎟️ You're In!</h1>
+            <p class="text-zinc-400 mb-8">Your tickets are ready</p>
 
-    {% if email %}
-    <p class="text-emerald-400">Confirmation sent to: <strong>{{ email }}</strong></p>
-    {% endif %}
-</div>
+            {% if ticket_data %}
+            <div class="bg-white p-6 rounded-3xl shadow-2xl inline-block mb-6">
+                <img src="data:image/png;base64,{{ ticket_data }}"
+                     class="w-64 h-64 mx-auto" alt="QR Ticket">
+            </div>
+            {% endif %}
+
+            {% if ticket_id %}
+            <p class="text-sm text-zinc-400 mb-2">Ticket ID: <span class="font-mono text-white">{{ ticket_id }}</span></p>
+            {% endif %}
+
+            {% if email %}
+            <p class="text-emerald-400 text-sm">Confirmation sent to {{ email }}</p>
+            {% endif %}
+        {% endif %}
+
+        <div class="mt-10">
+            <a href="/" class="text-zinc-400 hover:text-white text-sm">← Back to homepage</a>
+        </div>
+    </div>
 </body>
 </html>
