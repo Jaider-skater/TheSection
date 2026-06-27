@@ -22,34 +22,58 @@
     </div>
 
     <script>
-        const html5QrCode = new Html5Qrcode("reader");
+    const html5QrCode = new Html5Qrcode("reader");
 
-        function onScanSuccess(decodedText) {
-            html5QrCode.stop();
+    function onScanSuccess(decodedText) {
+        html5QrCode.stop().catch(() => {});
+
+        document.getElementById('result').innerHTML =
+            `<span class="text-yellow-400">Verifying...</span>`;
+
+        fetch('/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticket_data: decodedText })
+        })
+        .then(r => r.text())
+        .then(result => {
+            const success = result.includes('Accepted') || result.includes('Welcome');
             document.getElementById('result').innerHTML =
-                `<span class="text-yellow-400">Verifying...</span>`;
-
-            fetch('/verify', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ ticket_data: decodedText })
-            })
-            .then(r => r.text())
-            .then(result => {
-                document.getElementById('result').innerHTML =
-                    `<span class="${result.includes('Accepted') ? 'text-emerald-400' : 'text-red-400'} text-lg">${result}</span>`;
-            });
-        }
-
-        // Start scanner
-        html5QrCode.start(
-            { facingMode: "environment" },
-            { fps: 12, qrbox: { width: 280, height: 280 } },
-            onScanSuccess
-        ).catch(err => {
-            console.error(err);
-            document.getElementById('result').innerHTML = "Camera error. Tap Restart Scanner above.";
+                `<span class="${success ? 'text-emerald-400' : 'text-red-400'} text-lg">${result}</span>`;
+        })
+        .catch(() => {
+            document.getElementById('result').innerHTML =
+                `<span class="text-red-400">Network error. Try again.</span>`;
         });
-    </script>
+    }
+
+    function onScanFailure(error) {
+        // Called constantly when no code is visible — safe to ignore
+    }
+
+    // ✅ This is the key fix — always returns a perfect square
+    const qrboxFunction = function (viewfinderWidth, viewfinderHeight) {
+        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+        const qrboxSize = Math.floor(minEdge * 0.72); // ~72% gives nice margins + reliable scanning
+        return {
+            width: qrboxSize,
+            height: qrboxSize
+        };
+    };
+
+    html5QrCode.start(
+        { facingMode: "environment" },
+        {
+            fps: 10,
+            qrbox: qrboxFunction,        // ← Now always a perfect square
+        },
+        onScanSuccess,
+        onScanFailure
+    ).catch(err => {
+        console.error(err);
+        document.getElementById('result').innerHTML =
+            `<span class="text-red-400">Camera error. Allow camera access and tap Restart.</span>`;
+    });
+</script>
 </body>
 </html>

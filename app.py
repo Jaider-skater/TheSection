@@ -100,7 +100,7 @@ def success():
             qr = qrcode.QRCode(version=1, box_size=10, border=5)
             qr.add_data(str(ticket_info))
             qr.make(fit=True)
-            img = qr.make_image(fill_color="white", back_color="#111111")
+            img = qr.make_image(fill_color="black", back_color="white")
             buffered = BytesIO()
             img.save(buffered, format="PNG")
             ticket_data = base64.b64encode(buffered.getvalue()).decode()
