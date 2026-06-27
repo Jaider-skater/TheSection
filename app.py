@@ -63,6 +63,7 @@ def create_checkout_session():
         print("Error creating session:", str(e))
         return jsonify({'error': str(e)}), 500
 
+# Replace your current /success route with this cleaner version:
 @app.route('/success')
 def success():
     session_id = request.args.get('session_id')
@@ -75,23 +76,17 @@ def success():
 
     if session_id:
         try:
-            # Retrieve session with line items
             session = stripe.checkout.Session.retrieve(
                 session_id,
                 expand=['line_items']
             )
-            print("Stripe session retrieved successfully")
 
             customer_email = session.customer_details.email if session.customer_details else None
 
-            # Get quantity
             if session.line_items and session.line_items.data:
                 quantity = session.line_items.data[0].quantity
-            print(f"Quantity: {quantity}")
 
-            # Generate ticket
             ticket_id = str(uuid.uuid4())[:12].upper()
-            print("Generated ticket ID:", ticket_id)
 
             ticket_info = {
                 "ticket_id": ticket_id,
@@ -100,53 +95,43 @@ def success():
                 "email": customer_email
             }
 
-            # Generate QR Code
-            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            # QR Code
+            qr = qrcode.QRCode(version=2, box_size=12, border=6)
             qr.add_data(str(ticket_info))
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
             buffered = BytesIO()
             img.save(buffered, format="PNG")
             ticket_data = base64.b64encode(buffered.getvalue()).decode()
-            print("QR Code generated successfully")
 
-            # Send Email with QR Code attached
-            if customer_email and ticket_data:
+            # Email
+            if customer_email:
                 try:
                     msg = Message("Your The Section Tickets 🎟️",
-                                  sender="tickets@thesection.com",
+                                  sender=app.config['MAIL_USERNAME'],  # better sender
                                   recipients=[customer_email])
                     msg.body = f"""Thank you for your purchase!
 
 Ticket ID: {ticket_id}
 Quantity: {quantity} ticket(s)
 
-Attached is your scannable QR code ticket.
+Attached is your scannable QR code.
 
-Show it at the door on October 24th.
-
-See you there!"""
-
-                    # Attach QR Code
+See you on October 24th!"""
                     qr_bytes = base64.b64decode(ticket_data)
                     msg.attach("your-ticket-qr.png", "image/png", qr_bytes)
-
                     mail.send(msg)
-                    print(f"✅ Email with QR code sent to {customer_email}")
                 except Exception as e:
-                    print("Email sending failed:", str(e))
-            else:
-                print("No customer email found")
+                    print("Email failed:", str(e))
 
         except Exception as e:
-            print("Error in success route:", str(e))
+            print("Success route error:", str(e))
 
     return render_template('success.html',
                            email=customer_email,
                            ticket_data=ticket_data,
                            ticket_id=ticket_id,
                            quantity=quantity)
-
 @app.route('/verify', methods=['GET', 'POST'])
 def verify_ticket():
     if request.method == 'POST':
