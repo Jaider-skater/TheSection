@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: thesection
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: BASE_URL
+        value: https://thesection.onrender.com
+      - key: PYTHON_VERSION
+        value: "3.10.0"
