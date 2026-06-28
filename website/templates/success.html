@@ -49,13 +49,19 @@
                 {% if email %}
                 <div class="mt-5 pt-5 border-t border-zinc-800">
                     <p class="text-sm font-medium text-white mb-1">Check your email</p>
+                    {% if email_sent %}
                     <p class="text-zinc-400 text-sm">We sent your ticket to</p>
                     <p class="text-emerald-400 text-sm mt-1">{{ email }}</p>
+                    <p class="text-zinc-500 text-xs mt-2">Not there yet? Check spam or promotions.</p>
+                    {% else %}
+                    <p class="text-zinc-400 text-sm">Sending to <span class="text-white">{{ email }}</span>…</p>
+                    <p class="text-zinc-500 text-xs mt-2">If it doesn't arrive, download the QR above — that works at the door.</p>
+                    {% endif %}
                 </div>
                 {% else %}
                 <div class="mt-5 pt-5 border-t border-zinc-800">
                     <p class="text-sm font-medium text-white">Check your email</p>
-                    <p class="text-zinc-400 text-sm mt-1">A copy of your ticket was sent to the email you used at checkout.</p>
+                    <p class="text-zinc-400 text-sm mt-1">If you entered an email at checkout, your ticket copy may still be on its way. Download the QR above to be safe.</p>
                 </div>
                 {% endif %}
 
