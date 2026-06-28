@@ -66,7 +66,7 @@
         })
         .then(r => r.text())
         .then(result => {
-            const isGood = result.includes('Accepted') || result.includes('Welcome');
+            const isGood = result.includes('admitted') || result.includes('Welcome');
             resultEl.innerHTML = `<span class="${isGood ? 'text-emerald-400' : 'text-red-400'} text-xl">${result}</span>`;
             document.getElementById('scan-again-btn').classList.remove('hidden');
         })

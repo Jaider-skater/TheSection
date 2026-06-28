@@ -79,11 +79,28 @@ def record_ticket(session_id, ticket_id, email, quantity):
         return ticket
 
 
+def normalize_ticket_id(ticket_id):
+    if not ticket_id:
+        return None
+    normalized = str(ticket_id).strip().upper().replace('-', '')
+    return normalized if normalized.isalnum() else None
+
+
+def get_ticket_record(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return None
+    for ticket in load_tickets():
+        stored = normalize_ticket_id(ticket.get('ticket_id'))
+        if stored == normalized:
+            return ticket
+    return None
+
+
 def mark_ticket_scanned(ticket_id):
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
         return
-
     with tickets_lock:
         tickets = load_tickets()
         for ticket in tickets:
@@ -95,9 +112,10 @@ def mark_ticket_scanned(ticket_id):
 
 def init_used_tickets():
     for ticket in load_tickets():
-        normalized = normalize_ticket_id(ticket.get('ticket_id'))
-        if ticket.get('scanned_at') and normalized:
-            used_tickets.add(normalized)
+        if ticket.get('scanned_at'):
+            normalized = normalize_ticket_id(ticket.get('ticket_id'))
+            if normalized:
+                used_tickets.add(normalized)
 
 
 def require_admin():
@@ -115,13 +133,6 @@ def build_qr_image(ticket_id):
     return base64.b64encode(buffered.getvalue()).decode()
 
 
-def normalize_ticket_id(ticket_id):
-    if not ticket_id:
-        return None
-    cleaned = str(ticket_id).strip().upper().replace('-', '')
-    return cleaned if cleaned.isalnum() else None
-
-
 init_used_tickets()
 
 
@@ -134,16 +145,23 @@ def extract_ticket_id_from_url(raw):
 
 
 def check_ticket(ticket_id):
-    ticket_id = normalize_ticket_id(ticket_id)
-    if not ticket_id:
-        return {'status': 'invalid', 'ticket_id': None}
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return {'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0}
 
-    if ticket_id in used_tickets:
-        return {'status': 'used', 'ticket_id': ticket_id}
+    record = get_ticket_record(normalized)
+    if not record:
+        return {'status': 'invalid', 'ticket_id': normalized, 'quantity': 0}
 
-    used_tickets.add(ticket_id)
-    mark_ticket_scanned(ticket_id)
-    return {'status': 'accepted', 'ticket_id': ticket_id}
+    quantity = int(record.get('quantity') or 1)
+    display_id = record.get('ticket_id', normalized)
+
+    if normalized in used_tickets or record.get('scanned_at'):
+        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity}
+
+    used_tickets.add(normalized)
+    mark_ticket_scanned(normalized)
+    return {'status': 'accepted', 'ticket_id': display_id, 'quantity': quantity}
 
 
 def parse_scanned_ticket(raw):
@@ -159,14 +177,14 @@ def parse_scanned_ticket(raw):
     try:
         data = json.loads(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
-            return normalize_ticket_id(data['ticket_id'])
+            return str(data['ticket_id']).upper()
     except json.JSONDecodeError:
         pass
 
     try:
         data = ast.literal_eval(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
-            return normalize_ticket_id(data['ticket_id'])
+            return str(data['ticket_id']).upper()
     except (ValueError, SyntaxError):
         pass
 
@@ -272,10 +290,10 @@ def success():
 
 @app.route('/t/<ticket_id>')
 def show_ticket(ticket_id):
-    ticket_id = normalize_ticket_id(ticket_id)
-    if not ticket_id:
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
         return render_template('success.html', error="Invalid ticket"), 404
-    return render_template('ticket.html', ticket_id=ticket_id)
+    return render_template('ticket.html', ticket_id=normalized)
 
 
 @app.route('/verify/t/<ticket_id>')
@@ -294,9 +312,13 @@ def verify_ticket():
 
         result = check_ticket(ticket_id)
         if result['status'] == 'accepted':
-            return "✅ Ticket Accepted! Welcome to The Section."
+            qty = result['quantity']
+            guest_word = 'guest' if qty == 1 else 'guests'
+            return f"✅ {qty} {guest_word} admitted — Welcome to The Section!"
         if result['status'] == 'used':
-            return "❌ Ticket already used!"
+            qty = result['quantity']
+            guest_word = 'guest' if qty == 1 else 'guests'
+            return f"❌ Already used ({qty} {guest_word})"
         return "Invalid ticket"
 
     return render_template('verify.html')
@@ -312,7 +334,6 @@ def admin_dashboard():
     return render_template(
         'admin.html',
         tickets=tickets,
-        tickets_json=json.dumps(tickets, indent=2),
         total_admissions=total_admissions,
         key=request.args.get('key'),
     )
