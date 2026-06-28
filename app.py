@@ -10,6 +10,10 @@ import threading
 import json
 import ast
 import csv
+import hashlib
+import zipfile
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 
 app = Flask(__name__,
@@ -19,6 +23,12 @@ app = Flask(__name__,
 base_url = os.getenv('BASE_URL', 'http://10.0.0.199:5000')
 tickets_file = os.getenv('TICKETS_FILE', os.path.join(os.path.dirname(__file__), 'data', 'tickets.json'))
 admin_key = os.getenv('ADMIN_KEY', 'section2024')
+wallet_team_id = os.getenv('WALLET_TEAM_ID', '')
+wallet_pass_type_id = os.getenv('WALLET_PASS_TYPE_ID', 'pass.com.thesection.ticket')
+wallet_cert_path = os.getenv('WALLET_CERT_PATH', '')
+wallet_key_path = os.getenv('WALLET_KEY_PATH', '')
+wallet_wwdr_path = os.getenv('WALLET_WWDR_PATH', '')
+wallet_enabled = all([wallet_team_id, wallet_cert_path, wallet_key_path, wallet_wwdr_path])
 tickets_lock = threading.Lock()
 
 # Stripe
@@ -122,7 +132,7 @@ def require_admin():
     return request.args.get('key') == admin_key
 
 
-def build_qr_image(ticket_id):
+def build_qr_png_bytes(ticket_id):
     qr_payload = f"{base_url}/verify/t/{ticket_id}"
     qr = qrcode.QRCode(version=1, box_size=12, border=4)
     qr.add_data(qr_payload)
@@ -130,7 +140,122 @@ def build_qr_image(ticket_id):
     img = qr.make_image(fill_color="black", back_color="white")
     buffered = BytesIO()
     img.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode()
+    return buffered.getvalue()
+
+
+def build_qr_image(ticket_id):
+    return base64.b64encode(build_qr_png_bytes(ticket_id)).decode()
+
+
+def make_pass_icon_png():
+    from PIL import Image, ImageDraw
+    img = Image.new('RGB', (87, 87), color=(24, 24, 27))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((20, 20, 66, 66), fill='white')
+    draw.rectangle((28, 28, 36, 36), fill='black')
+    draw.rectangle((50, 28, 58, 36), fill='black')
+    draw.rectangle((28, 50, 36, 58), fill='black')
+    draw.rectangle((50, 50, 58, 58), fill='black')
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def sign_wallet_manifest(manifest_bytes):
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = os.path.join(tmp, 'manifest.json')
+        signature_path = os.path.join(tmp, 'signature')
+        with open(manifest_path, 'wb') as f:
+            f.write(manifest_bytes)
+
+        result = subprocess.run(
+            [
+                'openssl', 'smime', '-binary', '-sign',
+                '-signer', wallet_cert_path,
+                '-inkey', wallet_key_path,
+                '-certfile', wallet_wwdr_path,
+                '-in', manifest_path,
+                '-out', signature_path,
+                '-outform', 'DER',
+                '-nodetach',
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            print('Wallet signing failed:', result.stderr.decode('utf-8', errors='ignore'))
+            return None
+
+        with open(signature_path, 'rb') as f:
+            return f.read()
+
+
+def build_wallet_pass(ticket_id, quantity):
+    verify_url = f"{base_url}/verify/t/{ticket_id}"
+    guest_label = '1 guest' if quantity == 1 else f'{quantity} guests'
+    pass_json = {
+        'formatVersion': 1,
+        'passTypeIdentifier': wallet_pass_type_id,
+        'teamIdentifier': wallet_team_id,
+        'organizationName': 'The Section',
+        'description': 'The Section Ticket',
+        'serialNumber': normalize_ticket_id(ticket_id),
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'backgroundColor': 'rgb(24, 24, 27)',
+        'labelColor': 'rgb(161, 161, 170)',
+        'barcodes': [{
+            'format': 'PKBarcodeFormatQR',
+            'message': verify_url,
+            'messageEncoding': 'iso-8859-1',
+            'altText': ticket_id,
+        }],
+        'eventTicket': {
+            'primaryFields': [{
+                'key': 'event',
+                'label': 'EVENT',
+                'value': 'The Section',
+            }],
+            'secondaryFields': [
+                {
+                    'key': 'guests',
+                    'label': 'GUESTS',
+                    'value': guest_label,
+                },
+                {
+                    'key': 'ticket',
+                    'label': 'TICKET',
+                    'value': ticket_id,
+                },
+            ],
+            'backFields': [{
+                'key': 'verify',
+                'label': 'VERIFY',
+                'value': verify_url,
+            }],
+        },
+    }
+
+    files = {
+        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
+        'icon.png': make_pass_icon_png(),
+        'logo.png': make_pass_icon_png(),
+    }
+    manifest = {
+        name: hashlib.sha1(data).hexdigest()
+        for name, data in files.items()
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
+    files['manifest.json'] = manifest_bytes
+
+    signature = sign_wallet_manifest(manifest_bytes) if wallet_enabled else None
+    if signature:
+        files['signature'] = signature
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return output.getvalue()
 
 
 init_used_tickets()
@@ -282,11 +407,28 @@ def success():
                                email=customer_email,
                                ticket_data=ticket_data,
                                ticket_id=ticket_id,
-                               quantity=quantity)
+                               quantity=quantity,
+                               wallet_enabled=wallet_enabled)
 
     except Exception as e:
         print("SUCCESS ROUTE CRASH:", str(e))
         return render_template('success.html', error=str(e))
+
+@app.route('/wallet/<ticket_id>.pkpass')
+def download_wallet_pass(ticket_id):
+    record = get_ticket_record(ticket_id)
+    if not record:
+        return 'Ticket not found', 404
+
+    quantity = int(record.get('quantity') or 1)
+    pkpass = build_wallet_pass(record.get('ticket_id', ticket_id), quantity)
+    filename = f"thesection-{normalize_ticket_id(ticket_id)}.pkpass"
+    return Response(
+        pkpass,
+        mimetype='application/vnd.apple.pkpass',
+        headers={'Content-Disposition': f'attachment; filename={filename}'},
+    )
+
 
 @app.route('/t/<ticket_id>')
 def show_ticket(ticket_id):
