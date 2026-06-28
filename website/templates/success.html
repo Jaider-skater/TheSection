@@ -31,74 +31,56 @@
             </div>
             {% endif %}
 
-            <div class="bg-zinc-900 border border-amber-500/40 rounded-3xl p-6 mb-6 text-left">
-                <p class="text-amber-300 font-semibold text-center mb-4">Save your ticket before you leave</p>
-                <p class="text-zinc-400 text-sm text-center mb-5">
-                    {% if wallet_enabled %}
-                    You'll need this QR at the door. Screenshot it, download it, or add it to Apple Wallet.
-                    {% else %}
-                    You'll need this QR at the door. Screenshot it or download it to your phone now.
-                    {% endif %}
-                </p>
-
-                <div class="space-y-4 text-sm">
-                    <div class="flex gap-3 items-start">
-                        <span class="text-xl leading-none">📸</span>
-                        <div>
-                            <p class="font-medium text-white">Screenshot this page</p>
-                            <p class="text-zinc-400 mt-1">iPhone: Side button + Volume Up</p>
-                            <p class="text-zinc-400">Android: Power + Volume Down</p>
-                        </div>
-                    </div>
-
-                    <div class="flex gap-3 items-start">
-                        <span class="text-xl leading-none">💾</span>
-                        <div>
-                            <p class="font-medium text-white">Download the QR code</p>
-                            <p class="text-zinc-400 mt-1">Save to Photos or Files — works at the door.</p>
-                            <p class="text-zinc-500 text-xs mt-1">iPhone: after downloading, open the image and tap Share → Save to Photos.</p>
-                        </div>
-                    </div>
-
-                    {% if wallet_enabled and ticket_id %}
-                    <div class="flex gap-3 items-start">
-                        <span class="text-xl leading-none">📲</span>
-                        <div class="w-full">
-                            <p class="font-medium text-white">Add to Apple Wallet</p>
-                            <p class="text-zinc-400 mt-1 mb-3">Tap below on iPhone to save your pass.</p>
-                            <a href="/wallet/{{ ticket_id }}.pkpass"
-                               class="inline-flex items-center justify-center w-full max-w-[220px] h-11 rounded-lg bg-black border border-zinc-700 hover:border-zinc-500 transition-colors px-4">
-                                <svg viewBox="0 0 152 44" class="h-7 w-auto" aria-label="Add to Apple Wallet">
-                                    <rect width="152" height="44" rx="8" fill="#000"/>
-                                    <text x="44" y="18" fill="#fff" font-size="8" font-family="system-ui, -apple-system, sans-serif">Add to</text>
-                                    <text x="44" y="31" fill="#fff" font-size="11" font-weight="600" font-family="system-ui, -apple-system, sans-serif">Apple Wallet</text>
-                                    <rect x="12" y="10" width="22" height="24" rx="4" fill="none" stroke="#fff" stroke-width="1.5"/>
-                                    <rect x="16" y="14" width="6" height="6" rx="1" fill="#fff"/>
-                                    <rect x="24" y="14" width="6" height="6" rx="1" fill="#fff"/>
-                                    <rect x="16" y="22" width="6" height="6" rx="1" fill="#fff"/>
-                                    <rect x="24" y="22" width="6" height="6" rx="1" fill="#fff"/>
-                                </svg>
-                            </a>
-                        </div>
-                    </div>
-                    {% endif %}
-                </div>
+            <div class="bg-zinc-900 border border-amber-500/40 rounded-3xl p-6 mb-6">
+                <p class="text-amber-300 font-semibold mb-2">Save your ticket before you leave</p>
+                <p class="text-zinc-400 text-sm mb-5">You'll need this QR at the door.</p>
 
                 {% if ticket_data %}
                 <button type="button"
                         onclick="downloadTicket()"
-                        class="mt-6 w-full py-3 bg-white text-black font-semibold rounded-2xl hover:bg-zinc-200 transition-colors">
+                        class="w-full py-3 bg-white text-black font-semibold rounded-2xl hover:bg-zinc-200 transition-colors">
                     Download QR Code
                 </button>
+                <p class="text-zinc-500 text-xs mt-3 leading-relaxed">
+                    Save to Photos or Files and show it at the door.
+                </p>
+                {% endif %}
+
+                {% if email %}
+                <div class="mt-5 pt-5 border-t border-zinc-800">
+                    <p class="text-sm font-medium text-white mb-1">Check your email</p>
+                    <p class="text-zinc-400 text-sm">We sent your ticket to</p>
+                    <p class="text-emerald-400 text-sm mt-1">{{ email }}</p>
+                </div>
+                {% else %}
+                <div class="mt-5 pt-5 border-t border-zinc-800">
+                    <p class="text-sm font-medium text-white">Check your email</p>
+                    <p class="text-zinc-400 text-sm mt-1">A copy of your ticket was sent to the email you used at checkout.</p>
+                </div>
+                {% endif %}
+
+                {% if wallet_enabled and ticket_id %}
+                <div class="mt-5 pt-5 border-t border-zinc-800">
+                    <p class="text-sm font-medium text-white mb-3">Add to Apple Wallet</p>
+                    <a href="/wallet/{{ ticket_id }}.pkpass"
+                       class="inline-flex items-center justify-center w-full max-w-[220px] h-11 rounded-lg bg-black border border-zinc-700 hover:border-zinc-500 transition-colors px-4 mx-auto">
+                        <svg viewBox="0 0 152 44" class="h-7 w-auto" aria-label="Add to Apple Wallet">
+                            <rect width="152" height="44" rx="8" fill="#000"/>
+                            <text x="44" y="18" fill="#fff" font-size="8" font-family="system-ui, -apple-system, sans-serif">Add to</text>
+                            <text x="44" y="31" fill="#fff" font-size="11" font-weight="600" font-family="system-ui, -apple-system, sans-serif">Apple Wallet</text>
+                            <rect x="12" y="10" width="22" height="24" rx="4" fill="none" stroke="#fff" stroke-width="1.5"/>
+                            <rect x="16" y="14" width="6" height="6" rx="1" fill="#fff"/>
+                            <rect x="24" y="14" width="6" height="6" rx="1" fill="#fff"/>
+                            <rect x="16" y="22" width="6" height="6" rx="1" fill="#fff"/>
+                            <rect x="24" y="22" width="6" height="6" rx="1" fill="#fff"/>
+                        </svg>
+                    </a>
+                </div>
                 {% endif %}
             </div>
 
             {% if ticket_id %}
             <p class="text-sm text-zinc-400 mb-2">Ticket ID: <span class="font-mono text-white">{{ ticket_id }}</span></p>
-            {% endif %}
-
-            {% if email %}
-            <p class="text-emerald-400 text-sm">Confirmation sent to {{ email }}</p>
             {% endif %}
         {% endif %}
 
