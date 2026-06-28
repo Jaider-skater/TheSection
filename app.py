@@ -34,13 +34,14 @@ tickets_lock = threading.Lock()
 # Stripe
 stripe.api_key = "sk_test_51TmPE8GVxxcKcZp9PetRAcpNnLTlSqR3Xfa9h1SZyrtgGdzD09M2WC3QNCOfGhaSQJR0vmrSUYI8WGmHovmSy29u00JF8TStpp"   # Your "The Section" key
 
-# Email Config (Gmail example)
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'jaideharkness99@gmail.com'      # ← CHANGE
-app.config['MAIL_PASSWORD'] = 'bjfanolwhzkjieyz'         # ← CHANGE
-app.config['MAIL_TIMEOUT'] = 10
+# Email Config (Gmail app password — set MAIL_* env vars on Render)
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', '587'))
+app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'true').lower() == 'true'
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME', 'jaideharkness99@gmail.com')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD', 'bjfanolwhzkjieyz')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config['MAIL_USERNAME'])
+app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
 mail = Mail(app)
 
 # In-memory used tickets
@@ -82,6 +83,7 @@ def record_ticket(session_id, ticket_id, email, quantity):
             'quantity': quantity,
             'purchased_at': datetime.now(timezone.utc).isoformat(),
             'scanned_at': None,
+            'email_sent_at': None,
             'verify_url': f"{base_url}/verify/t/{ticket_id}",
         }
         tickets.append(ticket)
@@ -323,17 +325,60 @@ def parse_scanned_ticket(raw):
     return normalize_ticket_id(raw)
 
 
+def mark_email_sent(session_id):
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('session_id') == session_id:
+                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
+                save_tickets(tickets)
+                return
+
+
 def send_ticket_email(customer_email, ticket_id, quantity, ticket_data):
+    verify_url = f"{base_url}/verify/t/{ticket_id}"
     with app.app_context():
         try:
-            msg = Message("Your The Section Tickets 🎟️",
-                          sender=app.config['MAIL_USERNAME'],
-                          recipients=[customer_email])
-            msg.body = f"Ticket ID: {ticket_id}\nQuantity: {quantity}\n\nShow this QR at the door."
+            msg = Message(
+                "Your The Section Tickets",
+                sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            msg.body = (
+                f"You're in for The Section!\n\n"
+                f"Ticket ID: {ticket_id}\n"
+                f"Guests: {quantity}\n\n"
+                f"Show the attached QR code at the door.\n"
+                f"Or open this link on your phone:\n{verify_url}\n"
+            )
             msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
             mail.send(msg)
+            print(f"Ticket email sent to {customer_email}")
+            return True
         except Exception as e:
-            print("Email failed (non-fatal):", str(e))
+            print(f"Email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data):
+    if not customer_email:
+        return False
+
+    record = get_ticket_by_session(session_id)
+    if record and record.get('email_sent_at'):
+        return True
+
+    result = {'sent': False}
+
+    def _send():
+        result['sent'] = send_ticket_email(customer_email, ticket_id, quantity, ticket_data)
+        if result['sent']:
+            mark_email_sent(session_id)
+
+    thread = threading.Thread(target=_send, daemon=False)
+    thread.start()
+    thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
+    return result['sent']
 
 @app.route('/')
 def home():
@@ -403,15 +448,13 @@ def success():
 
         ticket_data = build_qr_image(ticket_id)
 
-        if customer_email and not existing_ticket:
-            threading.Thread(
-                target=send_ticket_email,
-                args=(customer_email, ticket_id, quantity, ticket_data),
-                daemon=True,
-            ).start()
+        email_sent = deliver_ticket_email(
+            session_id, customer_email, ticket_id, quantity, ticket_data
+        )
 
         return render_template('success.html',
                                email=customer_email,
+                               email_sent=email_sent,
                                ticket_data=ticket_data,
                                ticket_id=ticket_id,
                                quantity=quantity,
@@ -505,7 +548,7 @@ def download_tickets_csv():
     tickets = load_tickets()
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(['purchased_at', 'ticket_id', 'email', 'quantity', 'scanned_at', 'verify_url'])
+    writer.writerow(['purchased_at', 'ticket_id', 'email', 'quantity', 'scanned_at', 'email_sent_at', 'verify_url'])
     for ticket in tickets:
         writer.writerow([
             ticket.get('purchased_at', ''),
@@ -513,6 +556,7 @@ def download_tickets_csv():
             ticket.get('email', ''),
             ticket.get('quantity', ''),
             ticket.get('scanned_at', ''),
+            ticket.get('email_sent_at', ''),
             ticket.get('verify_url', ''),
         ])
 
