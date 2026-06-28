@@ -7,6 +7,8 @@ import uuid
 from flask_mail import Mail, Message
 import os
 import threading
+import json
+import ast
 
 app = Flask(__name__,
             template_folder='website/templates',
@@ -28,6 +30,32 @@ mail = Mail(app)
 
 # In-memory used tickets
 used_tickets = set()
+
+
+def parse_scanned_ticket(raw):
+    if not raw:
+        return None
+
+    raw = raw.strip()
+
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get('ticket_id'):
+            return str(data['ticket_id']).upper()
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        data = ast.literal_eval(raw)
+        if isinstance(data, dict) and data.get('ticket_id'):
+            return str(data['ticket_id']).upper()
+    except (ValueError, SyntaxError):
+        pass
+
+    if raw.isalnum():
+        return raw.upper()
+
+    return None
 
 
 def send_ticket_email(customer_email, ticket_id, quantity, ticket_data):
@@ -101,16 +129,15 @@ def success():
         if session.line_items and session.line_items.data:
             quantity = session.line_items.data[0].quantity
 
-        ticket_info = {
+        qr_payload = json.dumps({
             "ticket_id": ticket_id,
             "event": "The Section Oct 24",
             "quantity": quantity,
-            "email": customer_email
-        }
+        }, separators=(',', ':'))
 
-        # Generate QR
-        qr = qrcode.QRCode(version=2, box_size=12, border=6)
-        qr.add_data(str(ticket_info))
+        # Generate QR — compact JSON scans much more reliably on phone screens
+        qr = qrcode.QRCode(version=1, box_size=12, border=4)
+        qr.add_data(qr_payload)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
         buffered = BytesIO()
@@ -138,12 +165,12 @@ def success():
 def verify_ticket():
     if request.method == 'POST':
         ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
-        if ticket_data:
-            if ticket_data in used_tickets:
+        ticket_id = parse_scanned_ticket(ticket_data)
+        if ticket_id:
+            if ticket_id in used_tickets:
                 return "❌ Ticket already used!"
-            else:
-                used_tickets.add(ticket_data)
-                return "✅ Ticket Accepted! Welcome to The Section."
+            used_tickets.add(ticket_id)
+            return "✅ Ticket Accepted! Welcome to The Section."
         return "Invalid ticket"
 
     return render_template('verify.html')

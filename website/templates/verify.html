@@ -2,33 +2,55 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Door Scanner • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-4">
     <div class="max-w-md mx-auto text-center">
-        <h1 class="text-4xl font-bold mb-8">🎟️ Door Scanner</h1>
+        <h1 class="text-4xl font-bold mb-4">🎟️ Door Scanner</h1>
+        <p class="text-zinc-400 text-sm mb-6">Tap start, then point at the guest's QR code</p>
 
-         <div id="reader" class="w-full aspect-square bg-black rounded-3xl overflow-hidden mb-6 border-4 border-zinc-700"></div>
+        <div id="reader" class="w-full aspect-square bg-black rounded-3xl overflow-hidden mb-6 border-4 border-zinc-700 hidden"></div>
+
+        <button id="start-btn"
+                onclick="startScanner()"
+                class="w-full py-4 mb-4 bg-white text-black font-semibold rounded-2xl text-lg">
+            Start Scanner
+        </button>
 
         <div id="result" class="text-xl font-medium min-h-[120px] p-6 rounded-3xl bg-zinc-900"></div>
 
-        <button onclick="location.reload()"
-                class="mt-6 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm">
-            🔄 Restart Scanner
+        <button id="scan-again-btn"
+                onclick="restartScanner()"
+                class="hidden mt-6 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm">
+            Scan Another Ticket
         </button>
     </div>
 
 <script>
     const html5QrCode = new Html5Qrcode("reader");
+    let scanning = false;
+
+    const scannerConfig = {
+        fps: 10,
+        qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.75);
+            return { width: size, height: size };
+        },
+        disableFlip: false,
+    };
 
     function onScanSuccess(decodedText) {
+        if (!scanning) return;
+        scanning = false;
+
         html5QrCode.stop().catch(() => {});
 
         const resultEl = document.getElementById('result');
         resultEl.innerHTML = `<span class="text-yellow-400">Verifying ticket...</span>`;
+        document.getElementById('scan-again-btn').classList.add('hidden');
 
         fetch('/verify', {
             method: 'POST',
@@ -39,9 +61,11 @@
         .then(result => {
             const isGood = result.includes('Accepted') || result.includes('Welcome');
             resultEl.innerHTML = `<span class="${isGood ? 'text-emerald-400' : 'text-red-400'} text-xl">${result}</span>`;
+            document.getElementById('scan-again-btn').classList.remove('hidden');
         })
         .catch(() => {
             resultEl.innerHTML = `<span class="text-red-400">Verification failed - check connection</span>`;
+            document.getElementById('scan-again-btn').classList.remove('hidden');
         });
     }
 
@@ -49,22 +73,52 @@
         // Ignore - fires constantly when no QR visible
     }
 
-    // Try this config - very reliable for square + detection
-    html5QrCode.start(
-        { facingMode: "environment" },
-        {
-            fps: 12,
-            qrbox: 260,                    // ← Simple number = guaranteed square
-            aspectRatio: 1.0,              // Try to prefer square-ish feed
-            disableFlip: false
-        },
-        onScanSuccess,
-        onScanFailure
-    ).catch(err => {
-        console.error("Scanner start error:", err);
-        document.getElementById('result').innerHTML =
-            `<span class="text-red-400">Failed to start camera: ${err}</span>`;
-    });
+    async function pickCamera() {
+        try {
+            const cameras = await Html5Qrcode.getCameras();
+            if (!cameras.length) {
+                return { facingMode: "environment" };
+            }
+
+            const backCamera = cameras.find(cam => {
+                const label = (cam.label || '').toLowerCase();
+                return label.includes('back') || label.includes('rear') || label.includes('environment');
+            });
+
+            return backCamera ? backCamera.id : cameras[cameras.length - 1].id;
+        } catch (err) {
+            return { facingMode: "environment" };
+        }
+    }
+
+    async function startScanner() {
+        const resultEl = document.getElementById('result');
+        const readerEl = document.getElementById('reader');
+        const startBtn = document.getElementById('start-btn');
+
+        startBtn.classList.add('hidden');
+        readerEl.classList.remove('hidden');
+        resultEl.innerHTML = `<span class="text-zinc-400">Starting camera...</span>`;
+        document.getElementById('scan-again-btn').classList.add('hidden');
+
+        try {
+            const camera = await pickCamera();
+            await html5QrCode.start(camera, scannerConfig, onScanSuccess, onScanFailure);
+            scanning = true;
+            resultEl.innerHTML = `<span class="text-zinc-400">Point camera at QR code</span>`;
+        } catch (err) {
+            console.error("Scanner start error:", err);
+            readerEl.classList.add('hidden');
+            startBtn.classList.remove('hidden');
+            resultEl.innerHTML = `<span class="text-red-400">Failed to start camera. Allow camera access and tap Start again.<br><span class="text-sm text-zinc-500">${err}</span></span>`;
+        }
+    }
+
+    async function restartScanner() {
+        document.getElementById('scan-again-btn').classList.add('hidden');
+        document.getElementById('result').innerHTML = '';
+        await startScanner();
+    }
 </script>
 </body>
 </html>
