@@ -45,6 +45,8 @@
                         <th class="p-4">Ticket ID</th>
                         <th class="p-4">Email</th>
                         <th class="p-4">Qty</th>
+                        <th class="p-4">Type</th>
+                        <th class="p-4">Access</th>
                         <th class="p-4">Scanned</th>
                     </tr>
                 </thead>
@@ -55,6 +57,17 @@
                         <td class="p-4 font-mono">{{ ticket.ticket_id }}</td>
                         <td class="p-4">{{ ticket.email or '—' }}</td>
                         <td class="p-4">{{ ticket.quantity }}</td>
+                        <td class="p-4">
+                            {% if ticket.ticket_type == 'vip' %}
+                                <span class="text-white font-medium">VIP</span>
+                            {% else %}
+                                <span class="text-zinc-400">GA</span>
+                            {% endif %}
+                            {% if ticket.legacy_discount %}
+                                <span class="text-zinc-500 text-xs block">legacy discount</span>
+                            {% endif %}
+                        </td>
+                        <td class="p-4 text-zinc-400">{{ ticket.access or '—' }}</td>
                         <td class="p-4">
                             {% if ticket.scanned_at %}
                                 <span class="text-emerald-400">Yes</span>
