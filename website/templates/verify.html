@@ -48,6 +48,13 @@
 
         html5QrCode.stop().catch(() => {});
 
+        if (decodedText.includes('/verify/t/')) {
+            window.location.href = decodedText.startsWith('http')
+                ? decodedText
+                : `${window.location.origin}${decodedText.startsWith('/') ? '' : '/'}${decodedText}`;
+            return;
+        }
+
         const resultEl = document.getElementById('result');
         resultEl.innerHTML = `<span class="text-yellow-400">Verifying ticket...</span>`;
         document.getElementById('scan-again-btn').classList.add('hidden');

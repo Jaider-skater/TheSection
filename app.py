@@ -32,16 +32,36 @@ mail = Mail(app)
 used_tickets = set()
 
 
+def extract_ticket_id_from_url(raw):
+    for marker in ('/verify/t/', '/t/'):
+        if marker in raw:
+            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
+            if ticket_id.isalnum():
+                return ticket_id.upper()
+    return None
+
+
+def check_ticket(ticket_id):
+    ticket_id = str(ticket_id).strip().upper()
+    if not ticket_id or not ticket_id.isalnum():
+        return {'status': 'invalid', 'ticket_id': ticket_id or None}
+
+    if ticket_id in used_tickets:
+        return {'status': 'used', 'ticket_id': ticket_id}
+
+    used_tickets.add(ticket_id)
+    return {'status': 'accepted', 'ticket_id': ticket_id}
+
+
 def parse_scanned_ticket(raw):
     if not raw:
         return None
 
     raw = raw.strip()
 
-    if '/t/' in raw:
-        ticket_id = raw.split('/t/')[-1].split('?')[0].split('/')[0].strip()
-        if ticket_id.isalnum():
-            return ticket_id.upper()
+    ticket_id = extract_ticket_id_from_url(raw)
+    if ticket_id:
+        return ticket_id
 
     try:
         data = json.loads(raw)
@@ -134,8 +154,8 @@ def success():
         if session.line_items and session.line_items.data:
             quantity = session.line_items.data[0].quantity
 
-        # URL only — avoids iOS camera treating embedded emails as mailto links
-        qr_payload = f"{base_url}/t/{ticket_id}"
+        # Opens in native camera app and verifies on scan
+        qr_payload = f"{base_url}/verify/t/{ticket_id}"
 
         qr = qrcode.QRCode(version=1, box_size=12, border=4)
         qr.add_data(qr_payload)
@@ -170,16 +190,25 @@ def show_ticket(ticket_id):
     return render_template('ticket.html', ticket_id=ticket_id)
 
 
+@app.route('/verify/t/<ticket_id>')
+def verify_ticket_native(ticket_id):
+    result = check_ticket(ticket_id)
+    return render_template('verify_result.html', **result)
+
+
 @app.route('/verify', methods=['GET', 'POST'])
 def verify_ticket():
     if request.method == 'POST':
         ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
         ticket_id = parse_scanned_ticket(ticket_data)
-        if ticket_id:
-            if ticket_id in used_tickets:
-                return "❌ Ticket already used!"
-            used_tickets.add(ticket_id)
+        if not ticket_id:
+            return "Invalid ticket"
+
+        result = check_ticket(ticket_id)
+        if result['status'] == 'accepted':
             return "✅ Ticket Accepted! Welcome to The Section."
+        if result['status'] == 'used':
+            return "❌ Ticket already used!"
         return "Invalid ticket"
 
     return render_template('verify.html')
