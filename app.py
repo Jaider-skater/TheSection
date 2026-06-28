@@ -1,7 +1,7 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 import stripe
 import qrcode
-from io import BytesIO
+from io import BytesIO, StringIO
 import base64
 import uuid
 from flask_mail import Mail, Message
@@ -9,12 +9,17 @@ import os
 import threading
 import json
 import ast
+import csv
+from datetime import datetime, timezone
 
 app = Flask(__name__,
             template_folder='website/templates',
             static_folder='website/static')
 
 base_url = os.getenv('BASE_URL', 'http://10.0.0.199:5000')
+tickets_file = os.getenv('TICKETS_FILE', os.path.join(os.path.dirname(__file__), 'data', 'tickets.json'))
+admin_key = os.getenv('ADMIN_KEY', 'section2024')
+tickets_lock = threading.Lock()
 
 # Stripe
 stripe.api_key = "sk_test_51TmPE8GVxxcKcZp9PetRAcpNnLTlSqR3Xfa9h1SZyrtgGdzD09M2WC3QNCOfGhaSQJR0vmrSUYI8WGmHovmSy29u00JF8TStpp"   # Your "The Section" key
@@ -30,6 +35,82 @@ mail = Mail(app)
 
 # In-memory used tickets
 used_tickets = set()
+
+
+def load_tickets():
+    os.makedirs(os.path.dirname(tickets_file), exist_ok=True)
+    if not os.path.exists(tickets_file):
+        return []
+    with open(tickets_file, encoding='utf-8') as f:
+        return json.load(f)
+
+
+def save_tickets(tickets):
+    os.makedirs(os.path.dirname(tickets_file), exist_ok=True)
+    with open(tickets_file, 'w', encoding='utf-8') as f:
+        json.dump(tickets, f, indent=2)
+
+
+def get_ticket_by_session(session_id):
+    for ticket in load_tickets():
+        if ticket.get('session_id') == session_id:
+            return ticket
+    return None
+
+
+def record_ticket(session_id, ticket_id, email, quantity):
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('session_id') == session_id:
+                return ticket
+
+        ticket = {
+            'session_id': session_id,
+            'ticket_id': ticket_id,
+            'email': email,
+            'quantity': quantity,
+            'purchased_at': datetime.now(timezone.utc).isoformat(),
+            'scanned_at': None,
+            'verify_url': f"{base_url}/verify/t/{ticket_id}",
+        }
+        tickets.append(ticket)
+        save_tickets(tickets)
+        return ticket
+
+
+def mark_ticket_scanned(ticket_id):
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('ticket_id') == ticket_id:
+                ticket['scanned_at'] = datetime.now(timezone.utc).isoformat()
+                save_tickets(tickets)
+                return
+
+
+def init_used_tickets():
+    for ticket in load_tickets():
+        if ticket.get('scanned_at') and ticket.get('ticket_id'):
+            used_tickets.add(ticket['ticket_id'])
+
+
+def require_admin():
+    return request.args.get('key') == admin_key
+
+
+def build_qr_image(ticket_id):
+    qr_payload = f"{base_url}/verify/t/{ticket_id}"
+    qr = qrcode.QRCode(version=1, box_size=12, border=4)
+    qr.add_data(qr_payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode()
+
+
+init_used_tickets()
 
 
 def extract_ticket_id_from_url(raw):
@@ -50,6 +131,7 @@ def check_ticket(ticket_id):
         return {'status': 'used', 'ticket_id': ticket_id}
 
     used_tickets.add(ticket_id)
+    mark_ticket_scanned(ticket_id)
     return {'status': 'accepted', 'ticket_id': ticket_id}
 
 
@@ -143,29 +225,27 @@ def success():
     try:
         session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
 
-        customer_email = None
-        quantity = 1
-        ticket_data = None
-        ticket_id = str(uuid.uuid4())[:12].upper()
+        existing_ticket = get_ticket_by_session(session_id)
+        if existing_ticket:
+            ticket_id = existing_ticket['ticket_id']
+            quantity = existing_ticket['quantity']
+            customer_email = existing_ticket.get('email')
+        else:
+            customer_email = None
+            quantity = 1
+            ticket_id = str(uuid.uuid4())[:12].upper()
 
-        if session.customer_details:
-            customer_email = session.customer_details.email
+            if session.customer_details:
+                customer_email = session.customer_details.email
 
-        if session.line_items and session.line_items.data:
-            quantity = session.line_items.data[0].quantity
+            if session.line_items and session.line_items.data:
+                quantity = session.line_items.data[0].quantity
 
-        # Opens in native camera app and verifies on scan
-        qr_payload = f"{base_url}/verify/t/{ticket_id}"
+            record_ticket(session_id, ticket_id, customer_email, quantity)
 
-        qr = qrcode.QRCode(version=1, box_size=12, border=4)
-        qr.add_data(qr_payload)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buffered = BytesIO()
-        img.save(buffered, format="PNG")
-        ticket_data = base64.b64encode(buffered.getvalue()).decode()
+        ticket_data = build_qr_image(ticket_id)
 
-        if customer_email:
+        if customer_email and not existing_ticket:
             threading.Thread(
                 target=send_ticket_email,
                 args=(customer_email, ticket_id, quantity, ticket_data),
@@ -212,6 +292,60 @@ def verify_ticket():
         return "Invalid ticket"
 
     return render_template('verify.html')
+
+
+@app.route('/admin')
+def admin_dashboard():
+    if not require_admin():
+        return 'Unauthorized', 401
+
+    tickets = sorted(load_tickets(), key=lambda t: t.get('purchased_at', ''), reverse=True)
+    total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
+    return render_template(
+        'admin.html',
+        tickets=tickets,
+        total_admissions=total_admissions,
+        key=request.args.get('key'),
+    )
+
+
+@app.route('/admin/tickets.csv')
+def download_tickets_csv():
+    if not require_admin():
+        return 'Unauthorized', 401
+
+    tickets = load_tickets()
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['purchased_at', 'ticket_id', 'email', 'quantity', 'scanned_at', 'verify_url'])
+    for ticket in tickets:
+        writer.writerow([
+            ticket.get('purchased_at', ''),
+            ticket.get('ticket_id', ''),
+            ticket.get('email', ''),
+            ticket.get('quantity', ''),
+            ticket.get('scanned_at', ''),
+            ticket.get('verify_url', ''),
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': 'attachment; filename=thesection-tickets.csv'},
+    )
+
+
+@app.route('/admin/tickets.json')
+def download_tickets_json():
+    if not require_admin():
+        return 'Unauthorized', 401
+
+    return Response(
+        json.dumps(load_tickets(), indent=2),
+        mimetype='application/json',
+        headers={'Content-Disposition': 'attachment; filename=thesection-tickets.json'},
+    )
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
