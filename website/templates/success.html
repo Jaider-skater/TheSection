@@ -31,8 +31,8 @@
             </div>
             {% endif %}
 
-            <div class="bg-zinc-900 border border-amber-500/40 rounded-3xl p-6 mb-6">
-                <p class="text-amber-300 font-semibold mb-2">Save your ticket before you leave</p>
+            <div class="bg-zinc-900 border border-white/30 rounded-3xl p-6 mb-6">
+                <p class="text-white font-semibold mb-2">Save your ticket before you leave</p>
                 <p class="text-zinc-400 text-sm mb-5">You'll need this QR at the door.</p>
 
                 {% if ticket_data %}
@@ -51,7 +51,7 @@
                     <p class="text-sm font-medium text-white mb-1">Check your email</p>
                     {% if email_sent %}
                     <p class="text-zinc-400 text-sm">We sent your ticket to</p>
-                    <p class="text-emerald-400 text-sm mt-1">{{ email }}</p>
+                    <p class="text-white text-sm mt-1">{{ email }}</p>
                     <p class="text-zinc-500 text-xs mt-2">Not there yet? Check spam or promotions.</p>
                     {% else %}
                     <p class="text-zinc-400 text-sm">Sending to <span class="text-white">{{ email }}</span>…</p>
