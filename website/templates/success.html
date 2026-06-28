@@ -34,7 +34,11 @@
             <div class="bg-zinc-900 border border-amber-500/40 rounded-3xl p-6 mb-6 text-left">
                 <p class="text-amber-300 font-semibold text-center mb-4">Save your ticket before you leave</p>
                 <p class="text-zinc-400 text-sm text-center mb-5">
-                    You'll need this QR at the door. Screenshot it or save it to Apple Wallet now.
+                    {% if wallet_enabled %}
+                    You'll need this QR at the door. Screenshot it, download it, or add it to Apple Wallet.
+                    {% else %}
+                    You'll need this QR at the door. Screenshot it or download it to your phone now.
+                    {% endif %}
                 </p>
 
                 <div class="space-y-4 text-sm">
@@ -51,11 +55,12 @@
                         <span class="text-xl leading-none">💾</span>
                         <div>
                             <p class="font-medium text-white">Download the QR code</p>
-                            <p class="text-zinc-400 mt-1">Save the image to your camera roll or Files.</p>
+                            <p class="text-zinc-400 mt-1">Save to Photos or Files — works at the door.</p>
+                            <p class="text-zinc-500 text-xs mt-1">iPhone: after downloading, open the image and tap Share → Save to Photos.</p>
                         </div>
                     </div>
 
-                    {% if ticket_id %}
+                    {% if wallet_enabled and ticket_id %}
                     <div class="flex gap-3 items-start">
                         <span class="text-xl leading-none">📲</span>
                         <div class="w-full">
@@ -74,9 +79,6 @@
                                     <rect x="24" y="22" width="6" height="6" rx="1" fill="#fff"/>
                                 </svg>
                             </a>
-                            {% if not wallet_enabled %}
-                            <p class="text-zinc-500 text-xs mt-2">If Wallet doesn't open, screenshot or download instead — both work at the door.</p>
-                            {% endif %}
                         </div>
                     </div>
                     {% endif %}
