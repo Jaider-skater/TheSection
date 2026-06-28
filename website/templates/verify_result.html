@@ -11,11 +11,16 @@
         {% if status == 'accepted' %}
             <div class="text-6xl mb-4">✅</div>
             <h1 class="text-3xl font-bold text-emerald-400 mb-2">You're In!</h1>
-            <p class="text-zinc-300 mb-8">Welcome to The Section</p>
+            <p class="text-5xl font-bold text-white mb-2">{{ quantity or 1 }}</p>
+            <p class="text-zinc-300 mb-8">
+                {% if quantity and quantity > 1 %}{{ quantity }} guests admitted{% else %}1 guest admitted{% endif %}
+            </p>
         {% elif status == 'used' %}
             <div class="text-6xl mb-4">❌</div>
             <h1 class="text-3xl font-bold text-red-400 mb-2">Already Used</h1>
-            <p class="text-zinc-300 mb-8">This ticket has already been scanned</p>
+            <p class="text-zinc-300 mb-8">
+                This ticket for {% if quantity and quantity > 1 %}{{ quantity }} guests{% else %}1 guest{% endif %} was already scanned
+            </p>
         {% else %}
             <div class="text-6xl mb-4">⚠️</div>
             <h1 class="text-3xl font-bold text-red-400 mb-2">Invalid Ticket</h1>
@@ -26,6 +31,9 @@
         <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
             <p class="text-sm text-zinc-400 mb-1">Ticket ID</p>
             <p class="font-mono text-lg">{{ ticket_id }}</p>
+            {% if quantity %}
+            <p class="text-sm text-zinc-400 mt-3">Purchased for {{ quantity }} guest{% if quantity > 1 %}s{% endif %}</p>
+            {% endif %}
         </div>
         {% endif %}
 
