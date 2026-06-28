@@ -312,6 +312,7 @@ def admin_dashboard():
     return render_template(
         'admin.html',
         tickets=tickets,
+        tickets_json=json.dumps(tickets, indent=2),
         total_admissions=total_admissions,
         key=request.args.get('key'),
     )

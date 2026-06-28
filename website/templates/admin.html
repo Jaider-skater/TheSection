@@ -13,19 +13,30 @@
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
                 <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions</p>
             </div>
-            <div class="flex gap-3">
+            <div class="flex flex-wrap gap-3">
                 <a href="/admin/tickets.csv?key={{ key }}"
                    class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm">
                     Download CSV
                 </a>
                 <a href="/admin/tickets.json?key={{ key }}"
-                   class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-sm">
+                   download="thesection-tickets.json"
+                   class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
                     Download JSON
                 </a>
             </div>
         </div>
 
         {% if tickets %}
+        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                <h2 class="font-semibold">Ticket JSON</h2>
+                <button onclick="copyJson()"
+                        class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs">
+                    Copy JSON
+                </button>
+            </div>
+            <pre id="ticket-json" class="p-4 text-xs text-emerald-300 overflow-x-auto max-h-80">{{ tickets_json }}</pre>
+        </div>
         <div class="overflow-x-auto rounded-2xl border border-zinc-800">
             <table class="w-full text-left text-sm">
                 <thead class="bg-zinc-900 text-zinc-400">
@@ -62,5 +73,14 @@
         </div>
         {% endif %}
     </div>
+
+<script>
+    function copyJson() {
+        const text = document.getElementById('ticket-json').textContent;
+        navigator.clipboard.writeText(text).then(() => {
+            alert('JSON copied to clipboard');
+        });
+    }
+</script>
 </body>
 </html>
