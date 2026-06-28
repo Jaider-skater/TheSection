@@ -80,10 +80,14 @@ def record_ticket(session_id, ticket_id, email, quantity):
 
 
 def mark_ticket_scanned(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return
+
     with tickets_lock:
         tickets = load_tickets()
         for ticket in tickets:
-            if ticket.get('ticket_id') == ticket_id:
+            if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
                 ticket['scanned_at'] = datetime.now(timezone.utc).isoformat()
                 save_tickets(tickets)
                 return
@@ -91,8 +95,9 @@ def mark_ticket_scanned(ticket_id):
 
 def init_used_tickets():
     for ticket in load_tickets():
-        if ticket.get('scanned_at') and ticket.get('ticket_id'):
-            used_tickets.add(ticket['ticket_id'])
+        normalized = normalize_ticket_id(ticket.get('ticket_id'))
+        if ticket.get('scanned_at') and normalized:
+            used_tickets.add(normalized)
 
 
 def require_admin():
@@ -110,6 +115,13 @@ def build_qr_image(ticket_id):
     return base64.b64encode(buffered.getvalue()).decode()
 
 
+def normalize_ticket_id(ticket_id):
+    if not ticket_id:
+        return None
+    cleaned = str(ticket_id).strip().upper().replace('-', '')
+    return cleaned if cleaned.isalnum() else None
+
+
 init_used_tickets()
 
 
@@ -117,15 +129,14 @@ def extract_ticket_id_from_url(raw):
     for marker in ('/verify/t/', '/t/'):
         if marker in raw:
             ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
-            if ticket_id.isalnum():
-                return ticket_id.upper()
+            return normalize_ticket_id(ticket_id)
     return None
 
 
 def check_ticket(ticket_id):
-    ticket_id = str(ticket_id).strip().upper()
-    if not ticket_id or not ticket_id.isalnum():
-        return {'status': 'invalid', 'ticket_id': ticket_id or None}
+    ticket_id = normalize_ticket_id(ticket_id)
+    if not ticket_id:
+        return {'status': 'invalid', 'ticket_id': None}
 
     if ticket_id in used_tickets:
         return {'status': 'used', 'ticket_id': ticket_id}
@@ -148,21 +159,18 @@ def parse_scanned_ticket(raw):
     try:
         data = json.loads(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
-            return str(data['ticket_id']).upper()
+            return normalize_ticket_id(data['ticket_id'])
     except json.JSONDecodeError:
         pass
 
     try:
         data = ast.literal_eval(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
-            return str(data['ticket_id']).upper()
+            return normalize_ticket_id(data['ticket_id'])
     except (ValueError, SyntaxError):
         pass
 
-    if raw.isalnum():
-        return raw.upper()
-
-    return None
+    return normalize_ticket_id(raw)
 
 
 def send_ticket_email(customer_email, ticket_id, quantity, ticket_data):
@@ -233,7 +241,7 @@ def success():
         else:
             customer_email = None
             quantity = 1
-            ticket_id = str(uuid.uuid4())[:12].upper()
+            ticket_id = uuid.uuid4().hex[:12].upper()
 
             if session.customer_details:
                 customer_email = session.customer_details.email
@@ -264,8 +272,8 @@ def success():
 
 @app.route('/t/<ticket_id>')
 def show_ticket(ticket_id):
-    ticket_id = ticket_id.strip().upper()
-    if not ticket_id.isalnum():
+    ticket_id = normalize_ticket_id(ticket_id)
+    if not ticket_id:
         return render_template('success.html', error="Invalid ticket"), 404
     return render_template('ticket.html', ticket_id=ticket_id)
 
