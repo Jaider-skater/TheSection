@@ -177,7 +177,6 @@ def sign_wallet_manifest(manifest_bytes):
                 '-in', manifest_path,
                 '-out', signature_path,
                 '-outform', 'DER',
-                '-nodetach',
             ],
             capture_output=True,
             check=False,
@@ -191,6 +190,9 @@ def sign_wallet_manifest(manifest_bytes):
 
 
 def build_wallet_pass(ticket_id, quantity):
+    if not wallet_enabled:
+        return None
+
     verify_url = f"{base_url}/verify/t/{ticket_id}"
     guest_label = '1 guest' if quantity == 1 else f'{quantity} guests'
     pass_json = {
@@ -235,10 +237,13 @@ def build_wallet_pass(ticket_id, quantity):
         },
     }
 
+    icon_png = make_pass_icon_png()
     files = {
         'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
-        'icon.png': make_pass_icon_png(),
-        'logo.png': make_pass_icon_png(),
+        'icon.png': icon_png,
+        'icon@2x.png': icon_png,
+        'logo.png': icon_png,
+        'logo@2x.png': icon_png,
     }
     manifest = {
         name: hashlib.sha1(data).hexdigest()
@@ -247,9 +252,11 @@ def build_wallet_pass(ticket_id, quantity):
     manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
     files['manifest.json'] = manifest_bytes
 
-    signature = sign_wallet_manifest(manifest_bytes) if wallet_enabled else None
-    if signature:
-        files['signature'] = signature
+    signature = sign_wallet_manifest(manifest_bytes)
+    if not signature:
+        return None
+
+    files['signature'] = signature
 
     output = BytesIO()
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
@@ -416,12 +423,21 @@ def success():
 
 @app.route('/wallet/<ticket_id>.pkpass')
 def download_wallet_pass(ticket_id):
+    if not wallet_enabled:
+        return (
+            'Apple Wallet is not configured yet. Screenshot your ticket or download the QR code instead.',
+            503,
+        )
+
     record = get_ticket_record(ticket_id)
     if not record:
         return 'Ticket not found', 404
 
     quantity = int(record.get('quantity') or 1)
     pkpass = build_wallet_pass(record.get('ticket_id', ticket_id), quantity)
+    if not pkpass:
+        return 'Could not create Apple Wallet pass. Use screenshot or download instead.', 503
+
     filename = f"thesection-{normalize_ticket_id(ticket_id)}.pkpass"
     return Response(
         pkpass,
