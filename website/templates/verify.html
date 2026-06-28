@@ -47,7 +47,7 @@
         if (!scanning) return;
         scanning = false;
 
-        html5QrCode.stop().catch(() => {});
+        stopScanner();
 
         if (decodedText.includes('/verify/t/')) {
             window.location.href = decodedText.startsWith('http')
@@ -99,6 +99,22 @@
         }
     }
 
+    async function stopScanner() {
+        scanning = false;
+        try {
+            if (html5QrCode.isScanning) {
+                await html5QrCode.stop();
+            }
+        } catch (err) {
+            console.warn('Scanner stop error:', err);
+        }
+        try {
+            html5QrCode.clear();
+        } catch (err) {
+            console.warn('Scanner clear error:', err);
+        }
+    }
+
     async function startScanner() {
         const resultEl = document.getElementById('result');
         const readerEl = document.getElementById('reader');
@@ -110,9 +126,11 @@
         document.getElementById('scan-again-btn').classList.add('hidden');
 
         try {
+            await stopScanner();
             const camera = await pickCamera();
             await html5QrCode.start(camera, scannerConfig, onScanSuccess, onScanFailure);
             scanning = true;
+            sessionStorage.setItem('doorScannerAutostart', '1');
             resultEl.innerHTML = `<span class="text-zinc-400">Point camera at QR code</span>`;
         } catch (err) {
             console.error("Scanner start error:", err);
@@ -123,10 +141,19 @@
     }
 
     async function restartScanner() {
-        document.getElementById('scan-again-btn').classList.add('hidden');
-        document.getElementById('result').innerHTML = '';
         await startScanner();
     }
+
+    function shouldAutostartScanner() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('autostart') === '1' || sessionStorage.getItem('doorScannerAutostart') === '1';
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+        if (shouldAutostartScanner()) {
+            startScanner();
+        }
+    });
 </script>
 </body>
 </html>
