@@ -4,8 +4,9 @@ import qrcode
 from io import BytesIO
 import base64
 import uuid
-from flask_mail import Mail, Message   # ← Add this
+from flask_mail import Mail, Message
 import os
+import threading
 
 app = Flask(__name__,
             template_folder='website/templates',
@@ -22,10 +23,24 @@ app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = 'jaideharkness99@gmail.com'      # ← CHANGE
 app.config['MAIL_PASSWORD'] = 'bjfanolwhzkjieyz'         # ← CHANGE
+app.config['MAIL_TIMEOUT'] = 10
 mail = Mail(app)
 
 # In-memory used tickets
 used_tickets = set()
+
+
+def send_ticket_email(customer_email, ticket_id, quantity, ticket_data):
+    with app.app_context():
+        try:
+            msg = Message("Your The Section Tickets 🎟️",
+                          sender=app.config['MAIL_USERNAME'],
+                          recipients=[customer_email])
+            msg.body = f"Ticket ID: {ticket_id}\nQuantity: {quantity}\n\nShow this QR at the door."
+            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
+            mail.send(msg)
+        except Exception as e:
+            print("Email failed (non-fatal):", str(e))
 
 @app.route('/')
 def home():
@@ -53,8 +68,8 @@ def create_checkout_session():
                 'quantity': quantity,
             }],
             mode='payment',
-            success_url="https://thesection.onrender.com/success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url="https://thesection.onrender.com/",
+            success_url=f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{base_url}/",
         )
 
         print("Session created successfully:", checkout_session.url)
@@ -102,17 +117,12 @@ def success():
         img.save(buffered, format="PNG")
         ticket_data = base64.b64encode(buffered.getvalue()).decode()
 
-        # Send email (won't crash the page if it fails)
         if customer_email:
-            try:
-                msg = Message("Your The Section Tickets 🎟️",
-                              sender=app.config['MAIL_USERNAME'],
-                              recipients=[customer_email])
-                msg.body = f"Ticket ID: {ticket_id}\nQuantity: {quantity}\n\nShow this QR at the door."
-                msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
-                mail.send(msg)
-            except Exception as e:
-                print("Email failed (non-fatal):", str(e))
+            threading.Thread(
+                target=send_ticket_email,
+                args=(customer_email, ticket_id, quantity, ticket_data),
+                daemon=True,
+            ).start()
 
         return render_template('success.html',
                                email=customer_email,
