@@ -2,6 +2,7 @@ let quantity = 1;
 let ticketType = 'general';
 let memberStatus = { logged_in: false, bundle_min: 3, bundle_discount_percent: 15 };
 let pricing = null;
+const DOOR_FEE_DOLLARS = 5;
 
 function formatDollars(cents) {
     return '$' + (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
@@ -31,12 +32,21 @@ function updateMemberBanner() {
     }
 }
 
+function doorPriceLabel(priceCents) {
+    const doorTotal = (priceCents / 100) + DOOR_FEE_DOLLARS;
+    return `$${doorTotal % 1 === 0 ? doorTotal : doorTotal.toFixed(2)} door`;
+}
+
 function updateTypePriceLabels() {
     const types = memberStatus.ticket_types || {};
     const ga = document.getElementById('ga-price-label');
     const vip = document.getElementById('vip-price-label');
+    const gaDoor = document.getElementById('ga-door-label');
+    const vipDoor = document.getElementById('vip-door-label');
     if (ga && types.general) ga.textContent = formatDollars(types.general.price_cents);
     if (vip && types.vip) vip.textContent = formatDollars(types.vip.price_cents);
+    if (gaDoor && types.general) gaDoor.textContent = doorPriceLabel(types.general.price_cents);
+    if (vipDoor && types.vip) vipDoor.textContent = doorPriceLabel(types.vip.price_cents);
 }
 
 function updateTypeButtons() {
@@ -75,15 +85,10 @@ function selectTicketType(type) {
 function updateModalQuantity() {
     document.getElementById('modal-quantity').textContent = quantity;
 
-    const typeLabel = document.getElementById('selected-type-label');
-    const unitDisplay = document.getElementById('unit-price-display');
     const totalDisplay = document.getElementById('modal-total-price');
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const typeName = ticketType === 'vip' ? 'VIP ADMISSION' : 'GENERAL ADMISSION';
-        if (typeLabel) typeLabel.textContent = typeName;
-        if (unitDisplay) unitDisplay.textContent = formatDollars(pricing.unit_price_cents);
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
         if (discountNote) {
@@ -99,7 +104,6 @@ function updateModalQuantity() {
         }
     } else {
         const fallback = ticketType === 'vip' ? 25 : 10;
-        if (unitDisplay) unitDisplay.textContent = '$' + fallback;
         if (totalDisplay) totalDisplay.textContent = '$' + (fallback * quantity);
         if (discountNote) discountNote.classList.add('hidden');
     }

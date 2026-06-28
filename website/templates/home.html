@@ -53,7 +53,7 @@
             <div><span class="font-medium">Date:</span> Saturday, October 24th</div>
             <div><span class="font-medium">Time:</span> 10:00 PM – 2:00 AM</div>
             <div><span class="font-medium">Venue:</span> The Gem, Idaho Falls</div>
-            <div><span class="font-medium">Price:</span> GA $10 · VIP $25</div>
+            <div><span class="font-medium">Price:</span> GA $10 · VIP $25 online</div>
         </div>
 
         <!-- Get Tickets Button -->
@@ -70,7 +70,7 @@
 </a>
 
         <div class="text-center text-sm text-zinc-400">
-            21+ • Limited Capacity • $15 at the door
+            21+ • Limited Capacity • +$5 at the door
         </div>
     </div>
 
@@ -99,45 +99,40 @@
                     <p id="member-banner-text" class="text-zinc-400 mt-1"></p>
                 </div>
 
-                <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8">
+                <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
                     <!-- Ticket type -->
-                    <div class="grid grid-cols-2 gap-3 mb-8">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
                         <button type="button" id="type-general" onclick="selectTicketType('general')"
-                                class="ticket-type-btn rounded-2xl border-2 border-white bg-white text-black p-4 text-left transition-colors">
-                            <div class="text-xs tracking-widest opacity-70">GENERAL</div>
-                            <div class="text-2xl font-bold mt-1" id="ga-price-label">$10</div>
-                            <div class="text-xs mt-2 opacity-70">Main floor</div>
+                                class="ticket-type-btn rounded-2xl border-2 border-white bg-white text-black p-5 sm:p-6 text-left transition-colors min-h-[9.5rem]">
+                            <div class="text-sm sm:text-base tracking-[0.2em] font-bold">GA</div>
+                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="ga-price-label">$10</div>
+                            <div class="text-sm mt-3 opacity-80">Main floor</div>
+                            <div class="text-sm mt-1 font-semibold opacity-90" id="ga-door-label">$15 door</div>
                         </button>
                         <button type="button" id="type-vip" onclick="selectTicketType('vip')"
-                                class="ticket-type-btn rounded-2xl border-2 border-zinc-700 p-4 text-left hover:border-zinc-500 transition-colors">
-                            <div class="text-xs tracking-widest text-zinc-400">VIP</div>
-                            <div class="text-2xl font-bold mt-1" id="vip-price-label">$25</div>
-                            <div class="text-xs mt-2 text-zinc-400">Upstairs seating</div>
+                                class="ticket-type-btn rounded-2xl border-2 border-zinc-700 p-5 sm:p-6 text-left hover:border-zinc-500 transition-colors min-h-[9.5rem]">
+                            <div class="text-sm sm:text-base tracking-[0.2em] font-bold text-zinc-300">VIP</div>
+                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="vip-price-label">$25</div>
+                            <div class="text-sm mt-3 text-zinc-400">Upstairs</div>
+                            <div class="text-sm mt-1 font-semibold text-zinc-400" id="vip-door-label">$30 door</div>
                         </button>
                     </div>
 
-                    <div class="flex justify-between items-end mb-8">
-                        <div>
-                            <div id="selected-type-label" class="text-sm tracking-widest text-zinc-400">GENERAL ADMISSION</div>
-                            <div id="unit-price-display" class="text-5xl font-bold mt-1">$10</div>
-                        </div>
-                        <div class="text-right text-zinc-500 text-sm font-medium">
-                            <div>Few left</div>
-                            <div>$15 at door (GA)</div>
+                    <p class="text-center text-sm sm:text-base text-zinc-300 mb-6 px-4 py-3 rounded-2xl border border-zinc-700 bg-zinc-950">
+                        <span class="text-white font-semibold">Save $5 online</span> — door tickets cost $5 more
+                    </p>
+
+                    <!-- Entry count -->
+                    <div class="flex items-center justify-between mb-6">
+                        <span class="text-lg font-semibold text-white">Entries</span>
+                        <div class="flex items-center gap-5">
+                            <button onclick="changeQuantity(-1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">-</button>
+                            <span id="modal-quantity" class="text-4xl font-bold w-10 text-center tabular-nums">1</span>
+                            <button onclick="changeQuantity(1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">+</button>
                         </div>
                     </div>
 
                     <p id="discount-note" class="hidden text-sm text-zinc-400 mb-6"></p>
-
-                    <!-- Quantity Selector -->
-                    <div class="flex items-center justify-between mb-6">
-                        <span class="text-zinc-400">Quantity</span>
-                        <div class="flex items-center gap-4">
-                            <button onclick="changeQuantity(-1)" class="w-8 h-8 flex items-center justify-center border border-zinc-700 rounded-lg text-xl hover:bg-zinc-800">-</button>
-                            <span id="modal-quantity" class="text-2xl font-semibold w-8 text-center">1</span>
-                            <button onclick="changeQuantity(1)" class="w-8 h-8 flex items-center justify-center border border-zinc-700 rounded-lg text-xl hover:bg-zinc-800">+</button>
-                        </div>
-                    </div>
 
                     <!-- Buy Button -->
                     <button onclick="createCheckoutSession()"
