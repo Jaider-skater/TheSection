@@ -38,6 +38,11 @@ def parse_scanned_ticket(raw):
 
     raw = raw.strip()
 
+    if '/t/' in raw:
+        ticket_id = raw.split('/t/')[-1].split('?')[0].split('/')[0].strip()
+        if ticket_id.isalnum():
+            return ticket_id.upper()
+
     try:
         data = json.loads(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
@@ -129,13 +134,9 @@ def success():
         if session.line_items and session.line_items.data:
             quantity = session.line_items.data[0].quantity
 
-        qr_payload = json.dumps({
-            "ticket_id": ticket_id,
-            "event": "The Section Oct 24",
-            "quantity": quantity,
-        }, separators=(',', ':'))
+        # URL only — avoids iOS camera treating embedded emails as mailto links
+        qr_payload = f"{base_url}/t/{ticket_id}"
 
-        # Generate QR — compact JSON scans much more reliably on phone screens
         qr = qrcode.QRCode(version=1, box_size=12, border=4)
         qr.add_data(qr_payload)
         qr.make(fit=True)
@@ -160,6 +161,14 @@ def success():
     except Exception as e:
         print("SUCCESS ROUTE CRASH:", str(e))
         return render_template('success.html', error=str(e))
+
+@app.route('/t/<ticket_id>')
+def show_ticket(ticket_id):
+    ticket_id = ticket_id.strip().upper()
+    if not ticket_id.isalnum():
+        return render_template('success.html', error="Invalid ticket"), 404
+    return render_template('ticket.html', ticket_id=ticket_id)
+
 
 @app.route('/verify', methods=['GET', 'POST'])
 def verify_ticket():
