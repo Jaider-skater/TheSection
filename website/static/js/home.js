@@ -1,6 +1,6 @@
 let quantity = 1;
 let ticketType = 'general';
-let memberStatus = { logged_in: false, bundle_min: 3, bundle_discount_percent: 15 };
+let memberStatus = { logged_in: false, bundle_min: 4, bundle_discount_percent: 25 };
 let pricing = null;
 
 function formatDollars(cents) {
@@ -11,6 +11,7 @@ async function loadMemberStatus() {
     try {
         const response = await fetch('/api/member-status');
         memberStatus = await response.json();
+        updateBundleBanner();
         updateMemberBanner();
         updateTypePriceLabels();
     } catch (err) {
@@ -18,14 +19,22 @@ async function loadMemberStatus() {
     }
 }
 
+function updateBundleBanner() {
+    const banner = document.getElementById('bundle-banner');
+    const text = document.getElementById('bundle-banner-text');
+    if (!banner || !text) return;
+
+    const min = memberStatus.bundle_min || 4;
+    const pct = memberStatus.bundle_discount_percent || 25;
+    text.textContent = `${pct}% off when you buy ${min}+ tickets`;
+}
+
 function updateMemberBanner() {
     const banner = document.getElementById('member-banner');
-    const text = document.getElementById('member-banner-text');
-    if (!banner || !text) return;
+    if (!banner) return;
 
     if (memberStatus.logged_in) {
         banner.classList.remove('hidden');
-        text.textContent = `${memberStatus.bundle_discount_percent}% off when you buy ${memberStatus.bundle_min}+ tickets.`;
     } else {
         banner.classList.add('hidden');
     }
@@ -76,25 +85,44 @@ function updateModalQuantity() {
     document.getElementById('modal-quantity').textContent = quantity;
 
     const totalDisplay = document.getElementById('modal-total-price');
+    const originalDisplay = document.getElementById('modal-original-price');
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
+        const discountApplied = pricing.bundle_discount_applied || pricing.legacy_discount_applied;
+
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
+        if (originalDisplay) {
+            if (discountApplied && pricing.base_total_cents > pricing.total_cents) {
+                originalDisplay.textContent = formatDollars(pricing.base_total_cents);
+                originalDisplay.classList.remove('hidden');
+            } else {
+                originalDisplay.classList.add('hidden');
+            }
+        }
+
         if (discountNote) {
-            if (pricing.legacy_discount_applied) {
+            if (discountApplied) {
                 discountNote.classList.remove('hidden');
-                discountNote.textContent = `Legacy bundle: ${pricing.bundle_discount_percent}% off applied (${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each)`;
-            } else if (memberStatus.logged_in && quantity < pricing.bundle_min) {
+                discountNote.textContent = `${pricing.bundle_discount_percent}% bundle applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
-                discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pricing.bundle_discount_percent}% legacy member discount`;
+                discountNote.classList.remove('text-emerald-300');
+                discountNote.classList.add('text-zinc-400');
+                discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pricing.bundle_discount_percent}% off`;
             } else {
                 discountNote.classList.add('hidden');
+            }
+            if (discountApplied) {
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
             }
         }
     } else {
         const fallback = ticketType === 'vip' ? 25 : 10;
         if (totalDisplay) totalDisplay.textContent = '$' + (fallback * quantity);
+        if (originalDisplay) originalDisplay.classList.add('hidden');
         if (discountNote) discountNote.classList.add('hidden');
     }
 }

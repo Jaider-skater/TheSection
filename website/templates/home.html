@@ -94,9 +94,13 @@
                 <h2 class="text-4xl font-bold tracking-tight mb-3 text-center">Secure Your Spot</h2>
                 <p class="text-xl text-zinc-400 mb-10 text-center">Limited tickets available.</p>
 
-                <div id="member-banner" class="hidden mb-6 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
-                    <p class="text-white font-medium">Legacy member pricing</p>
-                    <p id="member-banner-text" class="text-zinc-400 mt-1"></p>
+                <div id="bundle-banner" class="mb-4 bg-zinc-950 border border-emerald-500/40 rounded-2xl p-4 text-sm">
+                    <p id="bundle-banner-text" class="text-emerald-300 font-semibold"></p>
+                </div>
+
+                <div id="member-banner" class="hidden mb-4 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
+                    <p class="text-white font-medium">Legacy member</p>
+                    <p id="member-banner-text" class="text-zinc-400 mt-1">Signed in — tickets auto-save to your portal.</p>
                 </div>
 
                 <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
@@ -130,7 +134,7 @@
                         </div>
                     </div>
 
-                    <p id="discount-note" class="hidden text-sm text-zinc-400 mb-6"></p>
+                    <p id="discount-note" class="hidden text-sm text-emerald-300 font-semibold mb-4 text-center"></p>
 
                     <!-- Buy Button -->
                     <button onclick="createCheckoutSession()"
@@ -140,7 +144,9 @@
                                    hover:bg-white hover:text-black hover:border-white
                                    active:scale-[1.015] hover:scale-[1.015]
                                    touch-manipulation select-none">
-                        Buy <span id="modal-total-price">$10</span>
+                        Buy
+                        <span id="modal-original-price" class="hidden line-through text-zinc-500 text-base font-normal mx-1"></span>
+                        <span id="modal-total-price">$10</span>
                     </button>
                 </div>
             </div>
