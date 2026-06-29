@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Legacy Member Portal • The Section</title>
+    <title>Member Area • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen">
     <header class="bg-zinc-900 border-b border-zinc-800">
         <div class="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
             <a href="/" class="text-zinc-400 hover:text-white text-sm">← Home</a>
-            <span class="text-sm tracking-widest text-zinc-400 uppercase">Legacy Members</span>
+            <span class="text-sm tracking-widest text-zinc-400 uppercase">Member Area</span>
             <div class="w-12"></div>
         </div>
     </header>
@@ -24,22 +24,36 @@
 
         {% if not member %}
         <div class="text-center mb-10">
-            <h1 class="text-4xl font-bold tracking-tight mb-3">Member Portal</h1>
-            <p class="text-zinc-400">Save ticket codes and unlock bundle discounts.</p>
+            <h1 class="text-4xl font-bold tracking-tight mb-3">Member Area</h1>
+            <p class="text-zinc-400">Create an account, track your tickets, and unlock exclusive discounts after your first purchase.</p>
         </div>
 
-        <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto">
+        <div class="max-w-md mx-auto mb-6 grid grid-cols-2 gap-2">
+            <a href="#login-panel"
+               class="text-center py-2.5 rounded-xl border {% if active_tab != 'register' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400{% endif %} font-semibold text-sm">
+                Sign in
+            </a>
+            <a href="#register-panel"
+               class="text-center py-2.5 rounded-xl border {% if active_tab == 'register' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400{% endif %} font-semibold text-sm">
+                Create account
+            </a>
+        </div>
+
+        <div id="login-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab == 'register' %}hidden{% endif %}">
             <form method="POST" class="space-y-5">
                 <input type="hidden" name="action" value="login">
+                {% if next_url %}
+                <input type="hidden" name="next" value="{{ next_url }}">
+                {% endif %}
                 <div>
-                    <label for="email" class="block text-sm text-zinc-400 mb-2">Email</label>
-                    <input type="email" id="email" name="email" required
+                    <label for="login-email" class="block text-sm text-zinc-400 mb-2">Email</label>
+                    <input type="email" id="login-email" name="email" required
                            class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
                 </div>
                 <div>
-                    <label for="code" class="block text-sm text-zinc-400 mb-2">Member code</label>
-                    <input type="text" id="code" name="code" required autocomplete="off"
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white uppercase tracking-widest focus:outline-none focus:border-white">
+                    <label for="login-password" class="block text-sm text-zinc-400 mb-2">Password</label>
+                    <input type="password" id="login-password" name="password" required
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
                 </div>
                 <button type="submit"
                         class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
@@ -48,12 +62,41 @@
             </form>
         </div>
 
+        <div id="register-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab != 'register' %}hidden{% endif %}">
+            <form method="POST" class="space-y-5">
+                <input type="hidden" name="action" value="register">
+                {% if next_url %}
+                <input type="hidden" name="next" value="{{ next_url }}">
+                {% endif %}
+                <div>
+                    <label for="register-email" class="block text-sm text-zinc-400 mb-2">Email</label>
+                    <input type="email" id="register-email" name="email" required
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label for="register-password" class="block text-sm text-zinc-400 mb-2">Password</label>
+                    <input type="password" id="register-password" name="password" required minlength="8"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label for="confirm-password" class="block text-sm text-zinc-400 mb-2">Confirm password</label>
+                    <input type="password" id="confirm-password" name="confirm_password" required minlength="8"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <button type="submit"
+                        class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
+                    Create account
+                </button>
+            </form>
+            <p class="text-zinc-500 text-xs mt-4 text-center">Your {{ member_discount_percent }}% member discount unlocks after your first ticket purchase.</p>
+        </div>
+
         <div class="mt-10 max-w-md mx-auto bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 text-sm text-zinc-400">
             <p class="font-medium text-white mb-2">Member perks</p>
             <ul class="space-y-2 list-disc list-inside">
-                <li>Store ticket IDs in one place</li>
-                <li>{{ bundle_discount_percent }}% off when you buy {{ bundle_min }}+ tickets</li>
-                <li>Discount applies automatically at checkout</li>
+                <li>{{ member_discount_percent }}% off future purchases after your first ticket</li>
+                <li>All your tickets saved in one place</li>
+                <li>GA {{ bundle_discount_percent }}% at {{ bundle_min }}+ · VIP {{ vip_bundle_min }} for $100</li>
             </ul>
         </div>
 
@@ -69,13 +112,34 @@
             </form>
         </div>
 
-        <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-5">
-            <p class="text-white font-medium">Bundle discount active</p>
-            <p class="text-zinc-400 text-sm mt-1">
-                Buy {{ bundle_min }} or more tickets and save {{ bundle_discount_percent }}% — applied automatically when you check out.
-            </p>
-            <a href="/#tickets"
-               class="inline-block mt-4 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
+        <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
+            {% if has_past_purchases %}
+            <p class="text-white font-medium mb-1">Your member discount</p>
+            <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off future purchases — applied automatically when you're signed in.</p>
+            <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+                <p id="discount-code-display" class="font-mono text-2xl tracking-wider bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-center flex-1">
+                    {{ member.discount_code }}
+                </p>
+                <button type="button" onclick="copyDiscountCode()"
+                        class="px-5 py-3 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors whitespace-nowrap">
+                    Copy
+                </button>
+            </div>
+            <form method="POST" class="mt-5 flex flex-col sm:flex-row gap-3">
+                <input type="hidden" name="action" value="set_discount_code">
+                <input type="text" name="discount_code" placeholder="Set a custom code"
+                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 font-mono text-sm uppercase focus:outline-none focus:border-white">
+                <button type="submit"
+                        class="px-5 py-3 border border-zinc-600 rounded-xl text-sm hover:border-zinc-400 text-zinc-300 whitespace-nowrap">
+                    Update code
+                </button>
+            </form>
+            {% else %}
+            <p class="text-white font-medium mb-1">Member discount</p>
+            <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% discount unlocks after your first ticket purchase. Buy tickets while signed in and your code will appear here.</p>
+            {% endif %}
+            <a href="/?open_tickets=1"
+               class="inline-block mt-5 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
                 Get tickets
             </a>
         </div>
@@ -91,11 +155,11 @@
                     Save
                 </button>
             </form>
-            <p class="text-zinc-500 text-xs mt-3">Find your ticket ID on the success page or in your confirmation email.</p>
+            <p class="text-zinc-500 text-xs mt-3">Tickets bought while signed in are added automatically.</p>
         </div>
 
         <div>
-            <h2 class="text-xl font-semibold mb-4">Saved tickets</h2>
+            <h2 class="text-xl font-semibold mb-4">Your tickets</h2>
             {% if saved_ticket_details %}
             <div class="space-y-3">
                 {% for item in saved_ticket_details %}
@@ -119,9 +183,9 @@
                     </div>
                     <div class="flex gap-2 shrink-0">
                         {% if item.record %}
-                        <a href="{{ item.record.verify_url or ('/verify/t/' ~ item.ticket_id) }}"
+                        <a href="{{ item.record.view_url }}"
                            class="px-4 py-2 bg-white text-black text-sm font-semibold rounded-xl hover:bg-zinc-200">
-                            View QR
+                            View ticket
                         </a>
                         {% endif %}
                         <form method="POST">
@@ -137,11 +201,21 @@
             </div>
             {% else %}
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center text-zinc-400">
-                No saved tickets yet. Purchases made while signed in are added automatically.
+                No tickets yet. Purchases made while signed in are added automatically.
             </div>
             {% endif %}
         </div>
         {% endif %}
     </main>
+
+    <script>
+        function copyDiscountCode() {
+            const el = document.getElementById('discount-code-display');
+            if (!el) return;
+            navigator.clipboard.writeText(el.textContent.trim()).then(() => {
+                alert('Discount code copied');
+            });
+        }
+    </script>
 </body>
 </html>
