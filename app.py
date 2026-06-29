@@ -251,11 +251,25 @@ def verify_legacy_login(email, password):
     return False
 
 
+def member_has_past_purchases(member):
+    if not member:
+        return False
+    email = member.get('email', '').strip().lower()
+    if email:
+        for ticket in load_tickets():
+            if ticket.get('email', '').lower() == email:
+                return True
+    for ticket_id in member.get('saved_tickets', []):
+        if get_ticket_record(ticket_id):
+            return True
+    return False
+
+
 def member_discount_active():
     if not is_legacy_member_logged_in():
         return False
     member = get_logged_in_member()
-    return bool(member and member.get('discount_code'))
+    return bool(member and member_has_past_purchases(member))
 
 
 def is_legacy_member_logged_in():
@@ -695,12 +709,16 @@ def member_status():
     legacy_member = is_legacy_member_logged_in()
     member = get_logged_in_member()
     discount_code = None
+    discount_eligible = False
     if member:
-        discount_code = ensure_member_discount_code(member)
+        discount_eligible = member_has_past_purchases(member)
+        if discount_eligible:
+            discount_code = ensure_member_discount_code(member)
     return jsonify({
         'logged_in': legacy_member,
         'email': session.get('legacy_member_email'),
         'discount_code': discount_code,
+        'member_discount_eligible': discount_eligible,
         'member_discount_percent': int(member_discount * 100),
         'bundle_min': bundle_min,
         'bundle_discount_percent': int(bundle_discount * 100),
@@ -843,6 +861,9 @@ def success():
             member_email = session.get('legacy_member_email')
             if member_email:
                 add_saved_ticket_for_member(member_email, ticket_id)
+                purchased_member = get_legacy_member(member_email)
+                if purchased_member and member_has_past_purchases(purchased_member):
+                    ensure_member_discount_code(purchased_member)
 
         ticket_data = build_qr_image(ticket_id)
 
@@ -997,15 +1018,11 @@ def legacy_portal():
             elif get_legacy_member(email):
                 error = 'An account with that email already exists.'
             else:
-                discount_code = generate_discount_code(email)
-                while discount_code_taken(discount_code):
-                    discount_code = generate_discount_code(email)
                 with members_lock:
                     members = load_members()
                     members.append({
                         'email': email,
                         'password_hash': hash_password(password),
-                        'discount_code': discount_code,
                         'saved_tickets': [],
                         'joined_at': datetime.now(timezone.utc).isoformat(),
                     })
@@ -1048,31 +1065,38 @@ def legacy_portal():
                 active_tab='login',
             )
         if action == 'set_discount_code' and member:
-            new_code = normalize_discount_code(request.form.get('discount_code', ''))
-            if not new_code or len(new_code.replace('-', '')) < 4:
-                error = 'Discount code must be at least 4 characters (letters, numbers, hyphens).'
-            elif discount_code_taken(new_code, exclude_email=member['email']):
-                error = 'That discount code is already taken.'
+            error = None
+            if not member_has_past_purchases(member):
+                error = 'Discount codes unlock after your first ticket purchase.'
             else:
-                with members_lock:
-                    members = load_members()
-                    for stored in members:
-                        if stored.get('email', '').lower() == member['email'].lower():
-                            stored['discount_code'] = new_code
-                            save_members(members)
-                            break
-                return redirect(url_for('legacy_portal'))
-            return render_template(
-                'legacy_portal.html',
-                error=error,
-                member=get_logged_in_member(),
-                saved_ticket_details=saved_ticket_details,
-                bundle_min=bundle_min,
-                bundle_discount_percent=int(bundle_discount * 100),
-                member_discount_percent=int(member_discount * 100),
-                vip_discount_percent=int(vip_discount * 100),
-                next_url=request.form.get('next', ''),
-            )
+                new_code = normalize_discount_code(request.form.get('discount_code', ''))
+                if not new_code or len(new_code.replace('-', '')) < 4:
+                    error = 'Discount code must be at least 4 characters (letters, numbers, hyphens).'
+                elif discount_code_taken(new_code, exclude_email=member['email']):
+                    error = 'That discount code is already taken.'
+                else:
+                    with members_lock:
+                        members = load_members()
+                        for stored in members:
+                            if stored.get('email', '').lower() == member['email'].lower():
+                                stored['discount_code'] = new_code
+                                save_members(members)
+                                break
+                    return redirect(url_for('legacy_portal'))
+            if error:
+                logged_in = get_logged_in_member()
+                return render_template(
+                    'legacy_portal.html',
+                    error=error,
+                    member=logged_in,
+                    saved_ticket_details=saved_ticket_details,
+                    has_past_purchases=member_has_past_purchases(logged_in),
+                    bundle_min=bundle_min,
+                    bundle_discount_percent=int(bundle_discount * 100),
+                    member_discount_percent=int(member_discount * 100),
+                    vip_discount_percent=int(vip_discount * 100),
+                    next_url=request.form.get('next', ''),
+                )
         if action == 'logout':
             session.pop('legacy_member_email', None)
             return redirect(url_for('legacy_portal'))
@@ -1081,6 +1105,9 @@ def legacy_portal():
             record = get_ticket_record(ticket_id)
             if record:
                 add_saved_ticket_for_member(member['email'], ticket_id)
+                refreshed = get_legacy_member(member['email'])
+                if refreshed and member_has_past_purchases(refreshed):
+                    ensure_member_discount_code(refreshed)
             return redirect(url_for('legacy_portal'))
         if action == 'remove_ticket' and member:
             ticket_id = request.form.get('ticket_id', '')
@@ -1089,8 +1116,10 @@ def legacy_portal():
 
     next_url = request.args.get('next', '')
     logged_in_member = get_logged_in_member()
-    if logged_in_member:
+    has_past_purchases = member_has_past_purchases(logged_in_member) if logged_in_member else False
+    if logged_in_member and has_past_purchases:
         ensure_member_discount_code(logged_in_member)
+        logged_in_member = get_logged_in_member()
     if logged_in_member and next_url.startswith('/'):
         return redirect(next_url)
 
@@ -1098,6 +1127,7 @@ def legacy_portal():
         'legacy_portal.html',
         member=logged_in_member,
         saved_ticket_details=saved_ticket_details if logged_in_member else [],
+        has_past_purchases=has_past_purchases,
         bundle_min=bundle_min,
         bundle_discount_percent=int(bundle_discount * 100),
         member_discount_percent=int(member_discount * 100),
