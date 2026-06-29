@@ -1,1 +1,1 @@
-test
+LOAD_FROM_TMP
