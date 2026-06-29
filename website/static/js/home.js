@@ -6,9 +6,6 @@ let memberStatus = {
     bundle_discount_percent: 25,
     vip_bundle_min: 5,
     vip_bundle_total_cents: 10000,
-    vip_additional_discount_percent: 20,
-    member_discount_percent: 10,
-    member_discount_eligible: false,
 };
 let pricing = null;
 
@@ -37,23 +34,24 @@ async function loadMemberStatus() {
 function updateMemberBanner() {
     const signedInBanner = document.getElementById('member-banner');
     const signInPrompt = document.getElementById('sign-in-prompt');
-    const discountLine = document.getElementById('member-discount-line');
 
+    const discountLine = document.getElementById('member-discount-line');
     if (memberStatus.logged_in) {
-        if (signInPrompt) signInPrompt.classList.add('hidden');
         if (signedInBanner) signedInBanner.classList.remove('hidden');
+        if (signInPrompt) signInPrompt.classList.add('hidden');
         if (discountLine) {
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
                 discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
-            } else if (memberStatus.discount_code) {
-                discountLine.textContent = `Code ${memberStatus.discount_code} · discount unlocks after your first purchase`;
             } else {
-                discountLine.textContent = 'Member discount unlocks after your first ticket purchase.';
+                const bulkPct = memberStatus.bundle_discount_percent;
+                const bulkMin = memberStatus.bundle_min;
+                const vipBundleLabel = formatVipBundleLabel();
+                discountLine.textContent = `Bulk pricing: ${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}. Member discount unlocks after your first purchase.`;
             }
         }
     } else {
-        if (signInPrompt) signInPrompt.classList.remove('hidden');
         if (signedInBanner) signedInBanner.classList.add('hidden');
+        if (signInPrompt) signInPrompt.classList.remove('hidden');
     }
 }
 
@@ -106,7 +104,7 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.member_discount_applied || pricing.vip_bundle_applied || pricing.bundle_discount_applied;
+        const discountApplied = pricing.member_discount_applied || pricing.vip_discount_applied || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -120,36 +118,37 @@ function updateModalQuantity() {
         }
 
         if (discountNote) {
-            discountNote.classList.remove('text-emerald-300');
-            discountNote.classList.add('text-zinc-200');
-
             if (pricing.member_discount_applied) {
                 discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.member_discount_percent}% member discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (pricing.vip_bundle_applied) {
+            } else if (pricing.vip_discount_applied) {
                 discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `VIP ${formatVipBundleLabel(pricing)} — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (pricing.bundle_discount_applied) {
                 discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-zinc-200');
-                discountNote.classList.add('text-zinc-400');
-                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else if (ticketType === 'vip' && quantity < (pricing.vip_bundle_min || 5)) {
                 discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-zinc-200');
+                discountNote.classList.remove('text-emerald-300');
                 discountNote.classList.add('text-zinc-400');
                 const vipMin = pricing.vip_bundle_min || 5;
-                const vipPct = pricing.vip_additional_discount_percent || 20;
-                const needed = vipMin - quantity;
-                discountNote.textContent = `Buy ${needed} more for ${vipPct}% off`;
+                discountNote.textContent = `Add ${vipMin - quantity} more for VIP ${formatVipBundleLabel(pricing)}`;
             } else if (ticketType === 'general' && quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-zinc-200');
+                discountNote.classList.remove('text-emerald-300');
                 discountNote.classList.add('text-zinc-400');
                 discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pricing.bundle_discount_percent}% off`;
+            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.remove('text-emerald-300');
+                discountNote.classList.add('text-zinc-400');
+                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else {
                 discountNote.classList.add('hidden');
             }
@@ -167,14 +166,9 @@ function changeQuantity(change) {
     refreshPricing();
 }
 
-function redirectToMemberSignIn() {
-    window.location.href = '/members?next=' + encodeURIComponent('/?open_tickets=1');
-}
-
 async function createCheckoutSession() {
-    await loadMemberStatus();
     if (!memberStatus.logged_in) {
-        redirectToMemberSignIn();
+        window.location.href = '/legacy?next=' + encodeURIComponent('/?open_tickets=1');
         return;
     }
 
@@ -190,11 +184,6 @@ async function createCheckoutSession() {
 
         const data = await response.json();
 
-        if (response.status === 401) {
-            redirectToMemberSignIn();
-            return;
-        }
-
         if (data.url) {
             window.location.href = data.url;
         } else {
@@ -207,12 +196,6 @@ async function createCheckoutSession() {
 }
 
 async function showTicketsModal() {
-    await loadMemberStatus();
-    if (!memberStatus.logged_in) {
-        redirectToMemberSignIn();
-        return;
-    }
-
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
     modal.style.opacity = '0';
@@ -220,6 +203,7 @@ async function showTicketsModal() {
         modal.style.transition = 'opacity 0.3s ease-out';
         modal.style.opacity = '1';
     }, 10);
+    await loadMemberStatus();
     refreshPricing();
 }
 
