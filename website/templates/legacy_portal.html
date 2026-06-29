@@ -51,9 +51,10 @@
                            class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
                 </div>
                 <div>
-                    <label for="login-password" class="block text-sm text-zinc-400 mb-2">Password</label>
-                    <input type="password" id="login-password" name="password" required
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                    <label for="login-member-code" class="block text-sm text-zinc-400 mb-2">Member code</label>
+                    <input type="text" id="login-member-code" name="member_code" required
+                           autocomplete="off" spellcheck="false"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white font-mono uppercase focus:outline-none focus:border-white">
                 </div>
                 <button type="submit"
                         class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
@@ -74,14 +75,17 @@
                            class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
                 </div>
                 <div>
-                    <label for="register-password" class="block text-sm text-zinc-400 mb-2">Password</label>
-                    <input type="password" id="register-password" name="password" required minlength="8"
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                    <label for="register-member-code" class="block text-sm text-zinc-400 mb-2">Choose your member code</label>
+                    <input type="text" id="register-member-code" name="member_code" required minlength="4"
+                           autocomplete="off" spellcheck="false" placeholder="e.g. SECTION-42"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white font-mono uppercase focus:outline-none focus:border-white">
+                    <p class="text-zinc-500 text-xs mt-2">Your member code is your sign-in and discount code (letters, numbers, hyphens).</p>
                 </div>
                 <div>
-                    <label for="confirm-password" class="block text-sm text-zinc-400 mb-2">Confirm password</label>
-                    <input type="password" id="confirm-password" name="confirm_password" required minlength="8"
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                    <label for="confirm-member-code" class="block text-sm text-zinc-400 mb-2">Confirm member code</label>
+                    <input type="text" id="confirm-member-code" name="confirm_member_code" required minlength="4"
+                           autocomplete="off" spellcheck="false"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white font-mono uppercase focus:outline-none focus:border-white">
                 </div>
                 <button type="submit"
                         class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
@@ -125,15 +129,6 @@
                     Copy
                 </button>
             </div>
-            <form method="POST" class="mt-5 flex flex-col sm:flex-row gap-3">
-                <input type="hidden" name="action" value="set_discount_code">
-                <input type="text" name="discount_code" placeholder="Set a custom code"
-                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 font-mono text-sm uppercase focus:outline-none focus:border-white">
-                <button type="submit"
-                        class="px-5 py-3 border border-zinc-600 rounded-xl text-sm hover:border-zinc-400 text-zinc-300 whitespace-nowrap">
-                    Update code
-                </button>
-            </form>
             {% else %}
             <p class="text-white font-medium mb-1">Member discount</p>
             <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% discount unlocks after your first ticket purchase. Buy tickets while signed in and your code will appear here.</p>
