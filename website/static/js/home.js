@@ -7,6 +7,8 @@ let memberStatus = {
     vip_bundle_min: 5,
     vip_bundle_total_cents: 10000,
     vip_additional_discount_percent: 20,
+    member_discount_percent: 10,
+    member_discount_eligible: false,
 };
 let pricing = null;
 
@@ -33,13 +35,23 @@ async function loadMemberStatus() {
 }
 
 function updateMemberBanner() {
-    const banner = document.getElementById('member-banner');
-    if (!banner) return;
+    const signedInBanner = document.getElementById('member-banner');
+    const signInPrompt = document.getElementById('sign-in-prompt');
+    const discountLine = document.getElementById('member-discount-line');
 
     if (memberStatus.logged_in) {
-        banner.classList.remove('hidden');
+        if (signedInBanner) signedInBanner.classList.remove('hidden');
+        if (signInPrompt) signInPrompt.classList.add('hidden');
+        if (discountLine) {
+            if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
+                discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
+            } else {
+                discountLine.textContent = 'Member discount unlocks after your first ticket purchase.';
+            }
+        }
     } else {
-        banner.classList.add('hidden');
+        if (signedInBanner) signedInBanner.classList.add('hidden');
+        if (signInPrompt) signInPrompt.classList.remove('hidden');
     }
 }
 
@@ -92,7 +104,7 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.vip_bundle_applied || pricing.bundle_discount_applied;
+        const discountApplied = pricing.member_discount_applied || pricing.vip_bundle_applied || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -109,12 +121,20 @@ function updateModalQuantity() {
             discountNote.classList.remove('text-emerald-300');
             discountNote.classList.add('text-zinc-200');
 
-            if (pricing.vip_bundle_applied) {
+            if (pricing.member_discount_applied) {
+                discountNote.classList.remove('hidden');
+                discountNote.textContent = `${pricing.member_discount_percent}% member discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (pricing.vip_bundle_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.textContent = `VIP ${formatVipBundleLabel(pricing)} — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (pricing.bundle_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.remove('text-zinc-200');
+                discountNote.classList.add('text-zinc-400');
+                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else if (ticketType === 'vip' && quantity < (pricing.vip_bundle_min || 5)) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-zinc-200');
@@ -219,7 +239,19 @@ if (hamburgerBtn && menuDropdown) {
     });
 }
 
+function maybeOpenTicketsFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('open_tickets') === '1') {
+        showTicketsModal();
+        params.delete('open_tickets');
+        const nextQuery = params.toString();
+        const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '') + window.location.hash;
+        window.history.replaceState({}, '', nextUrl);
+    }
+}
+
 loadMemberStatus().then(() => {
     updateTypeButtons();
     refreshPricing();
+    maybeOpenTicketsFromUrl();
 });
