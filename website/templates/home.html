@@ -32,7 +32,7 @@
                 </button>
 
                 <div id="menu-dropdown" class="hidden absolute right-0 mt-3 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-lg py-2 z-50">
-                    <a href="/members" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Member Area</a>
+                    <a href="/legacy" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Legacy Member Portal</a>
                     <a href="/verify" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Door Scanner</a>
                 </div>
             </div>
@@ -95,18 +95,17 @@
                 <p class="text-xl text-zinc-400 mb-10 text-center">Limited tickets available.</p>
 
                 <div id="sign-in-prompt" class="mb-4 bg-zinc-950 border border-zinc-600 rounded-2xl p-4 text-sm">
-                    <p class="text-white font-medium">Member Area</p>
-                    <p class="text-zinc-400 mt-1 mb-3">Sign in to track tickets and unlock exclusive discounts after your first purchase.</p>
-                    <a href="/members?next=/?open_tickets=1"
+                    <p class="text-white font-medium">Sign in before you buy</p>
+                    <p class="text-zinc-400 mt-1 mb-3">Create an account or sign in to get your discount code and save tickets.</p>
+                    <a href="/legacy?next=/?open_tickets=1"
                        class="inline-block w-full text-center py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
-                        Sign in or create account
+                        Sign in
                     </a>
                 </div>
 
                 <div id="member-banner" class="hidden mb-4 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
                     <p class="text-white font-medium">Signed in</p>
-                    <p id="member-discount-line" class="text-zinc-400 mt-1">Tickets save to your member area automatically.</p>
-                    <a href="/members" class="inline-block mt-2 text-xs text-zinc-400 hover:text-white">View member area →</a>
+                    <p id="member-discount-line" class="text-zinc-400 mt-1">Your member discount is applied at checkout.</p>
                 </div>
 
                 <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
@@ -140,7 +139,7 @@
                         </div>
                     </div>
 
-                    <p id="discount-note" class="hidden text-sm text-zinc-200 font-semibold mb-4 text-center"></p>
+                    <p id="discount-note" class="hidden text-sm text-emerald-300 font-semibold mb-4 text-center"></p>
 
                     <!-- Buy Button -->
                     <button onclick="createCheckoutSession()"
