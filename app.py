@@ -1,1 +1,1 @@
-LOAD_FROM_TMP
+LOAD_FROM_/tmp/mcp_tool_args.json
