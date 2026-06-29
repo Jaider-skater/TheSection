@@ -119,7 +119,7 @@
                     </div>
                     <div class="flex gap-2 shrink-0">
                         {% if item.record %}
-                        <a href="{{ item.record.verify_url or ('/verify/t/' ~ item.ticket_id) }}"
+                        <a href="{{ item.record.view_url or ('/ticket/' ~ item.ticket_id) }}"
                            class="px-4 py-2 bg-white text-black text-sm font-semibold rounded-xl hover:bg-zinc-200">
                             View QR
                         </a>
