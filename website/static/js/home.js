@@ -1,6 +1,6 @@
 let quantity = 1;
 let ticketType = 'general';
-let memberStatus = { logged_in: false, bundle_min: 4, bundle_discount_percent: 25 };
+let memberStatus = { logged_in: false, bundle_min: 4, bundle_discount_percent: 25, vip_discount_percent: 10 };
 let pricing = null;
 
 function formatDollars(cents) {
@@ -11,26 +11,10 @@ async function loadMemberStatus() {
     try {
         const response = await fetch('/api/member-status');
         memberStatus = await response.json();
-        updateBundleBanner();
         updateMemberBanner();
         updateTypePriceLabels();
     } catch (err) {
         console.error('Failed to load member status', err);
-    }
-}
-
-function updateBundleBanner() {
-    const banner = document.getElementById('bundle-banner');
-    const text = document.getElementById('bundle-banner-text');
-    if (!banner || !text) return;
-
-    const min = memberStatus.bundle_min || 4;
-    const pct = memberStatus.bundle_discount_percent || 25;
-    text.textContent = `${pct}% off when you buy ${min}+ tickets`;
-
-    const vipSubtitle = document.getElementById('vip-subtitle');
-    if (vipSubtitle && memberStatus.vip_discount_percent) {
-        vipSubtitle.textContent = `Upstairs · ${memberStatus.vip_discount_percent}% off`;
     }
 }
 
@@ -94,7 +78,7 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.bundle_discount_applied || pricing.legacy_discount_applied;
+        const discountApplied = pricing.vip_discount_applied || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -113,22 +97,21 @@ function updateModalQuantity() {
                 discountNote.classList.add('text-emerald-300');
                 discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.vip_discount_percent}% VIP discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (discountApplied) {
+            } else if (pricing.bundle_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-emerald-300');
                 discountNote.classList.remove('text-zinc-400');
-                discountNote.textContent = `${pricing.bundle_discount_percent}% bundle applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+                discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-emerald-300');
                 discountNote.classList.add('text-zinc-400');
-                discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pricing.bundle_discount_percent}% off`;
+                const pct = ticketType === 'vip'
+                    ? pricing.vip_discount_percent
+                    : pricing.bundle_discount_percent;
+                discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pct}% off`;
             } else {
                 discountNote.classList.add('hidden');
-            }
-            if (discountApplied) {
-                discountNote.classList.add('text-emerald-300');
-                discountNote.classList.remove('text-zinc-400');
             }
         }
     } else {
