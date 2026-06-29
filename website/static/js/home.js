@@ -27,6 +27,11 @@ function updateBundleBanner() {
     const min = memberStatus.bundle_min || 4;
     const pct = memberStatus.bundle_discount_percent || 25;
     text.textContent = `${pct}% off when you buy ${min}+ tickets`;
+
+    const vipSubtitle = document.getElementById('vip-subtitle');
+    if (vipSubtitle && memberStatus.vip_discount_percent) {
+        vipSubtitle.textContent = `Upstairs · ${memberStatus.vip_discount_percent}% off`;
+    }
 }
 
 function updateMemberBanner() {
@@ -103,8 +108,15 @@ function updateModalQuantity() {
         }
 
         if (discountNote) {
-            if (discountApplied) {
+            if (pricing.vip_discount_applied) {
                 discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
+                discountNote.textContent = `${pricing.vip_discount_percent}% VIP discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (discountApplied) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.bundle_discount_percent}% bundle applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
