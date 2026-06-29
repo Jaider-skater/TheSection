@@ -30,7 +30,10 @@ function updateMemberBanner() {
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
                 discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
             } else {
-                discountLine.textContent = 'Member discount unlocks after your first ticket purchase.';
+                const bulkPct = memberStatus.bundle_discount_percent;
+                const vipPct = memberStatus.vip_discount_percent;
+                const bulkMin = memberStatus.bundle_min;
+                discountLine.textContent = `Bulk pricing at ${bulkMin}+ (${bulkPct}% GA / ${vipPct}% VIP). Member discount unlocks after your first purchase.`;
             }
         }
     } else {
@@ -117,11 +120,6 @@ function updateModalQuantity() {
                 discountNote.classList.add('text-emerald-300');
                 discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-emerald-300');
-                discountNote.classList.add('text-zinc-400');
-                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else if (quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-emerald-300');
@@ -130,6 +128,11 @@ function updateModalQuantity() {
                     ? pricing.vip_discount_percent
                     : pricing.bundle_discount_percent;
                 discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pct}% off`;
+            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.remove('text-emerald-300');
+                discountNote.classList.add('text-zinc-400');
+                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else {
                 discountNote.classList.add('hidden');
             }
