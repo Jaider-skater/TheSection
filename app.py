@@ -1,1 +1,1 @@
-LOAD_FROM_SCRIPT
+LOAD_FROM_/tmp/cou_app_only.json
