@@ -6,6 +6,7 @@ let memberStatus = {
     bundle_discount_percent: 25,
     vip_bundle_min: 5,
     vip_bundle_total_cents: 10000,
+    vip_additional_discount_percent: 20,
 };
 let pricing = null;
 
@@ -32,26 +33,13 @@ async function loadMemberStatus() {
 }
 
 function updateMemberBanner() {
-    const signedInBanner = document.getElementById('member-banner');
-    const signInPrompt = document.getElementById('sign-in-prompt');
+    const banner = document.getElementById('member-banner');
+    if (!banner) return;
 
-    const discountLine = document.getElementById('member-discount-line');
     if (memberStatus.logged_in) {
-        if (signedInBanner) signedInBanner.classList.remove('hidden');
-        if (signInPrompt) signInPrompt.classList.add('hidden');
-        if (discountLine) {
-            if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
-            } else {
-                const bulkPct = memberStatus.bundle_discount_percent;
-                const bulkMin = memberStatus.bundle_min;
-                const vipBundleLabel = formatVipBundleLabel();
-                discountLine.textContent = `Bulk pricing: ${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}. Member discount unlocks after your first purchase.`;
-            }
-        }
+        banner.classList.remove('hidden');
     } else {
-        if (signedInBanner) signedInBanner.classList.add('hidden');
-        if (signInPrompt) signInPrompt.classList.remove('hidden');
+        banner.classList.add('hidden');
     }
 }
 
@@ -104,7 +92,7 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.member_discount_applied || pricing.vip_discount_applied || pricing.bundle_discount_applied;
+        const discountApplied = pricing.vip_bundle_applied || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -118,37 +106,26 @@ function updateModalQuantity() {
         }
 
         if (discountNote) {
-            if (pricing.member_discount_applied) {
+            discountNote.classList.remove('text-emerald-300');
+            discountNote.classList.add('text-zinc-200');
+
+            if (pricing.vip_bundle_applied) {
                 discountNote.classList.remove('hidden');
-                discountNote.classList.add('text-emerald-300');
-                discountNote.classList.remove('text-zinc-400');
-                discountNote.textContent = `${pricing.member_discount_percent}% member discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (pricing.vip_discount_applied) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.add('text-emerald-300');
-                discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `VIP ${formatVipBundleLabel(pricing)} — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (pricing.bundle_discount_applied) {
                 discountNote.classList.remove('hidden');
-                discountNote.classList.add('text-emerald-300');
-                discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (ticketType === 'vip' && quantity < (pricing.vip_bundle_min || 5)) {
                 discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-emerald-300');
+                discountNote.classList.remove('text-zinc-200');
                 discountNote.classList.add('text-zinc-400');
                 const vipMin = pricing.vip_bundle_min || 5;
                 discountNote.textContent = `Add ${vipMin - quantity} more for VIP ${formatVipBundleLabel(pricing)}`;
             } else if (ticketType === 'general' && quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-emerald-300');
+                discountNote.classList.remove('text-zinc-200');
                 discountNote.classList.add('text-zinc-400');
                 discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pricing.bundle_discount_percent}% off`;
-            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-emerald-300');
-                discountNote.classList.add('text-zinc-400');
-                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else {
                 discountNote.classList.add('hidden');
             }
@@ -167,11 +144,6 @@ function changeQuantity(change) {
 }
 
 async function createCheckoutSession() {
-    if (!memberStatus.logged_in) {
-        window.location.href = '/legacy?next=' + encodeURIComponent('/?open_tickets=1');
-        return;
-    }
-
     try {
         const response = await fetch('/create-checkout-session', {
             method: 'POST',
@@ -191,11 +163,11 @@ async function createCheckoutSession() {
         }
     } catch (err) {
         console.error(err);
-        alert('Failed to connect to payment processor.';
+        alert('Failed to connect to payment processor.');
     }
 }
 
-async function showTicketsModal() {
+function showTicketsModal() {
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
     modal.style.opacity = '0';
@@ -203,7 +175,6 @@ async function showTicketsModal() {
         modal.style.transition = 'opacity 0.3s ease-out';
         modal.style.opacity = '1';
     }, 10);
-    await loadMemberStatus();
     refreshPricing();
 }
 
@@ -246,19 +217,7 @@ if (hamburgerBtn && menuDropdown) {
     });
 }
 
-function maybeOpenTicketsFromUrl() {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('open_tickets') === '1') {
-        showTicketsModal();
-        params.delete('open_tickets');
-        const nextQuery = params.toString();
-        const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '') + window.location.hash;
-        window.history.replaceState({}, '', nextUrl);
-    }
-}
-
 loadMemberStatus().then(() => {
     updateTypeButtons();
     refreshPricing();
-    maybeOpenTicketsFromUrl();
 });

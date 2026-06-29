@@ -94,18 +94,9 @@
                 <h2 class="text-4xl font-bold tracking-tight mb-3 text-center">Secure Your Spot</h2>
                 <p class="text-xl text-zinc-400 mb-10 text-center">Limited tickets available.</p>
 
-                <div id="sign-in-prompt" class="mb-4 bg-zinc-950 border border-zinc-600 rounded-2xl p-4 text-sm">
-                    <p class="text-white font-medium">Sign in before you buy</p>
-                    <p class="text-zinc-400 mt-1 mb-3">Create an account or sign in to get your discount code and save tickets.</p>
-                    <a href="/legacy?next=/?open_tickets=1"
-                       class="inline-block w-full text-center py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
-                        Sign in
-                    </a>
-                </div>
-
                 <div id="member-banner" class="hidden mb-4 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
-                    <p class="text-white font-medium">Signed in</p>
-                    <p id="member-discount-line" class="text-zinc-400 mt-1">Your member discount is applied at checkout.</p>
+                    <p class="text-white font-medium">Legacy member</p>
+                    <p id="member-banner-text" class="text-zinc-400 mt-1">Signed in — tickets auto-save to your portal.</p>
                 </div>
 
                 <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
@@ -139,7 +130,7 @@
                         </div>
                     </div>
 
-                    <p id="discount-note" class="hidden text-sm text-emerald-300 font-semibold mb-4 text-center"></p>
+                    <p id="discount-note" class="hidden text-sm text-zinc-200 font-semibold mb-4 text-center"></p>
 
                     <!-- Buy Button -->
                     <button onclick="createCheckoutSession()"
