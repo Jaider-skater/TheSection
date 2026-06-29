@@ -179,9 +179,17 @@ function changeQuantity(change) {
     refreshPricing();
 }
 
+function buildCheckoutReturnUrl() {
+    const params = new URLSearchParams();
+    params.set('auto_checkout', '1');
+    params.set('ticket_type', ticketType);
+    params.set('quantity', String(quantity));
+    return '/?' + params.toString();
+}
+
 async function createCheckoutSession() {
     if (!memberStatus.logged_in) {
-        window.location.href = '/legacy?next=' + encodeURIComponent('/?open_tickets=1');
+        window.location.href = '/legacy?next=' + encodeURIComponent(buildCheckoutReturnUrl());
         return;
     }
 
@@ -270,8 +278,38 @@ function maybeOpenTicketsFromUrl() {
     }
 }
 
-loadMemberStatus().then(() => {
+async function maybeAutoCheckoutFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('auto_checkout') !== '1') return false;
+
+    const type = params.get('ticket_type') || 'general';
+    const qty = Math.max(1, parseInt(params.get('quantity') || '1', 10));
+    ticketType = type === 'vip' ? 'vip' : 'general';
+    quantity = qty;
+
+    params.delete('auto_checkout');
+    params.delete('ticket_type');
+    params.delete('quantity');
+    const nextQuery = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (nextQuery ? `?${nextQuery}` : '') + window.location.hash);
+
     updateTypeButtons();
-    refreshPricing();
-    maybeOpenTicketsFromUrl();
+    await refreshPricing();
+
+    if (!memberStatus.logged_in) {
+        window.location.href = '/legacy?next=' + encodeURIComponent(buildCheckoutReturnUrl());
+        return true;
+    }
+
+    await createCheckoutSession();
+    return true;
+}
+
+loadMemberStatus().then(async () => {
+    updateTypeButtons();
+    await refreshPricing();
+    const resumedCheckout = await maybeAutoCheckoutFromUrl();
+    if (!resumedCheckout) {
+        maybeOpenTicketsFromUrl();
+    }
 });
