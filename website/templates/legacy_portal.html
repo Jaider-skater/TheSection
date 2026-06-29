@@ -25,24 +25,35 @@
         {% if not member %}
         <div class="text-center mb-10">
             <h1 class="text-4xl font-bold tracking-tight mb-3">Member Portal</h1>
-            <p class="text-zinc-400">Save ticket codes and unlock bundle discounts.</p>
+            <p class="text-zinc-400">Create an account, save tickets, and get your member discount code.</p>
         </div>
 
-        <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto">
+        <div class="max-w-md mx-auto mb-6 grid grid-cols-2 gap-2">
+            <a href="#login-panel"
+               class="text-center py-2.5 rounded-xl border {% if active_tab != 'register' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400{% endif %} font-semibold text-sm">
+                Sign in
+            </a>
+            <a href="#register-panel"
+               class="text-center py-2.5 rounded-xl border {% if active_tab == 'register' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400{% endif %} font-semibold text-sm">
+                Create account
+            </a>
+        </div>
+
+        <div id="login-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab == 'register' %}hidden{% endif %}">
             <form method="POST" class="space-y-5">
                 <input type="hidden" name="action" value="login">
                 {% if next_url %}
                 <input type="hidden" name="next" value="{{ next_url }}">
                 {% endif %}
                 <div>
-                    <label for="email" class="block text-sm text-zinc-400 mb-2">Email</label>
-                    <input type="email" id="email" name="email" required
+                    <label for="login-email" class="block text-sm text-zinc-400 mb-2">Email</label>
+                    <input type="email" id="login-email" name="email" required
                            class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
                 </div>
                 <div>
-                    <label for="code" class="block text-sm text-zinc-400 mb-2">Member code</label>
-                    <input type="text" id="code" name="code" required autocomplete="off"
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white uppercase tracking-widest focus:outline-none focus:border-white">
+                    <label for="login-password" class="block text-sm text-zinc-400 mb-2">Password</label>
+                    <input type="password" id="login-password" name="password" required
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
                 </div>
                 <button type="submit"
                         class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
@@ -51,12 +62,41 @@
             </form>
         </div>
 
+        <div id="register-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab != 'register' %}hidden{% endif %}">
+            <form method="POST" class="space-y-5">
+                <input type="hidden" name="action" value="register">
+                {% if next_url %}
+                <input type="hidden" name="next" value="{{ next_url }}">
+                {% endif %}
+                <div>
+                    <label for="register-email" class="block text-sm text-zinc-400 mb-2">Email</label>
+                    <input type="email" id="register-email" name="email" required
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label for="register-password" class="block text-sm text-zinc-400 mb-2">Password</label>
+                    <input type="password" id="register-password" name="password" required minlength="8"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label for="confirm-password" class="block text-sm text-zinc-400 mb-2">Confirm password</label>
+                    <input type="password" id="confirm-password" name="confirm_password" required minlength="8"
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <button type="submit"
+                        class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
+                    Create account
+                </button>
+            </form>
+            <p class="text-zinc-500 text-xs mt-4 text-center">You'll receive a unique discount code after signing up.</p>
+        </div>
+
         <div class="mt-10 max-w-md mx-auto bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 text-sm text-zinc-400">
             <p class="font-medium text-white mb-2">Member perks</p>
             <ul class="space-y-2 list-disc list-inside">
+                <li>Personal discount code ({{ member_discount_percent }}% off)</li>
                 <li>Store ticket IDs in one place</li>
-                <li>{{ bundle_discount_percent }}% off when you buy {{ bundle_min }}+ tickets</li>
-                <li>Discount applies automatically at checkout</li>
+                <li>{{ bundle_discount_percent }}% off GA / {{ vip_discount_percent }}% off VIP at {{ bundle_min }}+ tickets</li>
             </ul>
         </div>
 
@@ -72,13 +112,29 @@
             </form>
         </div>
 
-        <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-5">
-            <p class="text-white font-medium">Bundle discount active</p>
-            <p class="text-zinc-400 text-sm mt-1">
-                Buy {{ bundle_min }} or more tickets and save {{ bundle_discount_percent }}% — applied automatically when you check out.
-            </p>
-            <a href="/#tickets"
-               class="inline-block mt-4 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
+        <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
+            <p class="text-white font-medium mb-1">Your discount code</p>
+            <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off — applied automatically when you're signed in and buy tickets.</p>
+            <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+                <p id="discount-code-display" class="font-mono text-2xl tracking-wider bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-center flex-1">
+                    {{ member.discount_code }}
+                </p>
+                <button type="button" onclick="copyDiscountCode()"
+                        class="px-5 py-3 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors whitespace-nowrap">
+                    Copy
+                </button>
+            </div>
+            <form method="POST" class="mt-5 flex flex-col sm:flex-row gap-3">
+                <input type="hidden" name="action" value="set_discount_code">
+                <input type="text" name="discount_code" placeholder="Set a custom code"
+                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 font-mono text-sm uppercase focus:outline-none focus:border-white">
+                <button type="submit"
+                        class="px-5 py-3 border border-zinc-600 rounded-xl text-sm hover:border-zinc-400 text-zinc-300 whitespace-nowrap">
+                    Update code
+                </button>
+            </form>
+            <a href="/?open_tickets=1"
+               class="inline-block mt-5 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
                 Get tickets
             </a>
         </div>
@@ -146,5 +202,14 @@
         </div>
         {% endif %}
     </main>
+
+    <script>
+        function copyDiscountCode() {
+            const text = document.getElementById('discount-code-display').textContent.trim();
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Discount code copied');
+            });
+        }
+    </script>
 </body>
 </html>

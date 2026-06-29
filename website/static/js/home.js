@@ -22,9 +22,13 @@ function updateMemberBanner() {
     const signedInBanner = document.getElementById('member-banner');
     const signInPrompt = document.getElementById('sign-in-prompt');
 
+    const discountLine = document.getElementById('member-discount-line');
     if (memberStatus.logged_in) {
         if (signedInBanner) signedInBanner.classList.remove('hidden');
         if (signInPrompt) signInPrompt.classList.add('hidden');
+        if (discountLine && memberStatus.discount_code) {
+            discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
+        }
     } else {
         if (signedInBanner) signedInBanner.classList.add('hidden');
         if (signInPrompt) signInPrompt.classList.remove('hidden');
@@ -80,7 +84,7 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.vip_discount_applied || pricing.bundle_discount_applied;
+        const discountApplied = pricing.member_discount_applied || pricing.vip_discount_applied || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -94,7 +98,12 @@ function updateModalQuantity() {
         }
 
         if (discountNote) {
-            if (pricing.vip_discount_applied) {
+            if (pricing.member_discount_applied) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-emerald-300');
+                discountNote.classList.remove('text-zinc-400');
+                discountNote.textContent = `${pricing.member_discount_percent}% member discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (pricing.vip_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-emerald-300');
                 discountNote.classList.remove('text-zinc-400');
