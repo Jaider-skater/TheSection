@@ -19,13 +19,15 @@ async function loadMemberStatus() {
 }
 
 function updateMemberBanner() {
-    const banner = document.getElementById('member-banner');
-    if (!banner) return;
+    const signedInBanner = document.getElementById('member-banner');
+    const signInPrompt = document.getElementById('sign-in-prompt');
 
     if (memberStatus.logged_in) {
-        banner.classList.remove('hidden');
+        if (signedInBanner) signedInBanner.classList.remove('hidden');
+        if (signInPrompt) signInPrompt.classList.add('hidden');
     } else {
-        banner.classList.add('hidden');
+        if (signedInBanner) signedInBanner.classList.add('hidden');
+        if (signInPrompt) signInPrompt.classList.remove('hidden');
     }
 }
 
@@ -128,6 +130,11 @@ function changeQuantity(change) {
 }
 
 async function createCheckoutSession() {
+    if (!memberStatus.logged_in) {
+        window.location.href = '/legacy?next=' + encodeURIComponent('/?open_tickets=1');
+        return;
+    }
+
     try {
         const response = await fetch('/create-checkout-session', {
             method: 'POST',
@@ -201,7 +208,19 @@ if (hamburgerBtn && menuDropdown) {
     });
 }
 
+function maybeOpenTicketsFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('open_tickets') === '1') {
+        showTicketsModal();
+        params.delete('open_tickets');
+        const nextQuery = params.toString();
+        const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '') + window.location.hash;
+        window.history.replaceState({}, '', nextUrl);
+    }
+}
+
 loadMemberStatus().then(() => {
     updateTypeButtons();
     refreshPricing();
+    maybeOpenTicketsFromUrl();
 });
