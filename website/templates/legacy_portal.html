@@ -31,7 +31,7 @@
         {% if not member %}
         <div class="text-center mb-10">
             <h1 class="text-4xl font-bold tracking-tight mb-3">Member Portal</h1>
-            <p class="text-zinc-400">Create an account, save tickets, and unlock your member discount after your first purchase.</p>
+            <p class="text-zinc-400">Create an account — tickets save automatically and your member discount unlocks after your first purchase.</p>
         </div>
 
         <div class="max-w-md mx-auto mb-6 grid grid-cols-2 gap-2">
@@ -66,12 +66,9 @@
                     Sign in
                 </button>
             </form>
-            <p class="text-zinc-500 text-xs mt-4 text-center">
-                Legacy members: use your member key as your password until you set a new one.
-            </p>
             <p class="text-center mt-4">
                 <a href="#forgot-panel" id="forgot-password-link" class="text-sm text-zinc-400 hover:text-white transition-colors">
-                    Forgot password or need to set one?
+                    Forgot password?
                 </a>
             </p>
         </div>
@@ -136,7 +133,7 @@
             <p class="font-medium text-white mb-2">Member perks</p>
             <ul class="space-y-2 list-disc list-inside">
                 <li>{{ member_discount_percent }}% off future purchases after your first ticket</li>
-                <li>Store ticket IDs in one place</li>
+                <li>Tickets saved automatically to your account</li>
                 <li>{{ bundle_discount_percent }}% off GA at {{ bundle_min }}+ · VIP {{ vip_bundle_min }} for ${{ vip_bundle_total_dollars }}</li>
             </ul>
         </div>
@@ -166,15 +163,6 @@
                     Copy
                 </button>
             </div>
-            <form method="POST" class="mt-5 flex flex-col sm:flex-row gap-3">
-                <input type="hidden" name="action" value="set_discount_code">
-                <input type="text" name="discount_code" placeholder="Set a custom code"
-                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 font-mono text-sm uppercase focus:outline-none focus:border-white">
-                <button type="submit"
-                        class="px-5 py-3 border border-zinc-600 rounded-xl text-sm hover:border-zinc-400 text-zinc-300 whitespace-nowrap">
-                    Update code
-                </button>
-            </form>
             {% else %}
             <p class="text-white font-medium mb-1">Member discount</p>
             <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% member discount unlocks after your first ticket purchase. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · VIP {{ vip_bundle_min }} for ${{ vip_bundle_total_dollars }}) is available now.</p>
@@ -186,62 +174,42 @@
         </div>
 
         <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
-            <h2 class="text-xl font-semibold mb-2">Change password</h2>
-            <p class="text-zinc-400 text-sm mb-4">Set a new password for your account. Legacy members can use their member key as the current password.</p>
-            <form method="POST" class="space-y-4" id="change-password-form">
-                <input type="hidden" name="action" value="change_password">
-                <div>
-                    <label for="current-password" class="block text-sm text-zinc-400 mb-2">Current password or member key</label>
-                    <input type="password" id="current-password" name="current_password" required
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
-                </div>
-                <div>
-                    <label for="new-password" class="block text-sm text-zinc-400 mb-2">New password</label>
-                    <input type="password" id="new-password" name="new_password" required minlength="8"
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
-                </div>
-                <div>
-                    <label for="change-confirm-password" class="block text-sm text-zinc-400 mb-2">Confirm new password</label>
-                    <input type="password" id="change-confirm-password" name="confirm_password" required minlength="8"
-                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
-                    <p id="change-password-match-msg" class="hidden text-sm text-emerald-400 mt-2">Passwords match</p>
-                    <p id="change-password-mismatch-msg" class="hidden text-sm text-red-400 mt-2">Passwords do not match</p>
-                </div>
-                <button type="submit"
-                        class="px-6 py-3 border-2 border-white bg-black text-white font-semibold rounded-xl hover:bg-white hover:text-black transition-colors">
-                    Update password
-                </button>
-            </form>
-        </div>
-
-        <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
-            <h2 class="text-xl font-semibold mb-4">Save a ticket</h2>
-            <form method="POST" class="flex flex-col sm:flex-row gap-3">
-                <input type="hidden" name="action" value="save_ticket">
-                <input type="text" name="ticket_id" placeholder="Ticket ID from your email"
-                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 font-mono text-sm focus:outline-none focus:border-white">
-                <button type="submit"
-                        class="px-6 py-3 border-2 border-white bg-black text-white font-semibold rounded-xl hover:bg-white hover:text-black transition-colors whitespace-nowrap">
-                    Save
-                </button>
-            </form>
-        </div>
-
-        {% if tickets %}
-        <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
             <h2 class="text-xl font-semibold mb-4">Your tickets</h2>
+            {% if saved_ticket_details %}
             <ul class="space-y-3">
-                {% for ticket in tickets %}
+                {% for ticket in saved_ticket_details %}
                 <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3">
-                    <span class="font-mono text-sm">{{ ticket.ticket_id }}</span>
-                    <span class="text-zinc-500 text-xs">{{ ticket.created_at }}</span>
+                    <div>
+                        <span class="font-mono text-sm">{{ ticket.ticket_id }}</span>
+                        <span class="text-zinc-500 text-xs ml-2">
+                            {{ ticket.quantity }}× {{ 'VIP' if ticket.ticket_type == 'vip' else 'GA' }}
+                        </span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        {% if ticket.purchased_at %}
+                        <span class="text-zinc-500 text-xs">{{ ticket.purchased_at[:10] }}</span>
+                        {% endif %}
+                        {% if ticket.view_url %}
+                        <a href="{{ ticket.view_url }}" class="text-sm text-zinc-400 hover:text-white whitespace-nowrap">View</a>
+                        {% endif %}
+                    </div>
                 </li>
                 {% endfor %}
             </ul>
+            {% else %}
+            <p class="text-zinc-500 text-sm">No tickets yet. Buy while signed in (or use the same email at checkout) and they'll show up here automatically.</p>
+            {% endif %}
         </div>
-        {% else %}
-        <p class="text-zinc-500 text-center text-sm">No saved tickets yet. Paste a ticket ID from your confirmation email above.</p>
-        {% endif %}
+
+        <div class="text-center">
+            <form method="POST" class="inline">
+                <input type="hidden" name="action" value="forgot_password">
+                <input type="hidden" name="email" value="{{ member.email }}">
+                <button type="submit" class="text-sm text-zinc-400 hover:text-white transition-colors">
+                    Email me a password reset link
+                </button>
+            </form>
+        </div>
         {% endif %}
     </main>
 
@@ -309,42 +277,6 @@
 
             if (window.location.hash === '#register-panel') showRegister();
             if (window.location.hash === '#forgot-panel') showForgot();
-        })();
-
-        (function () {
-            const pw = document.getElementById('new-password');
-            const confirm = document.getElementById('change-confirm-password');
-            const matchMsg = document.getElementById('change-password-match-msg');
-            const mismatchMsg = document.getElementById('change-password-mismatch-msg');
-            const form = document.getElementById('change-password-form');
-            if (!pw || !confirm || !form) return;
-
-            function checkMatch() {
-                const a = pw.value;
-                const b = confirm.value;
-                if (!b) {
-                    matchMsg.classList.add('hidden');
-                    mismatchMsg.classList.add('hidden');
-                    return;
-                }
-                if (a === b) {
-                    matchMsg.classList.remove('hidden');
-                    mismatchMsg.classList.add('hidden');
-                } else {
-                    matchMsg.classList.add('hidden');
-                    mismatchMsg.classList.remove('hidden');
-                }
-            }
-
-            pw.addEventListener('input', checkMatch);
-            confirm.addEventListener('input', checkMatch);
-            form.addEventListener('submit', function (e) {
-                if (pw.value !== confirm.value) {
-                    e.preventDefault();
-                    mismatchMsg.classList.remove('hidden');
-                    confirm.focus();
-                }
-            });
         })();
 
         (function () {
