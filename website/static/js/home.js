@@ -36,22 +36,21 @@ async function loadMemberStatus() {
 
 function updateMemberBanner() {
     const signedInBanner = document.getElementById('member-banner');
-    const signInPrompt = document.getElementById('sign-in-prompt');
     const discountLine = document.getElementById('member-discount-line');
 
     if (memberStatus.logged_in) {
         if (signedInBanner) signedInBanner.classList.remove('hidden');
-        if (signInPrompt) signInPrompt.classList.add('hidden');
         if (discountLine) {
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
                 discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
+            } else if (memberStatus.discount_code) {
+                discountLine.textContent = `Code ${memberStatus.discount_code} · discount unlocks after your first purchase`;
             } else {
                 discountLine.textContent = 'Member discount unlocks after your first ticket purchase.';
             }
         }
-    } else {
-        if (signedInBanner) signedInBanner.classList.add('hidden');
-        if (signInPrompt) signInPrompt.classList.remove('hidden');
+    } else if (signedInBanner) {
+        signedInBanner.classList.add('hidden');
     }
 }
 
@@ -166,6 +165,12 @@ function changeQuantity(change) {
 }
 
 async function createCheckoutSession() {
+    await loadMemberStatus();
+    if (!memberStatus.logged_in) {
+        window.location.href = '/members?next=' + encodeURIComponent('/?open_tickets=1');
+        return;
+    }
+
     try {
         const response = await fetch('/create-checkout-session', {
             method: 'POST',
@@ -189,7 +194,13 @@ async function createCheckoutSession() {
     }
 }
 
-function showTicketsModal() {
+async function showTicketsModal() {
+    await loadMemberStatus();
+    if (!memberStatus.logged_in) {
+        window.location.href = '/members?next=' + encodeURIComponent('/?open_tickets=1');
+        return;
+    }
+
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
     modal.style.opacity = '0';
