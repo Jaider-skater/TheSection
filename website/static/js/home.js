@@ -2,7 +2,6 @@ let quantity = 1;
 let ticketType = 'general';
 let memberStatus = { logged_in: false, bundle_min: 3, bundle_discount_percent: 15 };
 let pricing = null;
-const DOOR_FEE_DOLLARS = 5;
 
 function formatDollars(cents) {
     return '$' + (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
@@ -36,13 +35,8 @@ function updateTypePriceLabels() {
     const types = memberStatus.ticket_types || {};
     const ga = document.getElementById('ga-price-label');
     const vip = document.getElementById('vip-price-label');
-    const gaDoor = document.getElementById('ga-door-label');
-    const vipDoor = document.getElementById('vip-door-label');
-    const doorFeeLabel = `+$${DOOR_FEE_DOLLARS} at door`;
     if (ga && types.general) ga.textContent = formatDollars(types.general.price_cents);
     if (vip && types.vip) vip.textContent = formatDollars(types.vip.price_cents);
-    if (gaDoor) gaDoor.textContent = doorFeeLabel;
-    if (vipDoor) vipDoor.textContent = doorFeeLabel;
 }
 
 function updateTypeButtons() {

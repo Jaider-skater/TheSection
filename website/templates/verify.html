@@ -20,7 +20,7 @@
             Start Scanner
         </button>
 
-        <div id="result" class="text-xl font-medium min-h-[88px] p-4 rounded-3xl bg-zinc-900"></div>
+        <div id="result" class="text-xl font-medium min-h-[140px] p-5 rounded-3xl bg-zinc-900"></div>
 
         <button id="scan-again-btn"
                 onclick="restartScanner()"
@@ -64,10 +64,26 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ticket_data: decodedText })
         })
-        .then(r => r.text())
+        .then(r => r.json())
         .then(result => {
-            const isGood = result.includes('admitted') || result.includes('Welcome');
-            resultEl.innerHTML = `<span class="${isGood ? 'text-emerald-400' : 'text-red-400'} text-xl">${result}</span>`;
+            if (result.status === 'accepted') {
+                const typeLabel = result.is_vip ? 'VIP' : 'GA';
+                const guestWord = result.quantity === 1 ? 'guest' : 'guests';
+                resultEl.innerHTML = `
+                    <div class="text-emerald-400 text-2xl font-bold mb-3">✅ You're In!</div>
+                    <div class="text-6xl font-black text-white leading-none mb-3">${typeLabel}</div>
+                    <div class="text-5xl font-bold text-white leading-none">${result.quantity}</div>
+                    <div class="text-zinc-400 text-lg mt-2">${guestWord} admitted</div>
+                `;
+            } else if (result.status === 'used') {
+                const guestWord = result.quantity === 1 ? 'guest' : 'guests';
+                resultEl.innerHTML = `
+                    <div class="text-red-400 text-2xl font-bold mb-2">❌ Already Used</div>
+                    <div class="text-zinc-300">${result.quantity} ${guestWord} on this ticket</div>
+                `;
+            } else {
+                resultEl.innerHTML = `<span class="text-red-400 text-xl">Invalid ticket</span>`;
+            }
             document.getElementById('scan-again-btn').classList.remove('hidden');
         })
         .catch(() => {
