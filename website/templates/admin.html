@@ -20,7 +20,7 @@
                 </a>
                 <a href="/admin/tickets.json?key={{ key }}"
                    download="thesection-tickets.json"
-                   class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-sm">
+                   class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
                     Download JSON
                 </a>
             </div>
@@ -35,7 +35,7 @@
                     Copy JSON
                 </button>
             </div>
-            <pre id="ticket-json" class="p-4 text-xs text-zinc-300 overflow-x-auto max-h-80">{{ tickets_json }}</pre>
+            <pre id="ticket-json" class="p-4 text-xs text-emerald-300 overflow-x-auto max-h-80">{{ tickets_json }}</pre>
         </div>
         <div class="overflow-x-auto rounded-2xl border border-zinc-800">
             <table class="w-full text-left text-sm">
@@ -70,7 +70,7 @@
                         <td class="p-4 text-zinc-400">{{ ticket.access or '—' }}</td>
                         <td class="p-4">
                             {% if ticket.scanned_at %}
-                                <span class="text-white">Yes</span>
+                                <span class="text-emerald-400">Yes</span>
                             {% else %}
                                 <span class="text-zinc-500">No</span>
                             {% endif %}
