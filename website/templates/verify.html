@@ -70,10 +70,10 @@
                 const typeLabel = result.is_vip ? 'VIP' : 'GA';
                 const guestWord = result.quantity === 1 ? 'guest' : 'guests';
                 resultEl.innerHTML = `
-                    <div class="text-emerald-400 text-2xl font-bold mb-3">✅ You're In!</div>
-                    <div class="text-6xl font-black text-white leading-none mb-3">${typeLabel}</div>
+                    <div class="text-emerald-400 text-2xl font-bold mb-1">✅ You're In!</div>
+                    <div class="text-6xl font-black text-white leading-none mb-2">${typeLabel}</div>
                     <div class="text-5xl font-bold text-white leading-none">${result.quantity}</div>
-                    <div class="text-zinc-400 text-lg mt-2">${guestWord} admitted</div>
+                    <div class="text-zinc-400 text-lg mt-1">${guestWord} admitted</div>
                 `;
             } else if (result.status === 'used') {
                 const guestWord = result.quantity === 1 ? 'guest' : 'guests';
