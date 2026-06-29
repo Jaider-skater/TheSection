@@ -29,12 +29,12 @@
         </div>
 
         <div class="max-w-md mx-auto mb-6 grid grid-cols-2 gap-2">
-            <a href="#login-panel"
-               class="text-center py-2.5 rounded-xl border {% if active_tab != 'register' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400{% endif %} font-semibold text-sm">
+            <a href="#login-panel" id="tab-login"
+               class="portal-tab text-center py-2.5 rounded-xl border font-semibold text-sm transition-colors {% if active_tab != 'register' %}border-white bg-white text-black{% else %}border-white bg-black text-white{% endif %}">
                 Sign in
             </a>
-            <a href="#register-panel"
-               class="text-center py-2.5 rounded-xl border {% if active_tab == 'register' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400{% endif %} font-semibold text-sm">
+            <a href="#register-panel" id="tab-register"
+               class="portal-tab text-center py-2.5 rounded-xl border font-semibold text-sm transition-colors {% if active_tab == 'register' %}border-white bg-white text-black{% else %}border-white bg-black text-white{% endif %}">
                 Create account
             </a>
         </div>
@@ -63,7 +63,7 @@
         </div>
 
         <div id="register-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab != 'register' %}hidden{% endif %}">
-            <form method="POST" class="space-y-5">
+            <form method="POST" class="space-y-5" id="register-form">
                 <input type="hidden" name="action" value="register">
                 {% if next_url %}
                 <input type="hidden" name="next" value="{{ next_url }}">
@@ -215,6 +215,57 @@
                 alert('Discount code copied');
             });
         }
+
+        (function initPortalTabs() {
+            const tabLogin = document.getElementById('tab-login');
+            const tabRegister = document.getElementById('tab-register');
+            const loginPanel = document.getElementById('login-panel');
+            const registerPanel = document.getElementById('register-panel');
+            if (!tabLogin || !tabRegister || !loginPanel || !registerPanel) return;
+
+            const activeClasses = ['border-white', 'bg-white', 'text-black'];
+            const inactiveClasses = ['border-white', 'bg-black', 'text-white'];
+
+            function setTabActive(tab) {
+                const isRegister = tab === 'register';
+                tabLogin.classList.remove(...activeClasses, ...inactiveClasses);
+                tabRegister.classList.remove(...activeClasses, ...inactiveClasses);
+                (isRegister ? tabRegister : tabLogin).classList.add(...activeClasses);
+                (isRegister ? tabLogin : tabRegister).classList.add(...inactiveClasses);
+                loginPanel.classList.toggle('hidden', isRegister);
+                registerPanel.classList.toggle('hidden', !isRegister);
+            }
+
+            tabLogin.addEventListener('click', (e) => {
+                e.preventDefault();
+                setTabActive('login');
+                history.replaceState(null, '', '#login-panel');
+            });
+            tabRegister.addEventListener('click', (e) => {
+                e.preventDefault();
+                setTabActive('register');
+                history.replaceState(null, '', '#register-panel');
+            });
+
+            if (location.hash === '#register-panel') {
+                setTabActive('register');
+            }
+        })();
+
+        (function initRegisterForm() {
+            const form = document.getElementById('register-form');
+            if (!form) return;
+            form.addEventListener('submit', (e) => {
+                const password = form.querySelector('#register-password');
+                const confirm = form.querySelector('#confirm-password');
+                if (!password || !confirm) return;
+                if (password.value !== confirm.value) {
+                    e.preventDefault();
+                    alert('Passwords do not match.');
+                    confirm.focus();
+                }
+            });
+        })();
     </script>
 </body>
 </html>
