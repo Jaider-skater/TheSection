@@ -30,8 +30,20 @@ wallet_key_path = os.getenv('WALLET_KEY_PATH', '')
 wallet_wwdr_path = os.getenv('WALLET_WWDR_PATH', '')
 wallet_enabled = all([wallet_team_id, wallet_cert_path, wallet_key_path, wallet_wwdr_path])
 members_file = os.getenv('MEMBERS_FILE', os.path.join(os.path.dirname(__file__), 'data', 'legacy_members.json'))
-legacy_bundle_min = int(os.getenv('LEGACY_BUNDLE_MIN', '3'))
-legacy_bundle_discount = float(os.getenv('LEGACY_BUNDLE_DISCOUNT', '0.15'))
+def parse_discount_value(raw, default=0.15):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value > 1:
+        return value / 100.0
+    return value
+
+
+bundle_min = int(os.getenv('BUNDLE_MIN') or os.getenv('LEGACY_BUNDLE_MIN', '4'))
+bundle_discount = parse_discount_value(
+    os.getenv('BUNDLE_DISCOUNT') or os.getenv('LEGACY_BUNDLE_DISCOUNT', '0.25'),
+)
 app.secret_key = os.getenv('SECRET_KEY', 'thesection-legacy-portal-change-me')
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
@@ -182,10 +194,14 @@ def get_logged_in_member():
     return get_legacy_member(email)
 
 
-def calculate_unit_price(ticket_type, quantity, legacy_member=False):
+def bundle_discount_applies(quantity):
+    return quantity >= bundle_min
+
+
+def calculate_unit_price(ticket_type, quantity):
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    if legacy_member and quantity >= legacy_bundle_min:
-        return int(base * (1 - legacy_bundle_discount))
+    if bundle_discount_applies(quantity):
+        return int(base * (1 - bundle_discount))
     return base
 
 
@@ -406,6 +422,7 @@ def build_wallet_pass(ticket_id, quantity):
             archive.writestr(name, data)
     return output.getvalue()
 
+
 init_used_tickets()
 bootstrap_legacy_members()
 
@@ -542,8 +559,8 @@ def member_status():
     return jsonify({
         'logged_in': legacy_member,
         'email': session.get('legacy_member_email'),
-        'bundle_min': legacy_bundle_min,
-        'bundle_discount_percent': int(legacy_bundle_discount * 100),
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
         'ticket_types': {
             key: {
                 'name': meta['name'],
@@ -561,18 +578,20 @@ def pricing():
     quantity = max(1, int(request.args.get('quantity', 1)))
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
-    legacy_member = is_legacy_member_logged_in()
-    unit_price = calculate_unit_price(ticket_type, quantity, legacy_member)
+    unit_price = calculate_unit_price(ticket_type, quantity)
     base_price = TICKET_TYPES[ticket_type]['price_cents']
+    discount_applied = bundle_discount_applies(quantity) and unit_price < base_price
     return jsonify({
         'ticket_type': ticket_type,
         'quantity': quantity,
         'unit_price_cents': unit_price,
         'total_cents': unit_price * quantity,
+        'base_total_cents': base_price * quantity,
         'base_unit_price_cents': base_price,
-        'legacy_discount_applied': legacy_member and quantity >= legacy_bundle_min and unit_price < base_price,
-        'bundle_min': legacy_bundle_min,
-        'bundle_discount_percent': int(legacy_bundle_discount * 100),
+        'bundle_discount_applied': discount_applied,
+        'legacy_discount_applied': discount_applied,
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
     })
 
 
@@ -586,11 +605,11 @@ def create_checkout_session():
             ticket_type = 'general'
 
         legacy_member = is_legacy_member_logged_in()
-        unit_price = calculate_unit_price(ticket_type, quantity, legacy_member)
+        unit_price = calculate_unit_price(ticket_type, quantity)
         ticket_meta = TICKET_TYPES[ticket_type]
         description = ticket_meta['description']
-        if legacy_member and quantity >= legacy_bundle_min and unit_price < ticket_meta['price_cents']:
-            description += f' · Legacy member bundle ({int(legacy_bundle_discount * 100)}% off)'
+        if bundle_discount_applies(quantity) and unit_price < ticket_meta['price_cents']:
+            description += f' · {int(bundle_discount * 100)}% bundle discount ({quantity}+ tickets)'
 
         print(f"Creating {ticket_type} session for {quantity} tickets @ {unit_price}c")
 
@@ -611,7 +630,7 @@ def create_checkout_session():
             metadata={
                 'ticket_type': ticket_type,
                 'legacy_member': 'true' if legacy_member else 'false',
-                'legacy_discount': 'true' if legacy_member and quantity >= legacy_bundle_min else 'false',
+                'legacy_discount': 'true' if bundle_discount_applies(quantity) else 'false',
             },
             success_url=f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{base_url}/",
@@ -777,8 +796,8 @@ def legacy_portal():
                 error='Invalid email or member code.',
                 member=None,
                 saved_ticket_details=[],
-                bundle_min=legacy_bundle_min,
-                bundle_discount_percent=int(legacy_bundle_discount * 100),
+                bundle_min=bundle_min,
+                bundle_discount_percent=int(bundle_discount * 100),
             )
         if action == 'logout':
             session.pop('legacy_member_email', None)
@@ -798,8 +817,8 @@ def legacy_portal():
         'legacy_portal.html',
         member=get_logged_in_member(),
         saved_ticket_details=saved_ticket_details if member else [],
-        bundle_min=legacy_bundle_min,
-        bundle_discount_percent=int(legacy_bundle_discount * 100),
+        bundle_min=bundle_min,
+        bundle_discount_percent=int(bundle_discount * 100),
         ticket_types=TICKET_TYPES,
     )
 
