@@ -1,1 +1,1 @@
-LOAD_FROM_FILE:/tmp/app.py
+LOAD_FROM_PAYLOAD
