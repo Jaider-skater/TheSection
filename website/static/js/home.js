@@ -120,7 +120,9 @@ function updateModalQuantity() {
                 discountNote.classList.remove('text-zinc-200');
                 discountNote.classList.add('text-zinc-400');
                 const vipMin = pricing.vip_bundle_min || 5;
-                discountNote.textContent = `Add ${vipMin - quantity} more for VIP ${formatVipBundleLabel(pricing)}`;
+                const vipPct = pricing.vip_additional_discount_percent || 20;
+                const needed = vipMin - quantity;
+                discountNote.textContent = `Buy ${needed} more for ${vipPct}% off`;
             } else if (ticketType === 'general' && quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-zinc-200');
