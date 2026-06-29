@@ -36,9 +36,11 @@ async function loadMemberStatus() {
 
 function updateMemberBanner() {
     const signedInBanner = document.getElementById('member-banner');
+    const signInPrompt = document.getElementById('sign-in-prompt');
     const discountLine = document.getElementById('member-discount-line');
 
     if (memberStatus.logged_in) {
+        if (signInPrompt) signInPrompt.classList.add('hidden');
         if (signedInBanner) signedInBanner.classList.remove('hidden');
         if (discountLine) {
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
@@ -49,8 +51,9 @@ function updateMemberBanner() {
                 discountLine.textContent = 'Member discount unlocks after your first ticket purchase.';
             }
         }
-    } else if (signedInBanner) {
-        signedInBanner.classList.add('hidden');
+    } else {
+        if (signInPrompt) signInPrompt.classList.remove('hidden');
+        if (signedInBanner) signedInBanner.classList.add('hidden');
     }
 }
 
