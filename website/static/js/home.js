@@ -164,10 +164,14 @@ function changeQuantity(change) {
     refreshPricing();
 }
 
+function redirectToMemberSignIn() {
+    window.location.href = '/members?next=' + encodeURIComponent('/?open_tickets=1');
+}
+
 async function createCheckoutSession() {
     await loadMemberStatus();
     if (!memberStatus.logged_in) {
-        window.location.href = '/members?next=' + encodeURIComponent('/?open_tickets=1');
+        redirectToMemberSignIn();
         return;
     }
 
@@ -183,6 +187,11 @@ async function createCheckoutSession() {
 
         const data = await response.json();
 
+        if (response.status === 401) {
+            redirectToMemberSignIn();
+            return;
+        }
+
         if (data.url) {
             window.location.href = data.url;
         } else {
@@ -197,7 +206,7 @@ async function createCheckoutSession() {
 async function showTicketsModal() {
     await loadMemberStatus();
     if (!memberStatus.logged_in) {
-        window.location.href = '/members?next=' + encodeURIComponent('/?open_tickets=1');
+        redirectToMemberSignIn();
         return;
     }
 
