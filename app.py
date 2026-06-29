@@ -406,7 +406,6 @@ def build_wallet_pass(ticket_id, quantity):
             archive.writestr(name, data)
     return output.getvalue()
 
-
 init_used_tickets()
 bootstrap_legacy_members()
 
@@ -737,11 +736,13 @@ def verify_ticket():
             return "Invalid ticket"
 
         result = check_ticket(ticket_id)
+        if request.is_json:
+            return jsonify(result)
         if result['status'] == 'accepted':
             qty = result['quantity']
             guest_word = 'guest' if qty == 1 else 'guests'
-            vip_note = ' · VIP upstairs access' if result.get('is_vip') else ''
-            return f"✅ {qty} {guest_word} admitted — Welcome to The Section!{vip_note}"
+            type_label = 'VIP' if result.get('is_vip') else 'GA'
+            return f"✅ {type_label} — {qty} {guest_word} admitted"
         if result['status'] == 'used':
             qty = result['quantity']
             guest_word = 'guest' if qty == 1 else 'guests'
