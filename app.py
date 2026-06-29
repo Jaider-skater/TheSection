@@ -1,1 +1,1 @@
-LOAD_FROM_/tmp/mcp_invoke_create_or_update.json
+LOAD_FROM_DISK
