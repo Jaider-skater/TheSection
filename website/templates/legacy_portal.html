@@ -25,7 +25,7 @@
         {% if not member %}
         <div class="text-center mb-10">
             <h1 class="text-4xl font-bold tracking-tight mb-3">Member Portal</h1>
-            <p class="text-zinc-400">Create an account, save tickets, and get your member discount code.</p>
+            <p class="text-zinc-400">Create an account, save tickets, and unlock your member discount after your first purchase.</p>
         </div>
 
         <div class="max-w-md mx-auto mb-6 grid grid-cols-2 gap-2">
@@ -88,13 +88,13 @@
                     Create account
                 </button>
             </form>
-            <p class="text-zinc-500 text-xs mt-4 text-center">You'll receive a unique discount code after signing up.</p>
+            <p class="text-zinc-500 text-xs mt-4 text-center">Your {{ member_discount_percent }}% member discount unlocks after your first ticket purchase.</p>
         </div>
 
         <div class="mt-10 max-w-md mx-auto bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 text-sm text-zinc-400">
             <p class="font-medium text-white mb-2">Member perks</p>
             <ul class="space-y-2 list-disc list-inside">
-                <li>Personal discount code ({{ member_discount_percent }}% off)</li>
+                <li>{{ member_discount_percent }}% off future purchases after your first ticket</li>
                 <li>Store ticket IDs in one place</li>
                 <li>{{ bundle_discount_percent }}% off GA / {{ vip_discount_percent }}% off VIP at {{ bundle_min }}+ tickets</li>
             </ul>
@@ -113,8 +113,9 @@
         </div>
 
         <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
+            {% if has_past_purchases %}
             <p class="text-white font-medium mb-1">Your discount code</p>
-            <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off — applied automatically when you're signed in and buy tickets.</p>
+            <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off future purchases — applied automatically when you're signed in.</p>
             <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
                 <p id="discount-code-display" class="font-mono text-2xl tracking-wider bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-center flex-1">
                     {{ member.discount_code }}
@@ -133,6 +134,10 @@
                     Update code
                 </button>
             </form>
+            {% else %}
+            <p class="text-white font-medium mb-1">Member discount</p>
+            <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% discount unlocks after your first ticket purchase. Buy tickets while signed in and your code will appear here.</p>
+            {% endif %}
             <a href="/?open_tickets=1"
                class="inline-block mt-5 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
                 Get tickets

@@ -26,8 +26,12 @@ function updateMemberBanner() {
     if (memberStatus.logged_in) {
         if (signedInBanner) signedInBanner.classList.remove('hidden');
         if (signInPrompt) signInPrompt.classList.add('hidden');
-        if (discountLine && memberStatus.discount_code) {
-            discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
+        if (discountLine) {
+            if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
+                discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
+            } else {
+                discountLine.textContent = 'Member discount unlocks after your first ticket purchase.';
+            }
         }
     } else {
         if (signedInBanner) signedInBanner.classList.add('hidden');
@@ -113,6 +117,11 @@ function updateModalQuantity() {
                 discountNote.classList.add('text-emerald-300');
                 discountNote.classList.remove('text-zinc-400');
                 discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.remove('text-emerald-300');
+                discountNote.classList.add('text-zinc-400');
+                discountNote.textContent = 'Member discount unlocks after your first ticket purchase.';
             } else if (quantity < pricing.bundle_min) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-emerald-300');
@@ -167,7 +176,7 @@ async function createCheckoutSession() {
     }
 }
 
-function showTicketsModal() {
+async function showTicketsModal() {
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
     modal.style.opacity = '0';
@@ -175,6 +184,7 @@ function showTicketsModal() {
         modal.style.transition = 'opacity 0.3s ease-out';
         modal.style.opacity = '1';
     }, 10);
+    await loadMemberStatus();
     refreshPricing();
 }
 
