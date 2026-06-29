@@ -32,21 +32,17 @@ function updateMemberBanner() {
     }
 }
 
-function doorPriceLabel(priceCents) {
-    const doorTotal = (priceCents / 100) + DOOR_FEE_DOLLARS;
-    return `$${doorTotal % 1 === 0 ? doorTotal : doorTotal.toFixed(2)} door`;
-}
-
 function updateTypePriceLabels() {
     const types = memberStatus.ticket_types || {};
     const ga = document.getElementById('ga-price-label');
     const vip = document.getElementById('vip-price-label');
     const gaDoor = document.getElementById('ga-door-label');
     const vipDoor = document.getElementById('vip-door-label');
+    const doorFeeLabel = `+$${DOOR_FEE_DOLLARS} at door`;
     if (ga && types.general) ga.textContent = formatDollars(types.general.price_cents);
     if (vip && types.vip) vip.textContent = formatDollars(types.vip.price_cents);
-    if (gaDoor && types.general) gaDoor.textContent = doorPriceLabel(types.general.price_cents);
-    if (vipDoor && types.vip) vipDoor.textContent = doorPriceLabel(types.vip.price_cents);
+    if (gaDoor) gaDoor.textContent = doorFeeLabel;
+    if (vipDoor) vipDoor.textContent = doorFeeLabel;
 }
 
 function updateTypeButtons() {
