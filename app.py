@@ -1,1 +1,1 @@
-LOAD_FROM_/tmp/mcp_tool_args.json
+PLACEHOLDER_APP_PY
