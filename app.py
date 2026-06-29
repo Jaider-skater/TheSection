@@ -1,6 +1,4 @@
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
-from werkzeug.security import check_password_hash, generate_password_hash
-import secrets
 import stripe
 import qrcode
 from io import BytesIO, StringIO
@@ -46,12 +44,9 @@ bundle_min = int(os.getenv('BUNDLE_MIN') or os.getenv('LEGACY_BUNDLE_MIN', '4'))
 bundle_discount = parse_discount_value(
     os.getenv('BUNDLE_DISCOUNT') or os.getenv('LEGACY_BUNDLE_DISCOUNT', '0.25'),
 )
-vip_discount = parse_discount_value(os.getenv('VIP_DISCOUNT', '0.10'))
 vip_bundle_min = int(os.getenv('VIP_BUNDLE_MIN', '5'))
 vip_bundle_total_cents = int(os.getenv('VIP_BUNDLE_TOTAL_CENTS', '10000'))
-member_discount = parse_discount_value(os.getenv('MEMBER_DISCOUNT', '0.10'))
-verify_login_email = os.getenv('VERIFY_LOGIN_EMAIL', '').strip().lower()
-verify_login_password = os.getenv('VERIFY_LOGIN_PASSWORD', '')
+vip_additional_discount = parse_discount_value(os.getenv('VIP_ADDITIONAL_DISCOUNT', '0.20'))
 app.secret_key = os.getenv('SECRET_KEY', 'thesection-legacy-portal-change-me')
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
@@ -84,9 +79,6 @@ app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config[
 app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
 mail = Mail(app)
 
-# In-memory used tickets
-used_tickets = set()
-
 
 def load_tickets():
     os.makedirs(os.path.dirname(tickets_file), exist_ok=True)
@@ -110,6 +102,9 @@ def get_ticket_by_session(session_id):
 
 
 def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False):
+    ticket_id = normalize_ticket_id(ticket_id)
+    if not ticket_id:
+        raise ValueError('Invalid ticket id')
     ticket_meta = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])
     with tickets_lock:
         tickets = load_tickets()
@@ -129,7 +124,6 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
             'scanned_at': None,
             'email_sent_at': None,
             'verify_url': f"{base_url}/verify/t/{ticket_id}",
-            'view_url': f"{base_url}/ticket/{ticket_id}",
         }
         tickets.append(ticket)
         save_tickets(tickets)
@@ -138,55 +132,6 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
 
 def hash_member_code(code):
     return hashlib.sha256(code.strip().upper().encode('utf-8')).hexdigest()
-
-
-def hash_password(password):
-    return generate_password_hash(password)
-
-
-def verify_password(password, stored_hash):
-    return check_password_hash(stored_hash, password)
-
-
-def normalize_discount_code(code):
-    if not code:
-        return None
-    normalized = str(code).strip().upper().replace(' ', '')
-    return normalized if normalized.replace('-', '').isalnum() else None
-
-
-def generate_discount_code(email):
-    prefix = ''.join(c for c in email.split('@')[0].upper() if c.isalnum())[:4] or 'MEM'
-    return f"{prefix}-{secrets.token_hex(2).upper()}"
-
-
-def discount_code_taken(code, exclude_email=None):
-    normalized = normalize_discount_code(code)
-    if not normalized:
-        return True
-    for member in load_members():
-        if exclude_email and member.get('email', '').lower() == exclude_email.strip().lower():
-            continue
-        if normalize_discount_code(member.get('discount_code', '')) == normalized:
-            return True
-    return False
-
-
-def ensure_member_discount_code(member):
-    if member.get('discount_code'):
-        return member['discount_code']
-    code = generate_discount_code(member.get('email', 'member'))
-    while discount_code_taken(code, exclude_email=member.get('email')):
-        code = generate_discount_code(member.get('email', 'member'))
-    with members_lock:
-        members = load_members()
-        for stored in members:
-            if stored.get('email', '').lower() == member.get('email', '').lower():
-                stored['discount_code'] = code
-                save_members(members)
-                break
-    member['discount_code'] = code
-    return code
 
 
 def load_members():
@@ -206,26 +151,17 @@ def save_members(members):
 
 def bootstrap_legacy_members():
     bootstrap_email = os.getenv('LEGACY_BOOTSTRAP_EMAIL', '').strip().lower()
-    bootstrap_password = (
-        os.getenv('LEGACY_BOOTSTRAP_PASSWORD', '').strip()
-        or os.getenv('LEGACY_BOOTSTRAP_CODE', '').strip()
-    )
-    if not bootstrap_email or not bootstrap_password:
+    bootstrap_code = os.getenv('LEGACY_BOOTSTRAP_CODE', '').strip()
+    if not bootstrap_email or not bootstrap_code:
         return
-    bootstrap_discount_code = normalize_discount_code(
-        os.getenv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
-    ) or generate_discount_code(bootstrap_email)
     with members_lock:
         members = load_members()
         for member in members:
             if member.get('email', '').lower() == bootstrap_email:
                 return
-        while discount_code_taken(bootstrap_discount_code):
-            bootstrap_discount_code = generate_discount_code(bootstrap_email)
         members.append({
             'email': bootstrap_email,
-            'password_hash': hash_password(bootstrap_password),
-            'discount_code': bootstrap_discount_code,
+            'code_hash': hash_member_code(bootstrap_code),
             'saved_tickets': [],
             'joined_at': datetime.now(timezone.utc).isoformat(),
         })
@@ -242,36 +178,11 @@ def get_legacy_member(email):
     return None
 
 
-def verify_legacy_login(email, password):
+def verify_legacy_login(email, code):
     member = get_legacy_member(email)
     if not member:
         return False
-    if member.get('password_hash'):
-        return verify_password(password, member['password_hash'])
-    if member.get('code_hash'):
-        return member.get('code_hash') == hash_member_code(password)
-    return False
-
-
-def member_has_past_purchases(member):
-    if not member:
-        return False
-    email = member.get('email', '').strip().lower()
-    if email:
-        for ticket in load_tickets():
-            if ticket.get('email', '').lower() == email:
-                return True
-    for ticket_id in member.get('saved_tickets', []):
-        if get_ticket_record(ticket_id):
-            return True
-    return False
-
-
-def member_discount_active():
-    if not is_legacy_member_logged_in():
-        return False
-    member = get_logged_in_member()
-    return bool(member and member_has_past_purchases(member))
+    return member.get('code_hash') == hash_member_code(code)
 
 
 def is_legacy_member_logged_in():
@@ -290,81 +201,50 @@ def bundle_discount_applies(quantity):
     return quantity >= bundle_min
 
 
-def vip_bundle_applies(quantity):
-    return quantity >= vip_bundle_min
-
-
-def vip_bundle_unit_cents():
-    return vip_bundle_total_cents // vip_bundle_min
-
-
-def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
+def calculate_total_cents(ticket_type, quantity):
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    candidates = [base]
-    if ticket_type == 'vip' and vip_bundle_applies(quantity):
-        candidates.append(vip_bundle_unit_cents())
-    elif bundle_discount_applies(quantity) and ticket_type == 'general':
-        candidates.append(int(base * (1 - bundle_discount)))
-    if apply_member_discount and member_discount > 0:
-        candidates.append(int(base * (1 - member_discount)))
-    return min(candidates)
+    if ticket_type == 'vip' and quantity >= vip_bundle_min:
+        additional = quantity - vip_bundle_min
+        additional_unit = int(base * (1 - vip_additional_discount))
+        return vip_bundle_total_cents + additional * additional_unit
+    unit_price = base
+    if ticket_type == 'general' and bundle_discount_applies(quantity):
+        unit_price = int(base * (1 - bundle_discount))
+    return unit_price * quantity
 
 
-def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
-    base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    unit_price = calculate_unit_price(ticket_type, quantity, apply_member_discount)
-    at_ga_bundle = bundle_discount_applies(quantity)
-    at_vip_bundle = ticket_type == 'vip' and vip_bundle_applies(quantity)
-    member_price = int(base * (1 - member_discount)) if apply_member_discount and member_discount > 0 else None
-    vip_bundle_price = vip_bundle_unit_cents() if at_vip_bundle else None
-    bundle_price = int(base * (1 - bundle_discount)) if ticket_type == 'general' and at_ga_bundle else None
+def calculate_unit_price(ticket_type, quantity):
+    if quantity < 1:
+        quantity = 1
+    return calculate_total_cents(ticket_type, quantity) // quantity
+
+
+def pricing_breakdown(ticket_type, quantity):
+    base = TICKET_TYPES[ticket_type]['price_cents']
+    total_cents = calculate_total_cents(ticket_type, quantity)
+    unit_price = total_cents // quantity
+    base_total_cents = base * quantity
+    vip_bundle_applied = ticket_type == 'vip' and quantity >= vip_bundle_min
+    bundle_discount_applied = (
+        ticket_type == 'general'
+        and bundle_discount_applies(quantity)
+        and unit_price < base
+    )
     return {
-        'base_unit_price_cents': base,
+        'ticket_type': ticket_type,
+        'quantity': quantity,
         'unit_price_cents': unit_price,
-        'vip_discount_applied': vip_bundle_price is not None and unit_price == vip_bundle_price,
-        'bundle_discount_applied': bundle_price is not None and unit_price == bundle_price,
-        'member_discount_applied': member_price is not None and unit_price == member_price,
-        'vip_discount_percent': int(vip_discount * 100),
-        'bundle_discount_percent': int(bundle_discount * 100),
-        'member_discount_percent': int(member_discount * 100),
+        'total_cents': total_cents,
+        'base_total_cents': base_total_cents,
+        'base_unit_price_cents': base,
+        'vip_bundle_applied': vip_bundle_applied,
+        'bundle_discount_applied': bundle_discount_applied,
+        'legacy_discount_applied': bundle_discount_applied or vip_bundle_applied,
         'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
         'vip_bundle_min': vip_bundle_min,
         'vip_bundle_total_cents': vip_bundle_total_cents,
-    }
-
-
-def verify_auth_enabled():
-    return bool(verify_login_email and verify_login_password)
-
-
-def is_verify_authenticated():
-    return session.get('verify_authenticated') is True
-
-
-def ensure_verify_access():
-    if not verify_auth_enabled() or is_verify_authenticated():
-        return None
-    return redirect(url_for('verify_login', next=request.path))
-
-
-def lookup_ticket(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return None
-    record = get_ticket_record(normalized)
-    if not record:
-        return None
-    quantity = int(record.get('quantity') or 1)
-    display_id = record.get('ticket_id', normalized)
-    meta = ticket_result_meta(record)
-    scanned = bool(normalized in used_tickets or record.get('scanned_at'))
-    return {
-        'ticket_id': display_id,
-        'quantity': quantity,
-        'scanned': scanned,
-        'email': record.get('email'),
-        'purchased_at': record.get('purchased_at'),
-        **meta,
+        'vip_additional_discount_percent': int(vip_additional_discount * 100),
     }
 
 
@@ -431,22 +311,17 @@ def get_ticket_record(ticket_id):
 def mark_ticket_scanned(ticket_id):
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
-        return
+        return False
     with tickets_lock:
         tickets = load_tickets()
         for ticket in tickets:
             if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
+                if ticket.get('scanned_at'):
+                    return False
                 ticket['scanned_at'] = datetime.now(timezone.utc).isoformat()
                 save_tickets(tickets)
-                return
-
-
-def init_used_tickets():
-    for ticket in load_tickets():
-        if ticket.get('scanned_at'):
-            normalized = normalize_ticket_id(ticket.get('ticket_id'))
-            if normalized:
-                used_tickets.add(normalized)
+                return True
+    return False
 
 
 def require_admin():
@@ -586,7 +461,6 @@ def build_wallet_pass(ticket_id, quantity):
     return output.getvalue()
 
 
-init_used_tickets()
 bootstrap_legacy_members()
 
 
@@ -611,11 +485,12 @@ def check_ticket(ticket_id):
     display_id = record.get('ticket_id', normalized)
     meta = ticket_result_meta(record)
 
-    if normalized in used_tickets or record.get('scanned_at'):
+    if record.get('scanned_at'):
         return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
-    used_tickets.add(normalized)
-    mark_ticket_scanned(normalized)
+    if not mark_ticket_scanned(normalized):
+        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
     return {'status': 'accepted', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
 
@@ -632,14 +507,14 @@ def parse_scanned_ticket(raw):
     try:
         data = json.loads(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
-            return str(data['ticket_id']).upper()
+            return normalize_ticket_id(data['ticket_id'])
     except json.JSONDecodeError:
         pass
 
     try:
         data = ast.literal_eval(raw)
         if isinstance(data, dict) and data.get('ticket_id'):
-            return str(data['ticket_id']).upper()
+            return normalize_ticket_id(data['ticket_id'])
     except (ValueError, SyntaxError):
         pass
 
@@ -719,24 +594,14 @@ def home():
 @app.route('/api/member-status')
 def member_status():
     legacy_member = is_legacy_member_logged_in()
-    member = get_logged_in_member()
-    discount_code = None
-    discount_eligible = False
-    if member:
-        discount_eligible = member_has_past_purchases(member)
-        if discount_eligible:
-            discount_code = ensure_member_discount_code(member)
     return jsonify({
         'logged_in': legacy_member,
         'email': session.get('legacy_member_email'),
-        'discount_code': discount_code,
-        'member_discount_eligible': discount_eligible,
-        'member_discount_percent': int(member_discount * 100),
         'bundle_min': bundle_min,
         'bundle_discount_percent': int(bundle_discount * 100),
-        'vip_discount_percent': int(vip_discount * 100),
         'vip_bundle_min': vip_bundle_min,
         'vip_bundle_total_cents': vip_bundle_total_cents,
+        'vip_additional_discount_percent': int(vip_additional_discount * 100),
         'ticket_types': {
             key: {
                 'name': meta['name'],
@@ -754,29 +619,7 @@ def pricing():
     quantity = max(1, int(request.args.get('quantity', 1)))
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
-    apply_member_discount = member_discount_active()
-    breakdown = pricing_breakdown(ticket_type, quantity, apply_member_discount)
-    unit_price = breakdown['unit_price_cents']
-    base_price = breakdown['base_unit_price_cents']
-    discount_applied = unit_price < base_price
-    return jsonify({
-        'ticket_type': ticket_type,
-        'quantity': quantity,
-        'unit_price_cents': unit_price,
-        'total_cents': unit_price * quantity,
-        'base_total_cents': base_price * quantity,
-        'base_unit_price_cents': base_price,
-        'bundle_discount_applied': breakdown['bundle_discount_applied'],
-        'vip_discount_applied': breakdown['vip_discount_applied'],
-        'member_discount_applied': breakdown['member_discount_applied'],
-        'legacy_discount_applied': discount_applied,
-        'bundle_min': breakdown['bundle_min'],
-        'bundle_discount_percent': breakdown['bundle_discount_percent'],
-        'vip_discount_percent': breakdown['vip_discount_percent'],
-        'vip_bundle_min': breakdown['vip_bundle_min'],
-        'vip_bundle_total_cents': breakdown['vip_bundle_total_cents'],
-        'member_discount_percent': breakdown['member_discount_percent'],
-    })
+    return jsonify(pricing_breakdown(ticket_type, quantity))
 
 
 @app.route('/create-checkout-session', methods=['POST'])
@@ -789,18 +632,14 @@ def create_checkout_session():
             ticket_type = 'general'
 
         legacy_member = is_legacy_member_logged_in()
-        breakdown = pricing_breakdown(ticket_type, quantity, member_discount_active())
+        breakdown = pricing_breakdown(ticket_type, quantity)
         unit_price = breakdown['unit_price_cents']
         ticket_meta = TICKET_TYPES[ticket_type]
         description = ticket_meta['description']
-        if breakdown['member_discount_applied']:
-            member = get_logged_in_member()
-            code = member.get('discount_code') if member else ''
-            description += f' · {breakdown["member_discount_percent"]}% member code {code}'
-        elif breakdown['vip_discount_applied']:
+        if breakdown['vip_bundle_applied']:
             description += (
-                f' · VIP {breakdown["vip_bundle_min"]} for'
-                f' ${breakdown["vip_bundle_total_cents"] // 100}'
+                f' · VIP {vip_bundle_min} for ${vip_bundle_total_cents // 100}'
+                f' + {breakdown["vip_additional_discount_percent"]}% off each additional'
             )
         elif breakdown['bundle_discount_applied']:
             description += f' · {breakdown["bundle_discount_percent"]}% bundle discount ({quantity}+ tickets)'
@@ -824,7 +663,7 @@ def create_checkout_session():
             metadata={
                 'ticket_type': ticket_type,
                 'legacy_member': 'true' if legacy_member else 'false',
-                'legacy_discount': 'true' if bundle_discount_applies(quantity) else 'false',
+                'legacy_discount': 'true' if breakdown['legacy_discount_applied'] else 'false',
             },
             success_url=f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{base_url}/",
@@ -880,9 +719,6 @@ def success():
             member_email = session.get('legacy_member_email')
             if member_email:
                 add_saved_ticket_for_member(member_email, ticket_id)
-                purchased_member = get_legacy_member(member_email)
-                if purchased_member and member_has_past_purchases(purchased_member):
-                    ensure_member_discount_code(purchased_member)
 
         ticket_data = build_qr_image(ticket_id)
 
@@ -931,50 +767,14 @@ def download_wallet_pass(ticket_id):
 
 @app.route('/t/<ticket_id>')
 def show_ticket(ticket_id):
-    return redirect(url_for('view_ticket', ticket_id=ticket_id))
-
-
-@app.route('/ticket/<ticket_id>')
-def view_ticket(ticket_id):
-    ticket = lookup_ticket(ticket_id)
-    if not ticket:
-        return render_template('ticket_view.html', error='Ticket not found'), 404
-    ticket_data = build_qr_image(ticket['ticket_id'])
-    return render_template('ticket_view.html', ticket=ticket, ticket_data=ticket_data)
-
-
-@app.route('/verify/login', methods=['GET', 'POST'])
-def verify_login():
-    if not verify_auth_enabled():
-        return redirect(url_for('verify_ticket'))
-    if is_verify_authenticated():
-        return redirect(request.args.get('next') or url_for('verify_ticket'))
-
-    error = None
-    next_url = request.args.get('next', '')
-    if request.method == 'POST':
-        email = request.form.get('email', '').strip().lower()
-        password = request.form.get('password', '')
-        next_url = request.form.get('next') or next_url
-        if email == verify_login_email and password == verify_login_password:
-            session['verify_authenticated'] = True
-            return redirect(next_url or url_for('verify_ticket'))
-        error = 'Invalid email or password.'
-
-    return render_template('verify_login.html', error=error, next_url=next_url)
-
-
-@app.route('/verify/logout')
-def verify_logout():
-    session.pop('verify_authenticated', None)
-    return redirect(url_for('verify_login'))
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return render_template('success.html', error="Invalid ticket"), 404
+    return render_template('ticket.html', ticket_id=normalized)
 
 
 @app.route('/verify/t/<ticket_id>')
 def verify_ticket_native(ticket_id):
-    redirect_resp = ensure_verify_access()
-    if redirect_resp:
-        return redirect_resp
     result = check_ticket(ticket_id)
     return render_template('verify_result.html', **result)
 
@@ -982,8 +782,6 @@ def verify_ticket_native(ticket_id):
 @app.route('/verify', methods=['GET', 'POST'])
 def verify_ticket():
     if request.method == 'POST':
-        if verify_auth_enabled() and not is_verify_authenticated():
-            return jsonify({'error': 'Unauthorized'}), 401
         ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
         ticket_id = parse_scanned_ticket(ticket_data)
         if not ticket_id:
@@ -1003,10 +801,7 @@ def verify_ticket():
             return f"❌ Already used ({qty} {guest_word})"
         return "Invalid ticket"
 
-    redirect_resp = ensure_verify_access()
-    if redirect_resp:
-        return redirect_resp
-    return render_template('verify.html', verify_auth_enabled=verify_auth_enabled())
+    return render_template('verify.html')
 
 
 @app.route('/legacy', methods=['GET', 'POST'])
@@ -1023,102 +818,20 @@ def legacy_portal():
 
     if request.method == 'POST':
         action = request.form.get('action')
-        if action == 'register':
-            email = request.form.get('email', '').strip().lower()
-            password = request.form.get('password', '')
-            confirm_password = request.form.get('confirm_password', '')
-            next_url = request.form.get('next') or request.args.get('next', '')
-            if not email or not password:
-                error = 'Email and password are required.'
-            elif password != confirm_password:
-                error = 'Passwords do not match.'
-            elif len(password) < 8:
-                error = 'Password must be at least 8 characters.'
-            elif get_legacy_member(email):
-                error = 'An account with that email already exists.'
-            else:
-                with members_lock:
-                    members = load_members()
-                    members.append({
-                        'email': email,
-                        'password_hash': hash_password(password),
-                        'saved_tickets': [],
-                        'joined_at': datetime.now(timezone.utc).isoformat(),
-                    })
-                    save_members(members)
-                session['legacy_member_email'] = email
-                if next_url.startswith('/'):
-                    return redirect(next_url)
-                return redirect(url_for('legacy_portal'))
-            return render_template(
-                'legacy_portal.html',
-                error=error,
-                member=None,
-                saved_ticket_details=[],
-                bundle_min=bundle_min,
-                bundle_discount_percent=int(bundle_discount * 100),
-                member_discount_percent=int(member_discount * 100),
-                vip_bundle_min=vip_bundle_min,
-                vip_bundle_total_dollars=vip_bundle_total_cents // 100,
-                next_url=next_url,
-                active_tab='register',
-            )
         if action == 'login':
             email = request.form.get('email', '').strip().lower()
-            password = request.form.get('password', '')
-            next_url = request.form.get('next') or request.args.get('next', '')
-            if verify_legacy_login(email, password):
+            code = request.form.get('code', '').strip()
+            if verify_legacy_login(email, code):
                 session['legacy_member_email'] = email
-                if next_url.startswith('/'):
-                    return redirect(next_url)
                 return redirect(url_for('legacy_portal'))
             return render_template(
                 'legacy_portal.html',
-                error='Invalid email or password.',
+                error='Invalid email or member code.',
                 member=None,
                 saved_ticket_details=[],
                 bundle_min=bundle_min,
                 bundle_discount_percent=int(bundle_discount * 100),
-                member_discount_percent=int(member_discount * 100),
-                vip_bundle_min=vip_bundle_min,
-                vip_bundle_total_dollars=vip_bundle_total_cents // 100,
-                next_url=next_url,
-                active_tab='login',
             )
-        if action == 'set_discount_code' and member:
-            error = None
-            if not member_has_past_purchases(member):
-                error = 'Discount codes unlock after your first ticket purchase.'
-            else:
-                new_code = normalize_discount_code(request.form.get('discount_code', ''))
-                if not new_code or len(new_code.replace('-', '')) < 4:
-                    error = 'Discount code must be at least 4 characters (letters, numbers, hyphens).'
-                elif discount_code_taken(new_code, exclude_email=member['email']):
-                    error = 'That discount code is already taken.'
-                else:
-                    with members_lock:
-                        members = load_members()
-                        for stored in members:
-                            if stored.get('email', '').lower() == member['email'].lower():
-                                stored['discount_code'] = new_code
-                                save_members(members)
-                                break
-                    return redirect(url_for('legacy_portal'))
-            if error:
-                logged_in = get_logged_in_member()
-                return render_template(
-                    'legacy_portal.html',
-                    error=error,
-                    member=logged_in,
-                    saved_ticket_details=saved_ticket_details,
-                    has_past_purchases=member_has_past_purchases(logged_in),
-                    bundle_min=bundle_min,
-                    bundle_discount_percent=int(bundle_discount * 100),
-                    member_discount_percent=int(member_discount * 100),
-                    vip_bundle_min=vip_bundle_min,
-                vip_bundle_total_dollars=vip_bundle_total_cents // 100,
-                    next_url=request.form.get('next', ''),
-                )
         if action == 'logout':
             session.pop('legacy_member_email', None)
             return redirect(url_for('legacy_portal'))
@@ -1127,37 +840,19 @@ def legacy_portal():
             record = get_ticket_record(ticket_id)
             if record:
                 add_saved_ticket_for_member(member['email'], ticket_id)
-                refreshed = get_legacy_member(member['email'])
-                if refreshed and member_has_past_purchases(refreshed):
-                    ensure_member_discount_code(refreshed)
             return redirect(url_for('legacy_portal'))
         if action == 'remove_ticket' and member:
             ticket_id = request.form.get('ticket_id', '')
             remove_saved_ticket_for_member(member['email'], ticket_id)
             return redirect(url_for('legacy_portal'))
 
-    next_url = request.args.get('next', '')
-    logged_in_member = get_logged_in_member()
-    has_past_purchases = member_has_past_purchases(logged_in_member) if logged_in_member else False
-    if logged_in_member and has_past_purchases:
-        ensure_member_discount_code(logged_in_member)
-        logged_in_member = get_logged_in_member()
-    if logged_in_member and next_url.startswith('/'):
-        return redirect(next_url)
-
     return render_template(
         'legacy_portal.html',
-        member=logged_in_member,
-        saved_ticket_details=saved_ticket_details if logged_in_member else [],
-        has_past_purchases=has_past_purchases,
+        member=get_logged_in_member(),
+        saved_ticket_details=saved_ticket_details if member else [],
         bundle_min=bundle_min,
         bundle_discount_percent=int(bundle_discount * 100),
-        member_discount_percent=int(member_discount * 100),
-        vip_bundle_min=vip_bundle_min,
-        vip_bundle_total_dollars=vip_bundle_total_cents // 100,
         ticket_types=TICKET_TYPES,
-        next_url=next_url,
-        active_tab='login',
     )
 
 
