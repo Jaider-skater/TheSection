@@ -1,1 +1,1 @@
-LOAD_FROM_/tmp/push_app_payload.json
+PLACEHOLDER_WILL_REPLACE
