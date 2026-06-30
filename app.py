@@ -1,1 +1,1 @@
-@/tmp/push_app_content.txt
+LOAD_FROM_/tmp/cou_invoke.json
