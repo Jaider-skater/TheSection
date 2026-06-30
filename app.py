@@ -16,7 +16,7 @@ import hashlib
 import zipfile
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__,
             template_folder='website/templates',
@@ -214,15 +214,15 @@ def bootstrap_legacy_members():
         for member in members:
             if member.get('email', '').lower() == bootstrap_email:
                 return
-        bootstrap_code = normalize_discount_code(
+        bootstrap_discount_code = normalize_discount_code(
             os.getenv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
-        ) or normalize_discount_code(bootstrap_password) or generate_discount_code(bootstrap_email)
-        while discount_code_taken(bootstrap_code):
-            bootstrap_code = generate_discount_code(bootstrap_email)
+        ) or generate_discount_code(bootstrap_email)
+        while discount_code_taken(bootstrap_discount_code):
+            bootstrap_discount_code = generate_discount_code(bootstrap_email)
         members.append({
             'email': bootstrap_email,
-            'discount_code': bootstrap_code,
-            'code_hash': hash_member_code(bootstrap_code),
+            'password_hash': hash_password(bootstrap_password),
+            'discount_code': bootstrap_discount_code,
             'saved_tickets': [],
             'joined_at': datetime.now(timezone.utc).isoformat(),
         })
@@ -239,19 +239,69 @@ def get_legacy_member(email):
     return None
 
 
-def verify_legacy_login(email, member_code):
+def verify_legacy_login(email, password):
     member = get_legacy_member(email)
     if not member:
         return False
-    normalized = normalize_discount_code(member_code)
-    if not normalized:
-        return False
-    if member.get('discount_code'):
-        return normalize_discount_code(member.get('discount_code')) == normalized
-    if member.get('code_hash'):
-        return member.get('code_hash') == hash_member_code(member_code)
     if member.get('password_hash'):
-        return verify_password(member_code, member['password_hash'])
+        return verify_password(password, member['password_hash'])
+    if member.get('code_hash'):
+        return member.get('code_hash') == hash_member_code(password)
+    return False
+
+
+PASSWORD_RESET_HOURS = int(os.getenv('PASSWORD_RESET_HOURS', '1'))
+
+
+def hash_reset_token(token):
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def set_password_reset_token(email):
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_HOURS)
+    normalized = email.strip().lower()
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').lower() == normalized:
+                member['password_reset_token'] = hash_reset_token(token)
+                member['password_reset_expires'] = expires.isoformat()
+                save_members(members)
+                return token
+    return None
+
+
+def verify_password_reset_token(email, token):
+    member = get_legacy_member(email)
+    if not member or not token or not member.get('password_reset_token'):
+        return False
+    expires_raw = member.get('password_reset_expires')
+    if not expires_raw:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    if datetime.now(timezone.utc) > expires:
+        return False
+    return member['password_reset_token'] == hash_reset_token(token)
+
+
+def update_member_password(email, new_password):
+    normalized = email.strip().lower()
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').lower() == normalized:
+                member['password_hash'] = hash_password(new_password)
+                member.pop('code_hash', None)
+                member.pop('password_reset_token', None)
+                member.pop('password_reset_expires', None)
+                save_members(members)
+                return True
     return False
 
 
@@ -725,6 +775,34 @@ def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket
     thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
     return result['sent']
 
+
+def send_password_reset_email(customer_email, token):
+    reset_url = (
+        f"{base_url}/legacy/reset-password"
+        f"?email={customer_email}&token={token}"
+    )
+    with app.app_context():
+        try:
+            msg = Message(
+                'Reset your The Section member password',
+                sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            msg.body = (
+                'You requested a password reset for your The Section member account.\n\n'
+                f'Open this link to choose a new password (expires in {PASSWORD_RESET_HOURS} hour'
+                f'{"s" if PASSWORD_RESET_HOURS != 1 else ""}):\n'
+                f'{reset_url}\n\n'
+                'If you did not request this, you can ignore this email.\n'
+            )
+            mail.send(msg)
+            print(f"Password reset email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Password reset email failed for {customer_email}:", str(e))
+            return False
+
+
 @app.route('/')
 def home():
     return render_template('home.html')
@@ -841,7 +919,7 @@ def checkout_intent():
 @app.route('/checkout/resume')
 def checkout_resume():
     if not is_legacy_member_logged_in():
-        return redirect(url_for('member_portal', next='/checkout/resume'))
+        return redirect(url_for('legacy_portal', next='/checkout/resume'))
     intent = session.pop('checkout_intent', None)
     if not intent:
         return redirect('/?open_tickets=1')
@@ -1016,7 +1094,7 @@ def verify_ticket():
     return render_template('verify.html', admission_totals=get_admission_totals())
 
 
-def portal_context(member=None, saved_ticket_details=None, error=None, next_url='', active_tab='login'):
+def portal_context(member=None, saved_ticket_details=None, error=None, success=None, next_url='', active_tab='login'):
     logged_in = member or get_logged_in_member()
     if logged_in:
         sync_member_tickets_from_email(logged_in)
@@ -1037,6 +1115,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, next_url=
                 })
     return {
         'error': error,
+        'success': success,
         'member': logged_in,
         'saved_ticket_details': saved_ticket_details or [],
         'has_past_purchases': member_has_past_purchases(logged_in) if logged_in else False,
@@ -1050,12 +1129,50 @@ def portal_context(member=None, saved_ticket_details=None, error=None, next_url=
     }
 
 
+@app.route('/legacy/reset-password', methods=['GET', 'POST'])
+def legacy_reset_password():
+    email = (
+        request.form.get('email', '').strip().lower()
+        or request.args.get('email', '').strip().lower()
+    )
+    token = request.form.get('token', '') or request.args.get('token', '')
+    error = None
+
+    if not email or not token:
+        return redirect(url_for('legacy_portal'))
+
+    token_valid = verify_password_reset_token(email, token)
+    if request.method == 'POST':
+        new_password = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+        if not token_valid:
+            error = 'This reset link is invalid or has expired. Request a new one from the member portal.'
+        elif new_password != confirm_password:
+            error = 'Passwords do not match.'
+        elif len(new_password) < 8:
+            error = 'Password must be at least 8 characters.'
+        elif update_member_password(email, new_password):
+            session['legacy_member_email'] = email
+            return redirect(url_for('legacy_portal'))
+        else:
+            error = 'Could not update password. Try again or contact support.'
+
+    return render_template(
+        'legacy_reset_password.html',
+        email=email,
+        token=token,
+        token_valid=token_valid,
+        error=error,
+        success=None,
+        reset_hours=PASSWORD_RESET_HOURS,
+    )
+
+
 @app.route('/members', methods=['GET', 'POST'])
 @app.route('/legacy', methods=['GET', 'POST'])
-def member_portal():
+def legacy_portal():
     next_url = request.args.get('next', '')
     member = get_logged_in_member()
-    saved_ticket_details = []
 
     if request.method == 'POST':
         action = request.form.get('action')
@@ -1063,16 +1180,14 @@ def member_portal():
 
         if action == 'register':
             email = request.form.get('email', '').strip().lower()
-            member_code = normalize_discount_code(request.form.get('member_code', ''))
-            confirm_code = normalize_discount_code(request.form.get('confirm_member_code', ''))
-            if not email or not member_code:
-                error = 'Email and member code are required.'
-            elif member_code != confirm_code:
-                error = 'Member codes do not match.'
-            elif len(member_code.replace('-', '')) < 4:
-                error = 'Member code must be at least 4 characters (letters, numbers, hyphens).'
-            elif discount_code_taken(member_code):
-                error = 'That member code is already taken.'
+            password = request.form.get('password', '')
+            confirm_password = request.form.get('confirm_password', '')
+            if not email or not password:
+                error = 'Email and password are required.'
+            elif password != confirm_password:
+                error = 'Passwords do not match.'
+            elif len(password) < 8:
+                error = 'Password must be at least 8 characters.'
             elif get_legacy_member(email):
                 error = 'An account with that email already exists.'
             else:
@@ -1080,8 +1195,7 @@ def member_portal():
                     members = load_members()
                     members.append({
                         'email': email,
-                        'discount_code': member_code,
-                        'code_hash': hash_member_code(member_code),
+                        'password_hash': hash_password(password),
                         'saved_tickets': [],
                         'joined_at': datetime.now(timezone.utc).isoformat(),
                     })
@@ -1089,7 +1203,7 @@ def member_portal():
                 session['legacy_member_email'] = email
                 if next_url.startswith('/'):
                     return redirect(next_url)
-                return redirect(url_for('member_portal'))
+                return redirect(url_for('legacy_portal'))
             return render_template(
                 'legacy_portal.html',
                 **portal_context(error=error, next_url=next_url, active_tab='register'),
@@ -1097,24 +1211,46 @@ def member_portal():
 
         if action == 'login':
             email = request.form.get('email', '').strip().lower()
-            member_code = request.form.get('member_code', '')
-            if verify_legacy_login(email, member_code):
+            password = request.form.get('password', '')
+            if verify_legacy_login(email, password):
                 session['legacy_member_email'] = email
                 if next_url.startswith('/'):
                     return redirect(next_url)
-                return redirect(url_for('member_portal'))
+                return redirect(url_for('legacy_portal'))
             return render_template(
                 'legacy_portal.html',
                 **portal_context(
-                    error='Invalid email or member code.',
+                    error='Invalid email or password.',
                     next_url=next_url,
                     active_tab='login',
                 ),
             )
 
+        if action == 'forgot_password':
+            email = request.form.get('email', '').strip().lower()
+            if get_legacy_member(email):
+                token = set_password_reset_token(email)
+                if token:
+                    threading.Thread(
+                        target=send_password_reset_email,
+                        args=(email, token),
+                        daemon=True,
+                    ).start()
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(
+                    success=(
+                        'If an account exists for that email, we sent a password reset link. '
+                        'Check your inbox and spam folder.'
+                    ),
+                    next_url=next_url,
+                    active_tab='forgot',
+                ),
+            )
+
         if action == 'logout':
             session.pop('legacy_member_email', None)
-            return redirect(url_for('member_portal'))
+            return redirect(url_for('legacy_portal'))
 
         if action == 'save_ticket' and member:
             ticket_id = request.form.get('ticket_id', '')
@@ -1124,12 +1260,12 @@ def member_portal():
                 refreshed = get_legacy_member(member['email'])
                 if refreshed and member_has_past_purchases(refreshed):
                     ensure_member_discount_code(refreshed)
-            return redirect(url_for('member_portal'))
+            return redirect(url_for('legacy_portal'))
 
         if action == 'remove_ticket' and member:
             ticket_id = request.form.get('ticket_id', '')
             remove_saved_ticket_for_member(member['email'], ticket_id)
-            return redirect(url_for('member_portal'))
+            return redirect(url_for('legacy_portal'))
 
     return render_template('legacy_portal.html', **portal_context(next_url=next_url))
 
