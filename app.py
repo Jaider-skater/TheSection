@@ -1,1 +1,1 @@
-LOAD_FROM_/tmp/cou_invoke.json
+LOAD_FROM_/tmp/cou_v2.json
