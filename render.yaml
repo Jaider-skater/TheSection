@@ -5,6 +5,10 @@ services:
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    disk:
+      name: thesection-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
     envVars:
       - key: BASE_URL
         value: https://thesection.onrender.com
@@ -22,3 +26,7 @@ services:
         sync: false
       - key: MAIL_DEFAULT_SENDER
         value: hallieworkshop@gmail.com
+      - key: LEGACY_BOOTSTRAP_EMAIL
+        value: jaideclemans@ymail.com
+      - key: LEGACY_BOOTSTRAP_PASSWORD
+        sync: false
