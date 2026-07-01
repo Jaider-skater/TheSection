@@ -600,6 +600,13 @@ def build_qr_image(ticket_id):
     return base64.b64encode(build_qr_png_bytes(ticket_id)).decode()
 
 
+def ticket_display_url(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return None
+    return f"{base_url}/t/{normalized}"
+
+
 def make_pass_icon_png():
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (87, 87), color=(24, 24, 27))
@@ -804,7 +811,7 @@ def mark_email_sent(session_id):
 
 
 def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    verify_url = f"{base_url}/verify/t/{ticket_id}"
+    view_url = ticket_display_url(ticket_id)
     type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
     with app.app_context():
         try:
@@ -821,7 +828,7 @@ def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_t
                 f"Guests: {quantity}\n"
                 f"{access_line}\n"
                 f"Show the attached QR code at the door.\n"
-                f"Or open this link on your phone:\n{verify_url}\n"
+                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
             )
             msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
             mail.send(msg)
@@ -1171,8 +1178,21 @@ def download_wallet_pass(ticket_id):
 def show_ticket(ticket_id):
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
-        return render_template('success.html', error="Invalid ticket"), 404
-    return render_template('ticket.html', ticket_id=normalized)
+        return render_template('ticket_view.html', error='Invalid ticket'), 404
+    record = get_ticket_record(normalized)
+    if not record:
+        return render_template('ticket_view.html', error='Ticket not found'), 404
+    meta = ticket_result_meta(record)
+    return render_template(
+        'ticket_view.html',
+        ticket={
+            'ticket_id': record.get('ticket_id', normalized),
+            'quantity': int(record.get('quantity') or 1),
+            'scanned': bool(record.get('scanned_at')),
+            **meta,
+        },
+        ticket_data=build_qr_image(normalized),
+    )
 
 
 @app.route('/api/admission-totals')
@@ -1232,7 +1252,8 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
                     'quantity': record.get('quantity', 1),
                     'ticket_type': record.get('ticket_type', 'general'),
                     'purchased_at': record.get('purchased_at', ''),
-                    'view_url': record.get('verify_url') or f"{base_url}/t/{ticket_id}",
+                    'scanned': bool(record.get('scanned_at')),
+                    'view_url': ticket_display_url(ticket_id),
                 })
     return {
         'error': error,
