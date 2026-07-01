@@ -23,6 +23,6 @@ services:
       - key: MAIL_DEFAULT_SENDER
         value: hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_EMAIL
-        value: jaideclemans@ymail.com
+        value: hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD
         sync: false
