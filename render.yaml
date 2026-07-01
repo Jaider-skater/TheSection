@@ -26,6 +26,10 @@ services:
         sync: false
       - key: MAIL_DEFAULT_SENDER
         value: hallieworkshop@gmail.com
+      - key: MEMBERS_FILE
+        value: /opt/render/project/src/data/legacy_members.json
+      - key: TICKETS_FILE
+        value: /opt/render/project/src/data/tickets.json
       - key: LEGACY_BOOTSTRAP_EMAIL
         value: jaideclemans@ymail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD
