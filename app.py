@@ -222,12 +222,19 @@ def bootstrap_legacy_members():
         os.getenv('LEGACY_BOOTSTRAP_PASSWORD', '').strip()
         or os.getenv('LEGACY_BOOTSTRAP_CODE', '').strip()
     )
-    if not bootstrap_email or not bootstrap_password:
+    if not bootstrap_email:
+        return
+    if not bootstrap_password:
+        print(
+            'LEGACY_BOOTSTRAP_EMAIL is set but LEGACY_BOOTSTRAP_PASSWORD is missing; '
+            'member accounts will not auto-recreate after deploys.'
+        )
         return
     with members_lock:
         members = load_members()
         for member in members:
             if member.get('email', '').lower() == bootstrap_email:
+                print(f'Bootstrap member already present: {bootstrap_email}')
                 return
         bootstrap_discount_code = normalize_discount_code(
             os.getenv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
@@ -242,6 +249,19 @@ def bootstrap_legacy_members():
             'joined_at': datetime.now(timezone.utc).isoformat(),
         })
         save_members(members)
+        print(f'Bootstrap member created after deploy: {bootstrap_email}')
+
+
+def log_storage_state():
+    members = load_members()
+    print(
+        'Storage state:',
+        f'members_file={members_file}',
+        f'exists={os.path.exists(members_file)}',
+        f'member_count={len(members)}',
+        f'tickets_file={tickets_file}',
+        f'tickets_exists={os.path.exists(tickets_file)}',
+    )
 
 
 def get_legacy_member(email):
@@ -652,6 +672,7 @@ def build_wallet_pass(ticket_id, quantity):
 
 
 bootstrap_legacy_members()
+log_storage_state()
 
 
 def extract_ticket_id_from_url(raw):
