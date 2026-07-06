@@ -8,6 +8,7 @@ let memberStatus = {
     vip_bundle_total_cents: 10000,
 };
 let pricing = null;
+let memberDiscountApplied = false;
 
 function formatDollars(cents) {
     return '$' + (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
@@ -31,17 +32,50 @@ async function loadMemberStatus() {
     }
 }
 
+function updateDiscountCodeButton() {
+    const discountBtn = document.getElementById('member-discount-code-btn');
+    const codeLabel = document.getElementById('member-discount-code-label');
+    const codeHint = document.getElementById('member-discount-code-hint');
+    if (!discountBtn || !codeLabel || !codeHint) return;
+
+    if (memberStatus.logged_in && memberStatus.member_discount_eligible && memberStatus.discount_code) {
+        discountBtn.classList.remove('hidden');
+        codeLabel.textContent = memberStatus.discount_code;
+        if (memberDiscountApplied) {
+            discountBtn.classList.add('border-white', 'bg-zinc-950');
+            discountBtn.classList.remove('border-zinc-700');
+            codeHint.textContent = `${memberStatus.member_discount_percent}% off applied to your total`;
+        } else {
+            discountBtn.classList.remove('border-white', 'bg-zinc-950');
+            discountBtn.classList.add('border-zinc-700');
+            codeHint.textContent = `Tap to apply ${memberStatus.member_discount_percent}% off to your total`;
+        }
+        return;
+    }
+
+    discountBtn.classList.add('hidden');
+    memberDiscountApplied = false;
+}
+
+function toggleMemberDiscount() {
+    if (!memberStatus.member_discount_eligible || !memberStatus.discount_code) return;
+    memberDiscountApplied = !memberDiscountApplied;
+    updateDiscountCodeButton();
+    refreshPricing();
+}
+
 function updateMemberBanner() {
     const signedInBanner = document.getElementById('member-banner');
     const signInPrompt = document.getElementById('sign-in-prompt');
 
     const discountLine = document.getElementById('member-discount-line');
+    const discountBtn = document.getElementById('member-discount-code-btn');
     if (memberStatus.logged_in) {
         if (signedInBanner) signedInBanner.classList.remove('hidden');
         if (signInPrompt) signInPrompt.classList.add('hidden');
         if (discountLine) {
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                discountLine.textContent = `Code ${memberStatus.discount_code} · ${memberStatus.member_discount_percent}% off applied`;
+                discountLine.textContent = 'Tap your code below to apply your member discount to this order.';
             } else {
                 const bulkPct = memberStatus.bundle_discount_percent;
                 const bulkMin = memberStatus.bundle_min;
@@ -49,9 +83,14 @@ function updateMemberBanner() {
                 discountLine.textContent = `Bulk pricing: ${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}. Member discount unlocks after your first purchase.`;
             }
         }
+        updateDiscountCodeButton();
+        if (discountBtn) {
+            discountBtn.onclick = toggleMemberDiscount;
+        }
     } else {
         if (signedInBanner) signedInBanner.classList.add('hidden');
         if (signInPrompt) signInPrompt.classList.remove('hidden');
+        memberDiscountApplied = false;
     }
 }
 
@@ -93,7 +132,11 @@ function updateTypeButtons() {
 
 async function refreshPricing() {
     try {
-        const response = await fetch(`/api/pricing?ticket_type=${ticketType}&quantity=${quantity}`);
+        let url = `/api/pricing?ticket_type=${ticketType}&quantity=${quantity}`;
+        if (memberDiscountApplied) {
+            url += '&apply_member_discount=1';
+        }
+        const response = await fetch(url);
         pricing = await response.json();
         updateModalQuantity();
     } catch (err) {
@@ -117,7 +160,7 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.member_discount_applied || pricing.vip_discount_applied || pricing.bundle_discount_applied;
+        const discountApplied = pricing.member_discount_applied || pricing.vip_bundle_applied || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -136,11 +179,21 @@ function updateModalQuantity() {
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
                 discountNote.textContent = `${pricing.member_discount_percent}% member discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (pricing.vip_discount_applied) {
+            } else if (pricing.vip_bundle_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
-                discountNote.textContent = `VIP discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+                discountNote.textContent = `VIP bundle — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (
+                memberStatus.logged_in
+                && memberStatus.member_discount_eligible
+                && memberStatus.discount_code
+                && !memberDiscountApplied
+            ) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.remove('text-white', 'text-emerald-300');
+                discountNote.classList.add('text-zinc-400');
+                discountNote.textContent = `Tap ${memberStatus.discount_code} above to apply ${memberStatus.member_discount_percent}% off`;
             } else if (pricing.bundle_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-white');
@@ -189,6 +242,7 @@ async function redirectToLoginForCheckout() {
             body: JSON.stringify({
                 quantity: quantity,
                 ticket_type: ticketType,
+                apply_member_discount: memberDiscountApplied,
             }),
         });
     } catch (err) {
@@ -210,6 +264,7 @@ async function createCheckoutSession() {
             body: JSON.stringify({
                 quantity: quantity,
                 ticket_type: ticketType,
+                apply_member_discount: memberDiscountApplied,
             }),
         });
 
