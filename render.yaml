@@ -34,3 +34,9 @@ services:
         value: hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD
         sync: false
+      - key: BUNDLE_DISCOUNT
+        value: "0.10"
+      - key: VIP_ADDITIONAL_DISCOUNT
+        value: "0.10"
+      - key: VIP_BUNDLE_TOTAL_CENTS
+        value: "11250"
