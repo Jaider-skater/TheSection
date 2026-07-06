@@ -32,6 +32,28 @@ async function loadMemberStatus() {
     }
 }
 
+function memberCodeHintText() {
+    const memberPct = memberStatus.member_discount_percent;
+    if (!memberDiscountApplied) {
+        if (pricing && (pricing.bundle_discount_applied || pricing.vip_bundle_applied)) {
+            return `Bulk pricing active — tap to try ${memberPct}% member discount`;
+        }
+        return `Tap to apply ${memberPct}% member discount`;
+    }
+    if (pricing) {
+        if (pricing.member_discount_applied) {
+            return `${memberPct}% member discount applied`;
+        }
+        if (pricing.bundle_discount_applied) {
+            return `${pricing.bundle_discount_percent}% bulk pricing applied — best price`;
+        }
+        if (pricing.vip_bundle_applied) {
+            return 'VIP bundle pricing applied — best price';
+        }
+    }
+    return `${memberPct}% member discount applied`;
+}
+
 function updateDiscountCodeButton() {
     const discountBtn = document.getElementById('member-discount-code-btn');
     const codeLabel = document.getElementById('member-discount-code-label');
@@ -44,12 +66,11 @@ function updateDiscountCodeButton() {
         if (memberDiscountApplied) {
             discountBtn.classList.add('border-white', 'bg-zinc-950');
             discountBtn.classList.remove('border-zinc-700');
-            codeHint.textContent = `${memberStatus.member_discount_percent}% off applied to your total`;
         } else {
             discountBtn.classList.remove('border-white', 'bg-zinc-950');
             discountBtn.classList.add('border-zinc-700');
-            codeHint.textContent = `Tap to apply ${memberStatus.member_discount_percent}% off to your total`;
         }
+        codeHint.textContent = memberCodeHintText();
         return;
     }
 
@@ -75,7 +96,10 @@ function updateMemberBanner() {
         if (signInPrompt) signInPrompt.classList.add('hidden');
         if (discountLine) {
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                discountLine.textContent = 'Tap your code below to apply your member discount to this order.';
+                const bulkPct = memberStatus.bundle_discount_percent;
+                const bulkMin = memberStatus.bundle_min;
+                const vipBundleLabel = formatVipBundleLabel();
+                discountLine.textContent = `Bulk pricing (${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}) applies automatically. Tap your code below to add your member discount — best price wins.`;
             } else {
                 const bulkPct = memberStatus.bundle_discount_percent;
                 const bulkMin = memberStatus.bundle_min;
@@ -139,10 +163,12 @@ async function refreshPricing() {
         const response = await fetch(url);
         pricing = await response.json();
         updateModalQuantity();
+        updateDiscountCodeButton();
     } catch (err) {
         console.error('Failed to load pricing', err);
         pricing = null;
         updateModalQuantity();
+        updateDiscountCodeButton();
     }
 }
 
@@ -184,6 +210,11 @@ function updateModalQuantity() {
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
                 discountNote.textContent = `VIP bundle — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+            } else if (pricing.bundle_discount_applied) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-white');
+                discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
+                discountNote.textContent = `${pricing.bundle_discount_percent}% bulk pricing — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (
                 memberStatus.logged_in
                 && memberStatus.member_discount_eligible
@@ -194,11 +225,6 @@ function updateModalQuantity() {
                 discountNote.classList.remove('text-white', 'text-emerald-300');
                 discountNote.classList.add('text-zinc-400');
                 discountNote.textContent = `Tap ${memberStatus.discount_code} above to apply ${memberStatus.member_discount_percent}% off`;
-            } else if (pricing.bundle_discount_applied) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.add('text-white');
-                discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
-                discountNote.textContent = `${pricing.bundle_discount_percent}% off applied — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
             } else if (ticketType === 'vip' && quantity < (pricing.vip_bundle_min || 5)) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-white', 'text-emerald-300');
