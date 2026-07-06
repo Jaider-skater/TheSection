@@ -3,9 +3,9 @@ let ticketType = 'general';
 let memberStatus = {
     logged_in: false,
     bundle_min: 4,
-    bundle_discount_percent: 25,
+    bundle_discount_percent: 10,
     vip_bundle_min: 5,
-    vip_bundle_total_cents: 10000,
+    vip_bundle_total_cents: 11250,
 };
 let pricing = null;
 let memberDiscountApplied = false;
@@ -34,22 +34,19 @@ async function loadMemberStatus() {
 
 function memberCodeHintText() {
     const memberPct = memberStatus.member_discount_percent;
+    const bulkPct = memberStatus.bundle_discount_percent;
     if (!memberDiscountApplied) {
         if (pricing && (pricing.bundle_discount_applied || pricing.vip_bundle_applied)) {
-            return `Bulk pricing active — tap to try ${memberPct}% member discount`;
+            return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
         }
-        return `Tap to apply ${memberPct}% member discount`;
+        return `Tap to add ${memberPct}% member discount`;
     }
-    if (pricing) {
-        if (pricing.member_discount_applied) {
-            return `${memberPct}% member discount applied`;
-        }
-        if (pricing.bundle_discount_applied) {
-            return `${pricing.bundle_discount_percent}% bulk pricing applied — best price`;
-        }
-        if (pricing.vip_bundle_applied) {
-            return 'VIP bundle pricing applied — best price';
-        }
+    if (pricing && pricing.stacked_discount_applied) {
+        const totalPct = pricing.combined_discount_percent || (bulkPct + memberPct);
+        return `${totalPct}% off (${bulkPct}% bulk + ${memberPct}% member)`;
+    }
+    if (pricing && pricing.member_discount_applied) {
+        return `${memberPct}% member discount applied`;
     }
     return `${memberPct}% member discount applied`;
 }
@@ -99,7 +96,7 @@ function updateMemberBanner() {
                 const bulkPct = memberStatus.bundle_discount_percent;
                 const bulkMin = memberStatus.bundle_min;
                 const vipBundleLabel = formatVipBundleLabel();
-                discountLine.textContent = `Bulk pricing (${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}) applies automatically. Tap your code below to add your member discount — best price wins.`;
+                discountLine.textContent = `Bulk pricing (${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
             } else {
                 const bulkPct = memberStatus.bundle_discount_percent;
                 const bulkMin = memberStatus.bundle_min;
@@ -186,7 +183,10 @@ function updateModalQuantity() {
     const discountNote = document.getElementById('discount-note');
 
     if (pricing) {
-        const discountApplied = pricing.member_discount_applied || pricing.vip_bundle_applied || pricing.bundle_discount_applied;
+        const discountApplied = pricing.stacked_discount_applied
+            || pricing.member_discount_applied
+            || pricing.vip_bundle_applied
+            || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
 
@@ -200,7 +200,20 @@ function updateModalQuantity() {
         }
 
         if (discountNote) {
-            if (pricing.member_discount_applied) {
+            if (pricing.stacked_discount_applied) {
+                discountNote.classList.remove('hidden');
+                discountNote.classList.add('text-white');
+                discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
+                const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+                if (ticketType === 'vip') {
+                    const totalPct = pricing.combined_discount_percent || pricing.member_discount_percent;
+                    discountNote.textContent = `VIP bundle + ${pricing.member_discount_percent}% member (${totalPct}% total) — ${priceLine}`;
+                } else {
+                    const totalPct = pricing.combined_discount_percent
+                        || (pricing.bundle_discount_percent + pricing.member_discount_percent);
+                    discountNote.textContent = `${totalPct}% off (${pricing.bundle_discount_percent}% bulk + ${pricing.member_discount_percent}% member) — ${priceLine}`;
+                }
+            } else if (pricing.member_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
