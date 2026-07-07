@@ -36,7 +36,5 @@ services:
         sync: false
       - key: BUNDLE_DISCOUNT
         value: "0.10"
-      - key: VIP_ADDITIONAL_DISCOUNT
+      - key: VIP_BUNDLE_DISCOUNT
         value: "0.10"
-      - key: VIP_BUNDLE_TOTAL_CENTS
-        value: "11250"
