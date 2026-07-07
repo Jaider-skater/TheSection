@@ -5,7 +5,7 @@ let memberStatus = {
     bundle_min: 4,
     bundle_discount_percent: 10,
     vip_bundle_min: 5,
-    vip_bundle_total_cents: 11250,
+    vip_bulk_discount_percent: 10,
 };
 let pricing = null;
 let memberDiscountApplied = false;
@@ -14,11 +14,32 @@ function formatDollars(cents) {
     return '$' + (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
 }
 
-function formatVipBundleLabel(source) {
-    const data = source || memberStatus || pricing || {};
-    const min = data.vip_bundle_min || 5;
-    const total = data.vip_bundle_total_cents || 10000;
-    return `${min} for ${formatDollars(total)}`;
+function bulkPctForType(type) {
+    const t = type || ticketType;
+    if (t === 'vip') {
+        return pricing?.bundle_discount_percent
+            || memberStatus.vip_bulk_discount_percent
+            || 10;
+    }
+    return pricing?.bundle_discount_percent
+        || memberStatus.bundle_discount_percent
+        || 10;
+}
+
+function bulkMinForType(type) {
+    const t = type || ticketType;
+    if (t === 'vip') {
+        return pricing?.vip_bundle_min || memberStatus.vip_bundle_min || 5;
+    }
+    return pricing?.bundle_min || memberStatus.bundle_min || 4;
+}
+
+function formatBulkPricingLabel() {
+    const gaMin = memberStatus.bundle_min || 4;
+    const gaPct = memberStatus.bundle_discount_percent || 10;
+    const vipMin = memberStatus.vip_bundle_min || 5;
+    const vipPct = memberStatus.vip_bulk_discount_percent || 10;
+    return `${gaMin}+ GA ${gaPct}% off · ${vipMin}+ VIP ${vipPct}% off`;
 }
 
 async function loadMemberStatus() {
@@ -34,9 +55,9 @@ async function loadMemberStatus() {
 
 function memberCodeHintText() {
     const memberPct = memberStatus.member_discount_percent;
-    const bulkPct = memberStatus.bundle_discount_percent;
+    const bulkPct = bulkPctForType();
     if (!memberDiscountApplied) {
-        if (pricing && (pricing.bundle_discount_applied || pricing.vip_bundle_applied)) {
+        if (pricing && pricing.bundle_discount_applied) {
             return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
         }
         return `Tap to add ${memberPct}% member discount`;
@@ -92,16 +113,11 @@ function updateMemberBanner() {
         if (signedInBanner) signedInBanner.classList.remove('hidden');
         if (signInPrompt) signInPrompt.classList.add('hidden');
         if (discountLine) {
+            const bulkLabel = formatBulkPricingLabel();
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                const bulkPct = memberStatus.bundle_discount_percent;
-                const bulkMin = memberStatus.bundle_min;
-                const vipBundleLabel = formatVipBundleLabel();
-                discountLine.textContent = `Bulk pricing (${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
+                discountLine.textContent = `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
             } else {
-                const bulkPct = memberStatus.bundle_discount_percent;
-                const bulkMin = memberStatus.bundle_min;
-                const vipBundleLabel = formatVipBundleLabel();
-                discountLine.textContent = `Bulk pricing: ${bulkMin}+ GA ${bulkPct}% off · VIP ${vipBundleLabel}. Member discount unlocks after your first purchase.`;
+                discountLine.textContent = `Bulk pricing: ${bulkLabel}. Member discount unlocks after your first purchase.`;
             }
         }
         updateDiscountCodeButton();
@@ -185,7 +201,6 @@ function updateModalQuantity() {
     if (pricing) {
         const discountApplied = pricing.stacked_discount_applied
             || pricing.member_discount_applied
-            || pricing.vip_bundle_applied
             || pricing.bundle_discount_applied;
 
         if (totalDisplay) totalDisplay.textContent = formatDollars(pricing.total_cents);
@@ -200,34 +215,26 @@ function updateModalQuantity() {
         }
 
         if (discountNote) {
+            const bulkPct = bulkPctForType();
+            const memberPct = pricing.member_discount_percent;
+            const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+
             if (pricing.stacked_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
-                const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-                if (ticketType === 'vip') {
-                    const totalPct = pricing.combined_discount_percent || pricing.member_discount_percent;
-                    discountNote.textContent = `VIP bundle + ${pricing.member_discount_percent}% member (${totalPct}% total) — ${priceLine}`;
-                } else {
-                    const totalPct = pricing.combined_discount_percent
-                        || (pricing.bundle_discount_percent + pricing.member_discount_percent);
-                    discountNote.textContent = `${totalPct}% off (${pricing.bundle_discount_percent}% bulk + ${pricing.member_discount_percent}% member) — ${priceLine}`;
-                }
+                const totalPct = pricing.combined_discount_percent || (bulkPct + memberPct);
+                discountNote.textContent = `${totalPct}% off (${bulkPct}% bulk + ${memberPct}% member) — ${priceLine}`;
             } else if (pricing.member_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
-                discountNote.textContent = `${pricing.member_discount_percent}% member discount — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
-            } else if (pricing.vip_bundle_applied) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.add('text-white');
-                discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
-                discountNote.textContent = `VIP bundle — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+                discountNote.textContent = `${memberPct}% member discount — ${priceLine}`;
             } else if (pricing.bundle_discount_applied) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.add('text-white');
                 discountNote.classList.remove('text-zinc-400', 'text-emerald-300');
-                discountNote.textContent = `${pricing.bundle_discount_percent}% bulk pricing — ${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
+                discountNote.textContent = `${bulkPct}% bulk pricing — ${priceLine}`;
             } else if (
                 memberStatus.logged_in
                 && memberStatus.member_discount_eligible
@@ -237,20 +244,14 @@ function updateModalQuantity() {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-white', 'text-emerald-300');
                 discountNote.classList.add('text-zinc-400');
-                discountNote.textContent = `Tap ${memberStatus.discount_code} above to apply ${memberStatus.member_discount_percent}% off`;
-            } else if (ticketType === 'vip' && quantity < (pricing.vip_bundle_min || 5)) {
+                discountNote.textContent = `Tap ${memberStatus.discount_code} above to apply ${memberPct}% off`;
+            } else if (quantity < bulkMinForType()) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-white', 'text-emerald-300');
                 discountNote.classList.add('text-zinc-400');
-                const vipMin = pricing.vip_bundle_min || 5;
-                const needed = vipMin - quantity;
-                const pct = pricing.vip_additional_discount_percent || 20;
-                discountNote.textContent = `Buy ${needed} more for ${pct}% off`;
-            } else if (ticketType === 'general' && quantity < pricing.bundle_min) {
-                discountNote.classList.remove('hidden');
-                discountNote.classList.remove('text-white', 'text-emerald-300');
-                discountNote.classList.add('text-zinc-400');
-                discountNote.textContent = `Add ${pricing.bundle_min - quantity} more for ${pricing.bundle_discount_percent}% off`;
+                const needed = bulkMinForType() - quantity;
+                const verb = ticketType === 'vip' ? 'Buy' : 'Add';
+                discountNote.textContent = `${verb} ${needed} more for ${bulkPct}% off`;
             } else if (memberStatus.logged_in && !memberStatus.member_discount_eligible) {
                 discountNote.classList.remove('hidden');
                 discountNote.classList.remove('text-white', 'text-emerald-300');
