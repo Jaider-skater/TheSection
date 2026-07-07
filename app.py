@@ -59,8 +59,12 @@ bundle_discount = parse_discount_value(
     os.getenv('BUNDLE_DISCOUNT') or os.getenv('LEGACY_BUNDLE_DISCOUNT', '0.10'),
 )
 vip_bundle_min = int(os.getenv('VIP_BUNDLE_MIN', '5'))
-vip_bundle_total_cents = int(os.getenv('VIP_BUNDLE_TOTAL_CENTS', '11250'))
-vip_additional_discount = parse_discount_value(os.getenv('VIP_ADDITIONAL_DISCOUNT', '0.10'))
+vip_bulk_discount = parse_discount_value(
+    os.getenv('VIP_BUNDLE_DISCOUNT')
+    or os.getenv('VIP_ADDITIONAL_DISCOUNT')
+    or os.getenv('VIP_BULK_DISCOUNT', '0.10'),
+    0.10,
+)
 member_discount = parse_discount_value(os.getenv('MEMBER_DISCOUNT', '0.10'))
 app.secret_key = os.getenv('SECRET_KEY', 'thesection-legacy-portal-change-me')
 tickets_lock = threading.Lock()
@@ -436,40 +440,34 @@ def ticket_recipient_email(stripe_email=None, metadata=None):
     return normalized or None
 
 
-def bundle_discount_applies(quantity):
-    return quantity >= bundle_min
+def bulk_discount_rate(ticket_type):
+    if ticket_type == 'vip':
+        return vip_bulk_discount
+    return bundle_discount
 
 
-def calculate_vip_bundle_total(quantity):
-    base = TICKET_TYPES['vip']['price_cents']
-    additional = quantity - vip_bundle_min
-    additional_unit = int(base * (1 - vip_additional_discount))
-    return vip_bundle_total_cents + additional * additional_unit
+def bulk_discount_applies(ticket_type, quantity):
+    minimum = vip_bundle_min if ticket_type == 'vip' else bundle_min
+    return quantity >= minimum
 
 
 def calculate_bulk_total_cents(ticket_type, quantity):
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    options = [base * quantity]
-    if ticket_type == 'vip' and quantity >= vip_bundle_min:
-        options.append(calculate_vip_bundle_total(quantity))
-    if ticket_type == 'general' and bundle_discount_applies(quantity):
-        options.append(int(base * (1 - bundle_discount)) * quantity)
-    return min(options)
+    base_total = base * quantity
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type)))
+    return base_total
 
 
 def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
     base_total = base * quantity
-    bulk_total = calculate_bulk_total_cents(ticket_type, quantity)
 
     if not apply_member_discount or member_discount <= 0:
-        return bulk_total
+        return calculate_bulk_total_cents(ticket_type, quantity)
 
-    if ticket_type == 'general' and bundle_discount_applies(quantity):
-        return int(base_total * (1 - bundle_discount - member_discount))
-
-    if bulk_total < base_total:
-        return int(bulk_total * (1 - member_discount))
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type) - member_discount))
 
     return int(base_total * (1 - member_discount))
 
@@ -493,34 +491,14 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
         bulk_savings_active and member_requested and total_cents < bulk_only_total
     )
 
-    vip_bundle_total = (
-        calculate_vip_bundle_total(quantity)
-        if ticket_type == 'vip' and quantity >= vip_bundle_min
-        else None
-    )
-    bundle_total = (
-        int(base * (1 - bundle_discount)) * quantity
-        if ticket_type == 'general' and bundle_discount_applies(quantity)
-        else None
-    )
     member_only_total = (
         int(base_total_cents * (1 - member_discount))
         if member_requested
         else None
     )
 
-    vip_bundle_applied = (
-        bulk_savings_active
-        and vip_bundle_total is not None
-        and bulk_only_total == vip_bundle_total
-        and not stacked_discount_applied
-    )
-    bundle_discount_applied = (
-        bulk_savings_active
-        and bundle_total is not None
-        and bulk_only_total == bundle_total
-        and not stacked_discount_applied
-    )
+    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
+    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
     member_discount_applied = (
         member_requested
         and not stacked_discount_applied
@@ -530,13 +508,13 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
     )
 
     combined_discount_percent = None
-    if stacked_discount_applied:
-        if ticket_type == 'general' and bundle_discount_applies(quantity):
-            combined_discount_percent = int((bundle_discount + member_discount) * 100)
-        elif base_total_cents > 0:
-            combined_discount_percent = int(
-                round((1 - total_cents / base_total_cents) * 100)
-            )
+    if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
+        combined_discount_percent = int(
+            (bulk_discount_rate(ticket_type) + member_discount) * 100
+        )
+
+    bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
+    bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
 
     return {
         'ticket_type': ticket_type,
@@ -551,12 +529,11 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
         'stacked_discount_applied': stacked_discount_applied,
         'combined_discount_percent': combined_discount_percent,
         'legacy_discount_applied': total_cents < base_total_cents,
-        'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 100),
+        'bundle_min': bulk_min,
+        'bundle_discount_percent': bulk_percent,
         'member_discount_percent': int(member_discount * 100),
         'vip_bundle_min': vip_bundle_min,
-        'vip_bundle_total_cents': vip_bundle_total_cents,
-        'vip_additional_discount_percent': int(vip_additional_discount * 100),
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
     }
 
 
@@ -1001,8 +978,7 @@ def member_status():
         'bundle_min': bundle_min,
         'bundle_discount_percent': int(bundle_discount * 100),
         'vip_bundle_min': vip_bundle_min,
-        'vip_bundle_total_cents': vip_bundle_total_cents,
-        'vip_additional_discount_percent': int(vip_additional_discount * 100),
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
         'ticket_types': {
             key: {
                 'name': meta['name'],
@@ -1052,13 +1028,9 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
             description += f' · {breakdown["member_discount_percent"]}% member code {code}'
         else:
             description += f' · {breakdown["member_discount_percent"]}% member discount'
-    elif breakdown['vip_bundle_applied']:
-        description += (
-            f' · VIP {vip_bundle_min} for ${vip_bundle_total_cents // 100}'
-            f' + {breakdown["vip_additional_discount_percent"]}% off each additional'
-        )
     elif breakdown['bundle_discount_applied']:
-        description += f' · {breakdown["bundle_discount_percent"]}% bundle discount ({quantity}+ tickets)'
+        bulk_min = breakdown['bundle_min']
+        description += f' · {breakdown["bundle_discount_percent"]}% bulk discount ({bulk_min}+ tickets)'
 
     member = get_logged_in_member()
     member_email = (member.get('email') or '').strip().lower() if member else ''
@@ -1337,7 +1309,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'bundle_discount_percent': int(bundle_discount * 100),
         'member_discount_percent': int(member_discount * 100),
         'vip_bundle_min': vip_bundle_min,
-        'vip_bundle_total_dollars': vip_bundle_total_cents // 100,
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
         'next_url': next_url,
         'active_tab': active_tab,
     }
