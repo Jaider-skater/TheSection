@@ -167,7 +167,7 @@
             <p class="text-white font-medium mb-1">Member discount</p>
             <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% member discount unlocks after your first ticket purchase. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) is available now.</p>
             {% endif %}
-            <a href="/?open_tickets=1"
+            <a href="{% if has_past_purchases %}/?open_tickets=1&amp;apply_member_discount=1{% else %}/?open_tickets=1{% endif %}"
                class="inline-block mt-5 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
                 Get tickets
             </a>
