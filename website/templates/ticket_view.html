@@ -13,6 +13,9 @@
             <p class="text-zinc-400">{{ error }}</p>
         {% else %}
             <h1 class="text-3xl font-bold mb-2">Your Ticket</h1>
+            {% if ticket.event_name %}
+            <p class="text-zinc-300 mb-3">{{ ticket.event_name }}</p>
+            {% endif %}
             <p class="text-2xl font-black mb-1 {% if ticket.is_vip %}text-purple-400{% else %}text-emerald-400{% endif %}">
                 {% if ticket.is_vip %}VIP{% else %}GA{% endif %}
             </p>

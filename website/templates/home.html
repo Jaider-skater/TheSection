@@ -1,1 +1,205 @@
-FROM_MANIFEST
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-white">
+
+    <!-- Header -->
+    <header class="bg-zinc-900">
+        <div class="max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
+            <div class="w-9"></div>
+            <div>
+                <img id="site-logo"
+                     src="{{ url_for('static', filename='images/TheSectionLogoDark.png') }}"
+                     alt="The Section Logo"
+                     class="h-20 w-auto">
+            </div>
+            <div class="relative">
+                <button id="hamburger-btn"
+                        class="text-white hover:text-zinc-400 transition-colors p-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-9 w-9" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                    </svg>
+                </button>
+                <div id="menu-dropdown" class="hidden absolute right-0 mt-3 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-lg py-2 z-50">
+                    <a href="/legacy" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Legacy Member Portal</a>
+                    <a href="/verify" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Door Scanner</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-6 pt-10 pb-20">
+
+        {% if events %}
+        <div class="space-y-16">
+            {% for event in events %}
+            <div class="max-w-2xl mx-auto border-4 border-white rounded-3xl overflow-hidden">
+                <div class="bg-zinc-900 p-8 md:p-10">
+                    <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">
+                        {% if loop.first %}Next Event{% else %}Upcoming{% endif %}
+                    </div>
+                    <div class="text-5xl font-bold tracking-tighter mb-6">{{ event.headline }}</div>
+
+                    <div class="space-y-3 text-[15px] mb-8">
+                        {% if event.date_display %}
+                        <div><span class="font-medium">Date:</span> {{ event.date_display }}</div>
+                        {% endif %}
+                        {% if event.time_display %}
+                        <div><span class="font-medium">Time:</span> {{ event.time_display }}</div>
+                        {% endif %}
+                        {% if event.venue %}
+                        <div><span class="font-medium">Venue:</span> {{ event.venue }}</div>
+                        {% endif %}
+                        <div><span class="font-medium">Price:</span> {{ event.price_label }} · 10% off at 4+ GA or 5+ VIP</div>
+                    </div>
+
+                    <a href="#tickets"
+                       data-event-id="{{ event.id }}"
+                       class="event-ticket-link block w-full text-center py-4 mb-4
+                              border-2 border-white
+                              bg-black text-white text-xl font-semibold rounded-2xl
+                              transition-all duration-500 ease-out
+                              hover:bg-white hover:text-black hover:border-white
+                              active:scale-[1.015] hover:scale-[1.015]
+                              hover:shadow-lg
+                              touch-manipulation select-none">
+                        Get Tickets
+                    </a>
+
+                    <div class="text-center text-sm text-zinc-400">
+                        21+ • Limited Capacity • +$5 at door
+                    </div>
+                </div>
+
+                {% if event.flyer_image %}
+                <section class="relative">
+                    <div class="max-w-2xl mx-auto">
+                        <img src="{{ url_for('static', filename=event.flyer_image) }}"
+                             alt="{{ event.name }} flyer"
+                             class="w-full h-auto object-cover rounded-b-3xl shadow-lg">
+                    </div>
+                </section>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="max-w-2xl mx-auto border-4 border-white rounded-3xl overflow-hidden mb-16">
+            <div class="bg-zinc-900 p-8 md:p-10 text-center">
+                <h2 class="text-3xl font-bold mb-3">No upcoming events</h2>
+                <p class="text-zinc-400">Check back soon for the next Section night.</p>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- TICKETS MODAL -->
+        <div id="tickets-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <div class="max-w-md w-full bg-zinc-900 border border-zinc-700 rounded-3xl p-8 text-left relative">
+                <button onclick="closeTicketsModal()"
+                        class="absolute top-4 right-4 text-zinc-400 hover:text-white text-3xl leading-none">×</button>
+
+                <h2 class="text-4xl font-bold tracking-tight mb-2 text-center">Secure Your Spot</h2>
+                <p id="modal-event-name" class="text-lg text-zinc-300 mb-2 text-center font-medium"></p>
+                <p class="text-sm text-zinc-500 mb-8 text-center">Limited tickets available.</p>
+
+                <div id="sign-in-prompt" class="mb-4 bg-zinc-950 border border-zinc-600 rounded-2xl p-4 text-sm">
+                    <p class="text-white font-medium">Sign in before you buy</p>
+                    <p class="text-zinc-400 mt-1 mb-3">Create an account or sign in to get your discount code and save tickets.</p>
+                    <a href="{{ url_for('legacy_portal', next='/?open_tickets=1') }}"
+                       class="inline-block w-full text-center py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
+                        Sign in
+                    </a>
+                </div>
+
+                <div id="member-banner" class="hidden mb-4 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
+                    <p class="text-white font-medium">Signed in</p>
+                    <p id="member-discount-line" class="text-zinc-400 mt-1">Your member discount is applied at checkout.</p>
+                    <p id="member-discount-origin" class="hidden text-zinc-500 text-xs mt-2"></p>
+                    <button type="button" id="member-discount-code-btn" class="hidden mt-3 w-full text-left rounded-xl border px-4 py-3 transition-colors">
+                        <span class="text-zinc-400 text-xs block mb-1">Member discount code</span>
+                        <span id="member-discount-code-label" class="font-mono text-lg tracking-wider text-white"></span>
+                        <span id="member-discount-code-hint" class="text-zinc-500 text-xs block mt-1"></span>
+                    </button>
+                </div>
+
+                <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <button type="button" id="type-general" onclick="selectTicketType('general')"
+                                class="ticket-type-btn rounded-2xl border-2 border-white bg-white text-black p-5 sm:p-6 text-left transition-colors min-h-[9.5rem]">
+                            <div class="text-sm sm:text-base font-bold">GA</div>
+                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="ga-price-label">$10</div>
+                            <div class="text-sm mt-3 opacity-80">Main floor</div>
+                        </button>
+                        <button type="button" id="type-vip" onclick="selectTicketType('vip')"
+                                class="ticket-type-btn rounded-2xl border-2 border-zinc-700 p-5 sm:p-6 text-left hover:border-zinc-500 transition-colors min-h-[9.5rem]">
+                            <div class="text-sm sm:text-base font-bold text-zinc-300" id="vip-type-label">VIP</div>
+                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="vip-price-label">$25</div>
+                            <div class="text-sm mt-3 text-zinc-400" id="vip-subtitle">VIP Lounge</div>
+                        </button>
+                    </div>
+
+                    <p class="text-center text-sm text-zinc-300 mb-6 px-4 py-2.5 rounded-2xl border border-zinc-700 bg-zinc-950">
+                        +$5 if you buy at the door
+                    </p>
+
+                    <div class="flex items-center justify-between mb-6">
+                        <span class="text-lg font-semibold text-white">Entries</span>
+                        <div class="flex items-center gap-5">
+                            <button onclick="changeQuantity(-1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">-</button>
+                            <span id="modal-quantity" class="text-4xl font-bold w-10 text-center tabular-nums">1</span>
+                            <button onclick="changeQuantity(1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">+</button>
+                        </div>
+                    </div>
+
+                    <div id="pricing-notes" class="mb-4 space-y-2">
+                        <p id="bulk-pricing-note" class="hidden text-sm text-white font-semibold text-center"></p>
+                        <p id="member-discount-note" class="hidden text-sm text-center"></p>
+                    </div>
+
+                    <button onclick="createCheckoutSession()"
+                            class="w-full py-4 border-2 border-white
+                                   bg-black text-white text-lg font-semibold rounded-2xl
+                                   transition-all duration-500 ease-out
+                                   hover:bg-white hover:text-black hover:border-white
+                                   active:scale-[1.015] hover:scale-[1.015]
+                                   touch-manipulation select-none">
+                        Buy
+                        <span id="modal-original-price" class="hidden line-through text-zinc-500 text-base font-normal mx-1"></span>
+                        <span id="modal-total-price">$10</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <footer class="mt-16 pt-8 border-t border-zinc-800">
+            <div class="flex flex-col items-center gap-y-4">
+                <div class="flex items-center gap-x-6">
+                    <a href="https://www.instagram.com/thesectionevents/" target="_blank" rel="noopener noreferrer" class="hover:scale-110 transition-transform">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-white hover:text-pink-400 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.849.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.667.072 4.947.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.76 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                        </svg>
+                    </a>
+                    <a href="https://www.snapchat.com/add/soloyuhself" target="_blank" rel="noopener noreferrer" class="hover:scale-110 transition-transform">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-white hover:text-yellow-400 transition-colors" fill="currentColor" viewBox="0 0 24 24" aria-label="Snapchat">
+                            <path d="M12.206.793c.99 0 4.347.276 5.93 3.821.529 1.193.403 3.219.299 4.847l-.003.06c-.012.18-.022.345-.03.51.075.045.203.09.401.09.3-.016.659-.12 1.033-.301.165-.088.344-.104.464-.104.182 0 .359.029.509.09.45.149.734.479.734.838.015.449-.39.839-1.213 1.168-.089.029-.209.075-.344.119-.45.135-1.139.36-1.333.81-.09.224-.061.524.12.868l.015.015c.06.136 1.526 3.475 4.791 4.014.255.044.435.27.42.509 0 .075-.015.149-.045.225-.24.569-1.273.988-3.146 1.271-.059.091-.12.375-.164.57-.029.179-.074.36-.134.553-.076.271-.27.405-.555.405h-.03c-.135 0-.313-.031-.538-.074-.36-.075-.765-.135-1.273-.135-.3 0-.599.015-.913.074-.6.104-1.123.464-1.723.884-.853.599-1.826 1.288-3.294 1.288-.06 0-.119-.015-.18-.015h-.149c-1.468 0-2.427-.675-3.279-1.288-.599-.42-1.107-.779-1.707-.884-.314-.045-.629-.074-.928-.074-.54 0-.958.089-1.272.149-.211.043-.391.074-.54.074-.374 0-.523-.224-.583-.42-.061-.192-.09-.389-.135-.567-.046-.181-.105-.494-.166-.57-1.918-.222-2.95-.642-3.189-1.226-.031-.063-.052-.15-.055-.225-.015-.243.165-.465.42-.509 3.264-.54 4.73-3.879 4.791-4.02l.016-.029c.18-.345.224-.645.119-.869-.195-.434-.884-.658-1.332-.809-.121-.029-.24-.074-.346-.119-1.107-.435-1.257-.93-1.197-1.273.09-.479.674-.793 1.168-.793.146 0 .27.029.383.074.42.194.789.3 1.104.3.234 0 .384-.06.465-.105l-.046-.569c-.098-1.626-.225-3.651.307-4.837C7.392 1.077 10.739.807 11.727.807l.419-.015h.06z"/>
+                        </svg>
+                    </a>
+                </div>
+                <p class="text-xs text-zinc-400 tracking-wider">
+                    Powered by <span class="font-medium text-zinc-300">Hallie Technologies</span>
+                </p>
+            </div>
+        </footer>
+    </main>
+
+    <script>
+        window.PAGE_EVENTS = {{ events | tojson }};
+    </script>
+    <script src="{{ url_for('static', filename='js/home.js') }}"></script>
+</body>
+</html>

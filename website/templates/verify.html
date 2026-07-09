@@ -27,6 +27,24 @@
             </div>
         </div>
 
+        {% if scanner_context %}
+        <div id="scanner-event-banner" class="mb-4 rounded-2xl border px-4 py-3 text-sm
+            {% if scanner_context.mode == 'live' %}border-emerald-500/40 bg-emerald-950/30 text-emerald-100
+            {% elif scanner_context.mode == 'upcoming' %}border-amber-500/40 bg-amber-950/30 text-amber-100
+            {% elif scanner_context.mode == 'past' %}border-red-500/40 bg-red-950/30 text-red-100
+            {% else %}border-zinc-700 bg-zinc-900 text-zinc-300{% endif %}">
+            <p class="font-semibold">{{ scanner_context.message }}</p>
+            {% if scanner_context.detail %}
+            <p class="text-xs mt-1 opacity-80">{{ scanner_context.detail }}</p>
+            {% endif %}
+            {% if scanner_context.mode == 'upcoming' %}
+            <p class="text-xs mt-2 opacity-80">Tickets for this event won't scan until doors open.</p>
+            {% elif scanner_context.mode == 'past' %}
+            <p class="text-xs mt-2 opacity-80">Only tickets for the live event are accepted.</p>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <h1 class="text-3xl sm:text-4xl font-bold mb-2">🎟️ Door Scanner</h1>
         <p class="text-zinc-400 text-sm mb-4">Tap start, then point at the guest's QR code</p>
 
@@ -134,6 +152,21 @@
                 resultEl.innerHTML = `
                     <div class="text-red-400 text-2xl font-bold mb-2">❌ Already Used</div>
                     <div class="text-zinc-300">${result.quantity} ${guestWord} on this ticket</div>
+                `;
+            } else if (result.status === 'wrong_event') {
+                resultEl.innerHTML = `
+                    <div class="text-red-400 text-2xl font-bold mb-2">❌ Wrong Event</div>
+                    <div class="text-zinc-300">Ticket is for ${result.event_name || 'another night'}</div>
+                `;
+            } else if (result.status === 'expired') {
+                resultEl.innerHTML = `
+                    <div class="text-red-400 text-2xl font-bold mb-2">❌ Event Ended</div>
+                    <div class="text-zinc-300">${result.event_name || 'This ticket'} is no longer valid</div>
+                `;
+            } else if (result.status === 'early') {
+                resultEl.innerHTML = `
+                    <div class="text-amber-400 text-2xl font-bold mb-2">⏳ Too Early</div>
+                    <div class="text-zinc-300">Ticket is for ${result.event_name || 'a future event'}</div>
                 `;
             } else {
                 resultEl.innerHTML = `<span class="text-red-400 text-xl">Invalid ticket</span>`;

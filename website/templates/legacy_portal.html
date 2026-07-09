@@ -154,6 +154,9 @@
             {% if has_past_purchases %}
             <p class="text-white font-medium mb-1">Your discount code</p>
             <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off future purchases — applied automatically when you're signed in.</p>
+            {% if member.discount_code_event_name %}
+            <p class="text-zinc-500 text-xs mb-4">Earned at {{ member.discount_code_event_name }} · works on every event</p>
+            {% endif %}
             <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
                 <p id="discount-code-display" class="font-mono text-2xl tracking-wider bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-center flex-1">
                     {{ member.discount_code }}
@@ -180,6 +183,9 @@
                 {% for ticket in saved_ticket_details %}
                 <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3">
                     <div>
+                        {% if ticket.event_name %}
+                        <p class="text-white text-sm font-medium">{{ ticket.event_name }}</p>
+                        {% endif %}
                         <span class="font-mono text-sm">{{ ticket.ticket_id }}</span>
                         <span class="text-zinc-500 text-xs ml-2">
                             {{ ticket.quantity }}× {{ 'VIP' if ticket.ticket_type == 'vip' else 'GA' }}
