@@ -9,6 +9,9 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
     <div class="max-w-lg mx-auto text-center">
+        <form method="POST" action="/verify/logout" class="text-right mb-2">
+            <button type="submit" class="text-xs text-zinc-500 hover:text-white transition-colors">Sign out</button>
+        </form>
         <div id="admission-totals" class="grid grid-cols-3 gap-2 mb-4">
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold">GA</p>
@@ -64,9 +67,18 @@
         document.getElementById('total-all').textContent = totals.total;
     }
 
+    function redirectToScannerLogin() {
+        const next = window.location.pathname + window.location.search;
+        window.location.href = '/verify/login?next=' + encodeURIComponent(next);
+    }
+
     async function refreshAdmissionTotals() {
         try {
             const response = await fetch('/api/admission-totals');
+            if (response.status === 401) {
+                redirectToScannerLogin();
+                return;
+            }
             const totals = await response.json();
             updateAdmissionTotals(totals);
         } catch (err) {
@@ -96,8 +108,15 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ticket_data: decodedText })
         })
-        .then(r => r.json())
+        .then(r => {
+            if (r.status === 401) {
+                redirectToScannerLogin();
+                return null;
+            }
+            return r.json();
+        })
         .then(result => {
+            if (!result) return;
             if (result.admission_totals) {
                 updateAdmissionTotals(result.admission_totals);
             }
