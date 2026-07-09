@@ -1,1 +1,125 @@
-PLACEHOLDER_SUCCESS
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tickets • The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center p-6">
+    <div class="max-w-md w-full text-center">
+
+        {% if error %}
+            <div class="bg-red-900/50 border border-red-500 p-6 rounded-2xl">
+                <h1 class="text-2xl font-bold mb-4">Something went wrong</h1>
+                <p class="text-red-300">{{ error }}</p>
+            </div>
+        {% else %}
+            <h1 class="text-4xl font-bold mb-2">🎟️ You're In!</h1>
+            {% if ticket_type == 'vip' %}
+            <p class="inline-block mb-2 px-3 py-1 border border-white/40 rounded-full text-sm font-medium text-white">VIP · Upstairs seating</p>
+            {% endif %}
+            <p class="text-zinc-400 mb-2">Your tickets are ready</p>
+            {% if access %}
+            <p class="text-zinc-300 text-sm mb-2">Includes {{ access }}</p>
+            {% endif %}
+            {% if quantity and quantity > 1 %}
+            <p class="text-zinc-300 mb-8">{{ quantity }} guests on this ticket</p>
+            {% else %}
+            <p class="mb-8"></p>
+            {% endif %}
+
+            {% if ticket_data %}
+            <div class="bg-white p-6 rounded-3xl shadow-2xl inline-block mb-6">
+                <img id="ticket-qr"
+                     src="data:image/png;base64,{{ ticket_data }}"
+                     class="w-64 h-64 mx-auto" alt="QR Ticket">
+            </div>
+            {% endif %}
+
+            <div class="bg-zinc-900 border border-white/30 rounded-3xl p-6 mb-6">
+                <p class="text-white font-semibold mb-2">Save your ticket before you leave</p>
+                <p class="text-zinc-400 text-sm mb-5">You'll need this QR at the door.</p>
+
+                {% if ticket_data %}
+                <button type="button"
+                        onclick="downloadTicket()"
+                        class="w-full py-3 bg-white text-black font-semibold rounded-2xl hover:bg-zinc-200 transition-colors">
+                    Download QR Code
+                </button>
+                <p class="text-zinc-500 text-xs mt-3 leading-relaxed">
+                    Save to Photos or Files and show it at the door.
+                </p>
+                {% endif %}
+
+                {% if email %}
+                <div class="mt-5 pt-5 border-t border-zinc-800">
+                    <p class="text-sm font-medium text-white mb-1">Check your email</p>
+                    {% if email_sent %}
+                    <p class="text-zinc-400 text-sm">We sent your ticket to</p>
+                    <p class="text-white text-sm mt-1">{{ email }}</p>
+                    <p class="text-zinc-500 text-xs mt-2">Not there yet? Check spam or promotions.</p>
+                    {% else %}
+                    <p class="text-zinc-400 text-sm">Sending to <span class="text-white">{{ email }}</span>…</p>
+                    <p class="text-zinc-500 text-xs mt-2">If it doesn't arrive, download the QR above — that works at the door.</p>
+                    {% endif %}
+                </div>
+                {% else %}
+                <div class="mt-5 pt-5 border-t border-zinc-800">
+                    <p class="text-sm font-medium text-white">Check your email</p>
+                    <p class="text-zinc-400 text-sm mt-1">If you entered an email at checkout, your ticket copy may still be on its way. Download the QR above to be safe.</p>
+                </div>
+                {% endif %}
+
+                {% if wallet_enabled and ticket_id %}
+                <div class="mt-5 pt-5 border-t border-zinc-800">
+                    <p class="text-sm font-medium text-white mb-3">Add to Apple Wallet</p>
+                    <a href="/wallet/{{ ticket_id }}.pkpass"
+                       class="inline-flex items-center justify-center w-full max-w-[220px] h-11 rounded-lg bg-black border border-zinc-700 hover:border-zinc-500 transition-colors px-4 mx-auto">
+                        <svg viewBox="0 0 152 44" class="h-7 w-auto" aria-label="Add to Apple Wallet">
+                            <rect width="152" height="44" rx="8" fill="#000"/>
+                            <text x="44" y="18" fill="#fff" font-size="8" font-family="system-ui, -apple-system, sans-serif">Add to</text>
+                            <text x="44" y="31" fill="#fff" font-size="11" font-weight="600" font-family="system-ui, -apple-system, sans-serif">Apple Wallet</text>
+                            <rect x="12" y="10" width="22" height="24" rx="4" fill="none" stroke="#fff" stroke-width="1.5"/>
+                            <rect x="16" y="14" width="6" height="6" rx="1" fill="#fff"/>
+                            <rect x="24" y="14" width="6" height="6" rx="1" fill="#fff"/>
+                            <rect x="16" y="22" width="6" height="6" rx="1" fill="#fff"/>
+                            <rect x="24" y="22" width="6" height="6" rx="1" fill="#fff"/>
+                        </svg>
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if ticket_id %}
+            <p class="text-sm text-zinc-400 mb-2">Ticket ID: <span class="font-mono text-white">{{ ticket_id }}</span></p>
+            {% endif %}
+
+            <div class="mt-6 bg-zinc-900 border border-zinc-700 rounded-2xl p-5 text-sm">
+                <p class="text-white font-medium mb-1">Member Area</p>
+                <p class="text-zinc-400 mb-3">Create an account or sign in to save this ticket and unlock discounts on future purchases.</p>
+                <a href="{{ url_for('legacy_portal') }}" class="inline-block px-5 py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
+                    Go to Member Area
+                </a>
+            </div>
+        {% endif %}
+
+        <div class="mt-10">
+            <a href="/" class="text-zinc-400 hover:text-white text-sm">← Back to homepage</a>
+        </div>
+    </div>
+
+    {% if ticket_data and ticket_id %}
+    <script>
+        function downloadTicket() {
+            const link = document.createElement('a');
+            link.href = 'data:image/png;base64,{{ ticket_data }}';
+            link.download = 'thesection-ticket-{{ ticket_id }}.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+    {% endif %}
+</body>
+</html>
