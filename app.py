@@ -1,1 +1,1 @@
-LOAD_FROM_FILE:/tmp/restore_app_content.py
+LOAD_FROM_FILE
