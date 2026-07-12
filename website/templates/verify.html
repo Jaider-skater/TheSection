@@ -253,6 +253,9 @@
         stopScanner();
 
         if (decodedText.includes('/verify/t/')) {
+            if (typeof markScannerInternalNav === 'function') {
+                markScannerInternalNav();
+            }
             window.location.href = decodedText.startsWith('http')
                 ? decodedText
                 : `${window.location.origin}${decodedText.startsWith('/') ? '' : '/'}${decodedText}`;
@@ -403,5 +406,6 @@
         }
     });
 </script>
+    <script src="{{ url_for('static', filename='js/scanner_session.js') }}"></script>
 </body>
 </html>
