@@ -1,1 +1,1 @@
-LOAD_FROM_WORKSPACE
+LOAD_FROM_/tmp/cou_app_fix.json
