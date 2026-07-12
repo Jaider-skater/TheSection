@@ -24,10 +24,6 @@
         }
     });
 
-    document.querySelectorAll('form[action="/verify/logout"]').forEach((form) => {
-        form.addEventListener('submit', () => markInternalNav());
-    });
-
     window.addEventListener('pagehide', () => {
         if (sessionStorage.getItem(STAY_KEY) === '1') {
             sessionStorage.removeItem(STAY_KEY);
