@@ -55,6 +55,11 @@
             </button>
         </div>
 
+        <div id="reset-history" class="hidden mb-4 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+            <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Count reset history</p>
+            <ul id="reset-history-list" class="space-y-2 text-xs text-zinc-400 max-h-36 overflow-y-auto"></ul>
+        </div>
+
         <h1 class="text-3xl sm:text-4xl font-bold mb-2">🎟️ Door Scanner</h1>
         <p class="text-zinc-400 text-sm mb-4">Tap start, then point at the guest's QR code</p>
 
@@ -118,6 +123,46 @@
                 bannerEl.classList.add('hidden');
             }
         }
+
+        updateResetHistory(totals.reset_history);
+    }
+
+    function formatResetTimestamp(iso) {
+        if (!iso) return 'Unknown time';
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) return iso;
+        return date.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+        });
+    }
+
+    function updateResetHistory(history) {
+        const section = document.getElementById('reset-history');
+        const list = document.getElementById('reset-history-list');
+        if (!section || !list) return;
+
+        const entries = Array.isArray(history) ? [...history].reverse() : [];
+        if (!entries.length) {
+            section.classList.add('hidden');
+            list.innerHTML = '';
+            return;
+        }
+
+        section.classList.remove('hidden');
+        list.innerHTML = entries.map(entry => {
+            const when = formatResetTimestamp(entry.reset_at);
+            const ga = entry.ga ?? 0;
+            const vip = entry.vip ?? 0;
+            const total = entry.total ?? (ga + vip);
+            return `<li class="flex items-center justify-between gap-3 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
+                <span class="text-zinc-500">${when}</span>
+                <span class="tabular-nums text-zinc-300">GA ${ga} · VIP ${vip} · ${total} total</span>
+            </li>`;
+        }).join('');
     }
 
     function redirectToScannerLogin() {
@@ -177,7 +222,9 @@
     async function resetAdmissionTotals() {
         const confirmed = window.confirm(
             'Are you sure you want to reset admission counts?\n\n' +
-            'GA, VIP, and Total will go back to 0, and all tickets can be scanned again.'
+            'GA, VIP, and Total will go back to 0 for a new counting period. ' +
+            'Already-scanned tickets stay void and cannot be scanned again. ' +
+            'This reset will be logged with the date and attendance totals.'
         );
         if (!confirmed) return;
 
@@ -348,6 +395,7 @@
             total: {{ admission_totals.total }},
             max_capacity: {{ admission_totals.max_capacity if admission_totals.max_capacity else 'null' }},
             capacity_reached: {{ 'true' if admission_totals.capacity_reached else 'false' }},
+            reset_history: {{ admission_totals.reset_history | tojson }},
         });
         refreshAdmissionTotals();
         if (shouldAutostartScanner()) {
