@@ -114,10 +114,9 @@ function updateMemberBanner() {
         if (signInPrompt) signInPrompt.classList.add('hidden');
         if (discountLine) {
             const bulkLabel = formatBulkPricingLabel();
-            if (memberStatus.returning_guest_discount) {
-                discountLine.textContent = `Welcome back — ${memberStatus.member_discount_percent}% off your next purchase applies at checkout.`;
-            } else if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                discountLine.textContent = `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
+            if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
+                const welcome = memberStatus.returning_guest_discount ? 'Welcome back — ' : '';
+                discountLine.textContent = `${welcome}Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to apply ${memberStatus.member_discount_percent}% off.`;
             } else {
                 discountLine.textContent = `Bulk pricing: ${bulkLabel}. Member discount unlocks after your first purchase.`;
             }

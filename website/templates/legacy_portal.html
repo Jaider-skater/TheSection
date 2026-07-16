@@ -151,9 +151,15 @@
         </div>
 
         <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
-            {% if has_past_purchases %}
-            <p class="text-white font-medium mb-1">Your discount code</p>
-            <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off future purchases — applied automatically when you're signed in.</p>
+            {% if discount_eligible and member.discount_code %}
+            <p class="text-white font-medium mb-1">{% if has_returning_guest_discount %}Welcome back discount{% else %}Your discount code{% endif %}</p>
+            <p class="text-zinc-400 text-sm mb-4">
+                {% if has_returning_guest_discount %}
+                {{ member_discount_percent }}% off your next ticket purchase — tap your code on the tickets page to apply. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) stacks when you qualify.
+                {% else %}
+                {{ member_discount_percent }}% off future purchases — tap your code on the tickets page to apply.
+                {% endif %}
+            </p>
             <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
                 <p id="discount-code-display" class="font-mono text-2xl tracking-wider bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-center flex-1">
                     {{ member.discount_code }}
@@ -163,14 +169,11 @@
                     Copy
                 </button>
             </div>
-            {% elif has_returning_guest_discount %}
-            <p class="text-white font-medium mb-1">Welcome back discount</p>
-            <p class="text-zinc-400 text-sm mb-4">You have {{ member_discount_percent }}% off your next ticket purchase. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) stacks when you qualify.</p>
             {% else %}
             <p class="text-white font-medium mb-1">Member discount</p>
             <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% member discount unlocks after your first ticket purchase. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) is available now.</p>
             {% endif %}
-            <a href="{% if discount_eligible %}/?open_tickets=1&amp;apply_member_discount=1{% else %}/?open_tickets=1{% endif %}"
+            <a href="/?open_tickets=1"
                class="inline-block mt-5 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
                 Get tickets
             </a>

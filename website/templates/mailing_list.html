@@ -34,7 +34,8 @@
         <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
             <h2 class="text-lg font-semibold mb-2">Add emails</h2>
             <p class="text-zinc-400 text-sm mb-4">One per line (commas and semicolons also work).</p>
-            <form method="POST" class="space-y-4">
+            <form method="POST" action="/admin/mailing-list?key={{ key }}" class="space-y-4">
+                <input type="hidden" name="key" value="{{ key }}">
                 <input type="hidden" name="action" value="add_emails">
                 <textarea name="emails" rows="6" required
                           placeholder="guest@example.com&#10;friend@gmail.com"
@@ -47,13 +48,18 @@
         </div>
 
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-            <h2 class="text-lg font-semibold">{{ invites|length }} on list · {{ ready_count }} ready to email</h2>
-            {% if ready_count > 0 %}
-            <form method="POST" id="send-invites-form">
+            <h2 class="text-lg font-semibold">
+                {{ invites|length }} on list · {{ ready_count }} ready to email
+                {% if blocked_count %}<span class="text-zinc-500 font-normal text-sm">({{ blocked_count }} already have accounts)</span>{% endif %}
+            </h2>
+            {% if invites %}
+            <form method="POST" action="/admin/mailing-list?key={{ key }}" id="send-invites-form">
+                <input type="hidden" name="key" value="{{ key }}">
                 <input type="hidden" name="action" value="send_invites">
                 <button type="submit"
-                        class="px-5 py-3 border-2 border-white bg-black text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
-                    Send invite emails ({{ ready_count }})
+                        {% if ready_count == 0 %}disabled{% endif %}
+                        class="px-5 py-3 border-2 border-white bg-black text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black disabled:hover:text-white">
+                    {% if ready_count > 0 %}Send invite emails ({{ ready_count }}){% else %}No invites ready to send{% endif %}
                 </button>
             </form>
             {% endif %}
@@ -90,7 +96,8 @@
                         <td class="p-4 text-zinc-500">{{ (invite.sent_at or '—')[:16].replace('T', ' ') if invite.sent_at else '—' }}</td>
                         <td class="p-4 text-right">
                             {% if invite.status not in ['claimed', 'account_exists'] %}
-                            <form method="POST" class="inline" onsubmit="return confirm('Remove {{ invite.email }} from the list?');">
+                            <form method="POST" action="/admin/mailing-list?key={{ key }}" class="inline" onsubmit="return confirm('Remove {{ invite.email }} from the list?');">
+                                <input type="hidden" name="key" value="{{ key }}">
                                 <input type="hidden" name="action" value="remove_email">
                                 <input type="hidden" name="email" value="{{ invite.email }}">
                                 <button type="submit" class="text-xs text-zinc-500 hover:text-red-400">Remove</button>
