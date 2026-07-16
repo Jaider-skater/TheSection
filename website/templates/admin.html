@@ -45,7 +45,7 @@
             <table class="w-full text-left text-sm">
                 <thead class="bg-zinc-900 text-zinc-400">
                     <tr>
-                        <th class="p-4">Purchased</th>
+                        <th class="p-4">Purchased ({{ timezone_label }})</th>
                         <th class="p-4">Ticket ID</th>
                         <th class="p-4">Email</th>
                         <th class="p-4">Qty</th>
@@ -57,7 +57,7 @@
                 <tbody>
                     {% for ticket in tickets %}
                     <tr class="border-t border-zinc-800">
-                        <td class="p-4 text-zinc-300">{{ ticket.purchased_at[:16].replace('T', ' ') }}</td>
+                        <td class="p-4 text-zinc-300">{{ ticket.purchased_at | local_time }}</td>
                         <td class="p-4 font-mono">{{ ticket.ticket_id }}</td>
                         <td class="p-4">{{ ticket.email or '—' }}</td>
                         <td class="p-4">{{ ticket.quantity }}</td>

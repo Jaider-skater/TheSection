@@ -34,6 +34,8 @@ services:
         value: /opt/render/project/src/data/member_invites.json
       - key: INVITE_EXPIRY_DAYS
         value: "14"
+      - key: APP_TIMEZONE
+        value: America/Los_Angeles
       - key: LEGACY_BOOTSTRAP_EMAIL
         value: hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD
