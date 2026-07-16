@@ -1,1 +1,1 @@
-LOAD_FROM_/tmp/app_py_content.txt
+LOAD_FROM_/tmp/cou_content.txt
