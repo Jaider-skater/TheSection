@@ -86,87 +86,6 @@
     </section>
 </div>
 
-        <!-- TICKETS MODAL (pops over flyer) -->
-        <div id="tickets-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <div class="max-w-md w-full bg-zinc-900 border border-zinc-700 rounded-3xl p-8 text-left relative">
-                <!-- Close button -->
-                <button onclick="closeTicketsModal()"
-                        class="absolute top-4 right-4 text-zinc-400 hover:text-white text-3xl leading-none">×</button>
-
-                <h2 class="text-4xl font-bold tracking-tight mb-3 text-center">Secure Your Spot</h2>
-                <p class="text-xl text-zinc-400 mb-10 text-center">Limited tickets available.</p>
-
-                <div id="sign-in-prompt" class="mb-4 bg-zinc-950 border border-zinc-600 rounded-2xl p-4 text-sm">
-                    <p class="text-white font-medium">Sign in before you buy</p>
-                    <p class="text-zinc-400 mt-1 mb-3">Create an account or sign in to get your discount code and save tickets.</p>
-                    <a href="{{ url_for('legacy_portal', next='/?open_tickets=1') }}"
-                       class="inline-block w-full text-center py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
-                        Sign in
-                    </a>
-                </div>
-
-                <div id="member-banner" class="hidden mb-4 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
-                    <p class="text-white font-medium">Signed in</p>
-                    <p id="member-discount-line" class="text-zinc-400 mt-1">Your member discount is applied at checkout.</p>
-                    <button type="button" id="member-discount-code-btn" class="hidden mt-3 w-full text-left rounded-xl border px-4 py-3 transition-colors">
-                        <span class="text-zinc-400 text-xs block mb-1">Member discount code</span>
-                        <span id="member-discount-code-label" class="font-mono text-lg tracking-wider text-white"></span>
-                        <span id="member-discount-code-hint" class="text-zinc-500 text-xs block mt-1"></span>
-                    </button>
-                </div>
-
-                <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
-                    <!-- Ticket type -->
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <button type="button" id="type-general" onclick="selectTicketType('general')"
-                                class="ticket-type-btn rounded-2xl border-2 border-white bg-white text-black p-5 sm:p-6 text-left transition-colors min-h-[9.5rem]">
-                            <div class="text-sm sm:text-base font-bold">GA</div>
-                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="ga-price-label">$10</div>
-                            <div class="text-sm mt-3 opacity-80">Main floor</div>
-                        </button>
-                        <button type="button" id="type-vip" onclick="selectTicketType('vip')"
-                                class="ticket-type-btn rounded-2xl border-2 border-zinc-700 p-5 sm:p-6 text-left hover:border-zinc-500 transition-colors min-h-[9.5rem]">
-                            <div class="text-sm sm:text-base font-bold text-zinc-300" id="vip-type-label">VIP</div>
-                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="vip-price-label">$25</div>
-                            <div class="text-sm mt-3 text-zinc-400" id="vip-subtitle">VIP Lounge</div>
-                        </button>
-                    </div>
-
-                    <p class="text-center text-sm text-zinc-300 mb-6 px-4 py-2.5 rounded-2xl border border-zinc-700 bg-zinc-950">
-                        +$5 if you buy at the door
-                    </p>
-
-                    <!-- Entry count -->
-                    <div class="flex items-center justify-between mb-6">
-                        <span class="text-lg font-semibold text-white">Entries</span>
-                        <div class="flex items-center gap-5">
-                            <button onclick="changeQuantity(-1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">-</button>
-                            <span id="modal-quantity" class="text-4xl font-bold w-10 text-center tabular-nums">1</span>
-                            <button onclick="changeQuantity(1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">+</button>
-                        </div>
-                    </div>
-
-                    <div id="pricing-notes" class="mb-4 space-y-2">
-                        <p id="bulk-pricing-note" class="hidden text-sm text-white font-semibold text-center"></p>
-                        <p id="member-discount-note" class="hidden text-sm text-center"></p>
-                    </div>
-
-                    <!-- Buy Button -->
-                    <button onclick="createCheckoutSession()"
-                            class="w-full py-4 border-2 border-white
-                                   bg-black text-white text-lg font-semibold rounded-2xl
-                                   transition-all duration-500 ease-out
-                                   hover:bg-white hover:text-black hover:border-white
-                                   active:scale-[1.015] hover:scale-[1.015]
-                                   touch-manipulation select-none">
-                        Buy
-                        <span id="modal-original-price" class="hidden line-through text-zinc-500 text-base font-normal mx-1"></span>
-                        <span id="modal-total-price">$10</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-
         <!-- Powered by Hallie Technologies + Socials -->
 <footer class="mt-16 pt-8 border-t border-zinc-800">
     <div class="flex flex-col items-center gap-y-4">
@@ -198,6 +117,89 @@
     </div>
 </footer>
     </main>
+
+    <!-- TICKETS MODAL (outside main so fixed positioning works on mobile) -->
+    <div id="tickets-modal"
+         class="hidden fixed inset-0 z-[100] overflow-y-auto overscroll-contain bg-black/80 backdrop-blur-sm">
+        <div class="flex min-h-full items-start justify-center p-4 py-6 sm:items-center sm:py-10">
+            <div class="max-w-md w-full bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8 text-left relative my-auto">
+                <button type="button" onclick="closeTicketsModal()"
+                        aria-label="Close"
+                        class="absolute top-3 right-3 z-10 flex h-11 w-11 items-center justify-center rounded-full text-zinc-400 hover:text-white text-3xl leading-none touch-manipulation">
+                    ×
+                </button>
+
+                <h2 class="text-4xl font-bold tracking-tight mb-3 text-center pr-10">Secure Your Spot</h2>
+                <p class="text-xl text-zinc-400 mb-8 text-center">Limited tickets available.</p>
+
+                <div id="sign-in-prompt" class="mb-4 bg-zinc-950 border border-zinc-600 rounded-2xl p-4 text-sm">
+                    <p class="text-white font-medium">Sign in before you buy</p>
+                    <p class="text-zinc-400 mt-1 mb-3">Create an account or sign in to get your discount code and save tickets.</p>
+                    <a href="{{ url_for('legacy_portal', next='/?open_tickets=1') }}"
+                       class="inline-block w-full text-center py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
+                        Sign in
+                    </a>
+                </div>
+
+                <div id="member-banner" class="hidden mb-4 bg-zinc-900 border border-white/30 rounded-2xl p-4 text-sm">
+                    <p class="text-white font-medium">Signed in</p>
+                    <p id="member-discount-line" class="text-zinc-400 mt-1">Your member discount is applied at checkout.</p>
+                    <button type="button" id="member-discount-code-btn" class="hidden mt-3 w-full text-left rounded-xl border px-4 py-3 transition-colors touch-manipulation">
+                        <span class="text-zinc-400 text-xs block mb-1">Member discount code</span>
+                        <span id="member-discount-code-label" class="font-mono text-lg tracking-wider text-white"></span>
+                        <span id="member-discount-code-hint" class="text-zinc-500 text-xs block mt-1"></span>
+                    </button>
+                </div>
+
+                <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 sm:p-8">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <button type="button" id="type-general" onclick="selectTicketType('general')"
+                                class="ticket-type-btn rounded-2xl border-2 border-white bg-white text-black p-5 sm:p-6 text-left transition-colors min-h-[9.5rem] touch-manipulation">
+                            <div class="text-sm sm:text-base font-bold">GA</div>
+                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="ga-price-label">$10</div>
+                            <div class="text-sm mt-3 opacity-80">Main floor</div>
+                        </button>
+                        <button type="button" id="type-vip" onclick="selectTicketType('vip')"
+                                class="ticket-type-btn rounded-2xl border-2 border-zinc-700 p-5 sm:p-6 text-left hover:border-zinc-500 transition-colors min-h-[9.5rem] touch-manipulation">
+                            <div class="text-sm sm:text-base font-bold text-zinc-300" id="vip-type-label">VIP</div>
+                            <div class="text-4xl sm:text-5xl font-bold mt-2 leading-none" id="vip-price-label">$25</div>
+                            <div class="text-sm mt-3 text-zinc-400" id="vip-subtitle">VIP Lounge</div>
+                        </button>
+                    </div>
+
+                    <p class="text-center text-sm text-zinc-300 mb-6 px-4 py-2.5 rounded-2xl border border-zinc-700 bg-zinc-950">
+                        +$5 if you buy at the door
+                    </p>
+
+                    <div class="flex items-center justify-between mb-6">
+                        <span class="text-lg font-semibold text-white">Entries</span>
+                        <div class="flex items-center gap-5">
+                            <button type="button" onclick="changeQuantity(-1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800 touch-manipulation">-</button>
+                            <span id="modal-quantity" class="text-4xl font-bold w-10 text-center tabular-nums">1</span>
+                            <button type="button" onclick="changeQuantity(1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800 touch-manipulation">+</button>
+                        </div>
+                    </div>
+
+                    <div id="pricing-notes" class="mb-4 space-y-2">
+                        <p id="bulk-pricing-note" class="hidden text-sm text-white font-semibold text-center"></p>
+                        <p id="member-discount-note" class="hidden text-sm text-center"></p>
+                    </div>
+
+                    <button type="button" onclick="createCheckoutSession()"
+                            class="w-full py-4 border-2 border-white
+                                   bg-black text-white text-lg font-semibold rounded-2xl
+                                   transition-all duration-500 ease-out
+                                   hover:bg-white hover:text-black hover:border-white
+                                   active:scale-[1.015] hover:scale-[1.015]
+                                   touch-manipulation select-none">
+                        Buy
+                        <span id="modal-original-price" class="hidden line-through text-zinc-500 text-base font-normal mx-1"></span>
+                        <span id="modal-total-price">$10</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script src="{{ url_for('static', filename='js/home.js') }}"></script>
 </body>
