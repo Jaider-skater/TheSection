@@ -72,8 +72,8 @@
                     <tr>
                         <th class="p-4">Email</th>
                         <th class="p-4">Status</th>
-                        <th class="p-4">Added</th>
-                        <th class="p-4">Sent</th>
+                        <th class="p-4">Added ({{ timezone_label }})</th>
+                        <th class="p-4">Sent ({{ timezone_label }})</th>
                         <th class="p-4"></th>
                     </tr>
                 </thead>
@@ -92,8 +92,8 @@
                                 <span class="text-zinc-400">Pending</span>
                             {% endif %}
                         </td>
-                        <td class="p-4 text-zinc-500">{{ (invite.added_at or '')[:16].replace('T', ' ') }}</td>
-                        <td class="p-4 text-zinc-500">{{ (invite.sent_at or '—')[:16].replace('T', ' ') if invite.sent_at else '—' }}</td>
+                        <td class="p-4 text-zinc-500">{{ invite.added_at | local_time }}</td>
+                        <td class="p-4 text-zinc-500">{{ invite.sent_at | local_time }}</td>
                         <td class="p-4 text-right">
                             {% if invite.status not in ['claimed', 'account_exists'] %}
                             <form method="POST" action="/admin/mailing-list?key={{ key }}" class="inline" onsubmit="return confirm('Remove {{ invite.email }} from the list?');">
