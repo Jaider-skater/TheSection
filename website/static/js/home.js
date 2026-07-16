@@ -344,9 +344,34 @@ async function createCheckoutSession() {
     }
 }
 
+let modalScrollY = 0;
+
+function lockPageScroll() {
+    modalScrollY = window.scrollY || window.pageYOffset || 0;
+    document.documentElement.classList.add('overflow-hidden');
+    document.body.classList.add('overflow-hidden');
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${modalScrollY}px`;
+    document.body.style.left = '0';
+    document.body.style.right = '0';
+    document.body.style.width = '100%';
+}
+
+function unlockPageScroll() {
+    document.documentElement.classList.remove('overflow-hidden');
+    document.body.classList.remove('overflow-hidden');
+    document.body.style.position = '';
+    document.body.style.top = '';
+    document.body.style.left = '';
+    document.body.style.right = '';
+    document.body.style.width = '';
+    window.scrollTo(0, modalScrollY);
+}
+
 async function showTicketsModal(options = {}) {
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
+    lockPageScroll();
     modal.style.opacity = '0';
     setTimeout(() => {
         modal.style.transition = 'opacity 0.3s ease-out';
@@ -369,6 +394,7 @@ function closeTicketsModal() {
     modal.style.opacity = '0';
     setTimeout(() => {
         modal.classList.add('hidden');
+        unlockPageScroll();
     }, 300);
 }
 
@@ -386,9 +412,15 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-document.getElementById('tickets-modal').addEventListener('click', function(e) {
-    if (e.target === this) closeTicketsModal();
-});
+const ticketsModal = document.getElementById('tickets-modal');
+if (ticketsModal) {
+    ticketsModal.addEventListener('click', function(e) {
+        const panel = ticketsModal.querySelector('.max-w-md');
+        if (panel && !panel.contains(e.target)) {
+            closeTicketsModal();
+        }
+    });
+}
 
 const hamburgerBtn = document.getElementById('hamburger-btn');
 const menuDropdown = document.getElementById('menu-dropdown');
