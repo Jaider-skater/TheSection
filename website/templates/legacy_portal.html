@@ -196,7 +196,7 @@
                     </div>
                     <div class="flex items-center gap-3">
                         {% if ticket.purchased_at %}
-                        <span class="text-zinc-500 text-xs">{{ ticket.purchased_at[:10] }}</span>
+                        <span class="text-zinc-500 text-xs">{{ ticket.purchased_at | local_date }}</span>
                         {% endif %}
                         {% if ticket.view_url %}
                         <a href="{{ ticket.view_url }}" class="text-sm text-zinc-400 hover:text-white whitespace-nowrap">View</a>
