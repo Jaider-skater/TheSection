@@ -1,1 +1,1 @@
-LOAD_FROM_FILE
+LOAD_FROM_/tmp/app_py_content.txt
