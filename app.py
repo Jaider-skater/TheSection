@@ -1,1 +1,1 @@
-LOAD_FROM_/tmp/cou_content.txt
+LOAD_FROM_/tmp/cou_invoke_now.json
