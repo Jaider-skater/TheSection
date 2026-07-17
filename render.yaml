@@ -44,6 +44,10 @@ services:
         sync: false
       - key: VERIFY_LOGIN_PASSWORD
         sync: false
+      # Secret key from Stripe Dashboard → Developers → API keys
+      # Use sk_live_... for real charges; sk_test_... stays in sandbox.
+      - key: STRIPE_SECRET_KEY
+        sync: false
       - key: BUNDLE_DISCOUNT
         value: "0.10"
       - key: LEGACY_BUNDLE_DISCOUNT
