@@ -10,7 +10,12 @@
     <div class="max-w-md w-full">
         <div class="text-center mb-8">
             <h1 class="text-3xl font-bold mb-2">Door Scanner</h1>
-            <p class="text-zinc-400 text-sm">Staff login required</p>
+            <p class="text-zinc-400 text-sm">
+                Use the staff email/password from Render
+                (<span class="text-zinc-300">VERIFY_LOGIN_EMAIL</span> /
+                <span class="text-zinc-300">VERIFY_LOGIN_PASSWORD</span>),
+                or the same password as that account’s member portal login.
+            </p>
         </div>
 
         {% if error %}
@@ -38,6 +43,12 @@
                 Sign in
             </button>
         </form>
+
+        <p class="mt-6 text-center text-xs text-zinc-500">
+            Ticket sales admin uses a separate admin key at
+            <a href="/admin" class="underline hover:text-zinc-300">/admin</a>,
+            not these scanner credentials.
+        </p>
     </div>
 </body>
 </html>
