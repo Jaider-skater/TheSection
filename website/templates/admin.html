@@ -14,18 +14,22 @@
                 <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions</p>
             </div>
             <div class="flex flex-wrap gap-3">
-                <a href="/admin/tickets.csv?key={{ key }}"
+                <a href="/admin/tickets.csv{% if key %}?key={{ key }}{% endif %}"
                    class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm">
                     Download CSV
                 </a>
-                <a href="/admin/tickets.json?key={{ key }}"
+                <a href="/admin/tickets.json{% if key %}?key={{ key }}{% endif %}"
                    download="thesection-tickets.json"
                    class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
                     Download JSON
                 </a>
-                <a href="/admin/mailing-list?key={{ key }}"
+                <a href="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}"
                    class="px-4 py-2 border border-white text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
                     Mailing List
+                </a>
+                <a href="/admin/logout"
+                   class="px-4 py-2 text-zinc-400 hover:text-white text-sm">
+                    Log out
                 </a>
             </div>
         </div>

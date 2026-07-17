@@ -15,7 +15,7 @@
                     Add past attendees, then send invite links for {{ member_discount_percent }}% off their first purchase.
                 </p>
             </div>
-            <a href="/admin?key={{ key }}"
+            <a href="/admin{% if key %}?key={{ key }}{% endif %}"
                class="text-sm text-zinc-400 hover:text-white">← Ticket admin</a>
         </div>
 
@@ -34,8 +34,8 @@
         <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
             <h2 class="text-lg font-semibold mb-2">Add emails</h2>
             <p class="text-zinc-400 text-sm mb-4">One per line (commas and semicolons also work).</p>
-            <form method="POST" action="/admin/mailing-list?key={{ key }}" class="space-y-4">
-                <input type="hidden" name="key" value="{{ key }}">
+            <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="space-y-4">
+                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                 <input type="hidden" name="action" value="add_emails">
                 <textarea name="emails" rows="6" required
                           placeholder="guest@example.com&#10;friend@gmail.com"
@@ -53,8 +53,8 @@
                 {% if blocked_count %}<span class="text-zinc-500 font-normal text-sm">({{ blocked_count }} already have accounts)</span>{% endif %}
             </h2>
             {% if invites %}
-            <form method="POST" action="/admin/mailing-list?key={{ key }}" id="send-invites-form">
-                <input type="hidden" name="key" value="{{ key }}">
+            <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" id="send-invites-form">
+                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                 <input type="hidden" name="action" value="send_invites">
                 <button type="submit"
                         {% if ready_count == 0 %}disabled{% endif %}
@@ -96,8 +96,8 @@
                         <td class="p-4 text-zinc-500">{{ invite.sent_at | local_time }}</td>
                         <td class="p-4 text-right">
                             {% if invite.status not in ['claimed', 'account_exists'] %}
-                            <form method="POST" action="/admin/mailing-list?key={{ key }}" class="inline" onsubmit="return confirm('Remove {{ invite.email }} from the list?');">
-                                <input type="hidden" name="key" value="{{ key }}">
+                            <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="inline" onsubmit="return confirm('Remove {{ invite.email }} from the list?');">
+                                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                                 <input type="hidden" name="action" value="remove_email">
                                 <input type="hidden" name="email" value="{{ invite.email }}">
                                 <button type="submit" class="text-xs text-zinc-500 hover:text-red-400">Remove</button>
