@@ -950,13 +950,44 @@ def reset_admission_counts():
     }
 
 
+def _admin_key_matches(provided):
+    key = (provided or '').strip()
+    expected = (admin_key or '').strip()
+    if not key or not expected:
+        return False
+    try:
+        return secrets.compare_digest(key, expected)
+    except (TypeError, ValueError):
+        return key == expected
+
+
 def require_admin():
-    key = request.args.get('key') or request.form.get('key', '')
-    return key == admin_key
+    if session.get('admin_authenticated') is True:
+        return True
+    key = request.args.get('key') or request.form.get('key') or ''
+    if _admin_key_matches(key):
+        session['admin_authenticated'] = True
+        return True
+    return False
 
 
 def admin_key_for_templates():
-    return request.args.get('key') or request.form.get('key', '')
+    return (request.args.get('key') or request.form.get('key') or '').strip()
+
+
+def admin_login_required(next_path=None):
+    """Return admin login page when the request is not authorized."""
+    if next_path is None:
+        next_path = request.path or '/admin'
+    if not next_path.startswith('/admin'):
+        next_path = '/admin'
+    provided = (request.args.get('key') or request.form.get('key') or '').strip()
+    error = 'Invalid admin key. Try again.' if provided else None
+    return render_template(
+        'admin_login.html',
+        error=error,
+        next_path=next_path,
+    ), 401
 
 
 def verify_auth_configured():
@@ -2173,10 +2204,40 @@ def legacy_member_invite_signup():
     )
 
 
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    next_path = request.values.get('next') or '/admin'
+    if not next_path.startswith('/admin') or next_path.startswith('//'):
+        next_path = '/admin'
+
+    if request.method == 'POST':
+        key = (request.form.get('key') or '').strip()
+        if _admin_key_matches(key):
+            session['admin_authenticated'] = True
+            # Keep ?key= for bookmarkable links and download URLs that still expect it.
+            sep = '&' if '?' in next_path else '?'
+            return redirect(f'{next_path}{sep}key={key}')
+        return render_template(
+            'admin_login.html',
+            error='Invalid admin key. Try again.',
+            next_path=next_path,
+        ), 401
+
+    if require_admin():
+        return redirect(next_path)
+    return render_template('admin_login.html', error=None, next_path=next_path)
+
+
+@app.route('/admin/logout', methods=['POST', 'GET'])
+def admin_logout():
+    session.pop('admin_authenticated', None)
+    return redirect(url_for('admin_login'))
+
+
 @app.route('/admin/mailing-list', methods=['GET', 'POST'])
 def admin_mailing_list():
     if not require_admin():
-        return 'Unauthorized', 401
+        return admin_login_required('/admin/mailing-list')
 
     key = admin_key_for_templates()
     error = None
@@ -2235,7 +2296,7 @@ def admin_mailing_list():
 @app.route('/admin')
 def admin_dashboard():
     if not require_admin():
-        return 'Unauthorized', 401
+        return admin_login_required('/admin')
 
     tickets = sorted(load_tickets(), key=lambda t: t.get('purchased_at', ''), reverse=True)
     total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
@@ -2244,7 +2305,7 @@ def admin_dashboard():
         tickets=tickets,
         tickets_json=json.dumps(tickets, indent=2),
         total_admissions=total_admissions,
-        key=request.args.get('key'),
+        key=admin_key_for_templates(),
         timezone_label=display_timezone_label(),
     )
 
@@ -2252,7 +2313,7 @@ def admin_dashboard():
 @app.route('/admin/tickets.csv')
 def download_tickets_csv():
     if not require_admin():
-        return 'Unauthorized', 401
+        return admin_login_required('/admin')
 
     tickets = load_tickets()
     output = StringIO()
@@ -2285,7 +2346,7 @@ def download_tickets_csv():
 @app.route('/admin/tickets.json')
 def download_tickets_json():
     if not require_admin():
-        return 'Unauthorized', 401
+        return admin_login_required('/admin')
 
     return Response(
         json.dumps(load_tickets(), indent=2),
