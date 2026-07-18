@@ -1,4 +1,4 @@
-# Assembles full app from _app_parts (avoids oversized single-file deploys).
+# Assembles full app from _app_parts (split for reliable GitHub deploys).
 from pathlib import Path
 
 _parts_dir = Path(__file__).resolve().parent / "_app_parts"
