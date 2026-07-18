@@ -1,4 +1,102 @@
-ets():
+    status = 'sent'
+        rows.append({
+            'email': email,
+            'added_at': invite.get('added_at'),
+            'sent_at': invite.get('sent_at'),
+            'claimed_at': invite.get('claimed_at'),
+            'status': status,
+        })
+    return rows
+
+
+def invites_ready_to_send():
+    ready = []
+    for row in invite_list_for_admin():
+        if row['status'] in ('pending', 'sent'):
+            ready.append(row['email'])
+    return ready
+
+
+def create_member_from_invite(email, password):
+    normalized = email.strip().lower()
+    if get_legacy_member(normalized):
+        return False, 'An account with that email already exists.'
+    discount_code = generate_discount_code(normalized)
+    while discount_code_taken(discount_code):
+        discount_code = generate_discount_code(normalized)
+    with members_lock:
+        members = load_members()
+        members.append({
+            'email': normalized,
+            'password_hash': hash_password(password),
+            'saved_tickets': [],
+            'discount_code': discount_code,
+            'returning_guest_discount': True,
+            'joined_at': datetime.now(timezone.utc).isoformat(),
+        })
+        save_members(members)
+    mark_member_invite_claimed(normalized)
+    return True, None
+
+
+def clear_returning_guest_discount_if_purchased(email):
+    normalized = email.strip().lower()
+    member = get_legacy_member(normalized)
+    if not member or not member.get('returning_guest_discount'):
+        return
+    if not member_has_past_purchases(member):
+        return
+    with members_lock:
+        members = load_members()
+        for stored in members:
+            if stored.get('email', '').strip().lower() == normalized:
+                stored.pop('returning_guest_discount', None)
+                save_members(members)
+                break
+
+
+def member_has_past_purchases(member):
+    if not member:
+        return False
+    email = member.get('email', '').strip().lower()
+    if email:
+        for ticket in load_tickets():
+            if ticket.get('email', '').lower() == email:
+                return True
+    for ticket_id in member.get('saved_tickets', []):
+        if get_ticket_record(ticket_id):
+            return True
+    return False
+
+
+def member_has_returning_guest_discount(member):
+    return bool(member and member.get('returning_guest_discount'))
+
+
+def member_discount_eligible(member):
+    if not member:
+        return False
+    return member_has_past_purchases(member) or member_has_returning_guest_discount(member)
+
+
+def member_discount_active():
+    if not is_legacy_member_logged_in():
+        return False
+    member = get_logged_in_member()
+    return member_discount_eligible(member)
+
+
+def resolve_member_discount_application(requested):
+    if not requested:
+        return False
+    return member_discount_active()
+
+
+def sync_member_tickets_from_email(member):
+    email = member.get('email', '').strip().lower()
+    if not email:
+        return
+    for ticket in load_tickets():
         ticket_id = ticket.get('ticket_id')
         if ticket.get('email', '').lower() == email and ticket_id:
             add_saved_ticket_for_member(email, ticket_id)
@@ -111,134 +209,4 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
         'total_cents': total_cents,
         'base_total_cents': base_total_cents,
         'base_unit_price_cents': base,
-        'vip_bundle_applied': vip_bundle_applied,
-        'bundle_discount_applied': bundle_discount_applied,
-        'member_discount_applied': member_discount_applied,
-        'stacked_discount_applied': stacked_discount_applied,
-        'combined_discount_percent': combined_discount_percent,
-        'legacy_discount_applied': total_cents < base_total_cents,
-        'bundle_min': bulk_min,
-        'bundle_discount_percent': bulk_percent,
-        'member_discount_percent': int(member_discount * 100),
-        'vip_bundle_min': vip_bundle_min,
-        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
-    }
-
-
-def add_saved_ticket_for_member(email, ticket_id):
-    normalized_id = normalize_ticket_id(ticket_id)
-    if not normalized_id:
-        return False
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == email.strip().lower():
-                saved = member.setdefault('saved_tickets', [])
-                if normalized_id not in saved:
-                    saved.append(normalized_id)
-                    save_members(members)
-                return True
-    return False
-
-
-def remove_saved_ticket_for_member(email, ticket_id):
-    normalized_id = normalize_ticket_id(ticket_id)
-    if not normalized_id:
-        return False
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == email.strip().lower():
-                saved = member.get('saved_tickets', [])
-                if normalized_id in saved:
-                    saved.remove(normalized_id)
-                    save_members(members)
-                return True
-    return False
-
-
-def ticket_result_meta(record):
-    ticket_type = record.get('ticket_type', 'general')
-    access = record.get('access') or TICKET_TYPES.get(ticket_type, {}).get('access')
-    return {
-        'ticket_type': ticket_type,
-        'access': access,
-        'is_vip': ticket_type == 'vip',
-    }
-
-
-def normalize_ticket_id(ticket_id):
-    if not ticket_id:
-        return None
-    normalized = str(ticket_id).strip().upper().replace('-', '')
-    return normalized if normalized.isalnum() else None
-
-
-def get_ticket_record(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return None
-    for ticket in load_tickets():
-        stored = normalize_ticket_id(ticket.get('ticket_id'))
-        if stored == normalized:
-            return ticket
-    return None
-
-
-def mark_ticket_scanned(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return False
-    with tickets_lock:
-        tickets = load_tickets()
-        for ticket in tickets:
-            if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
-                if ticket.get('scanned_at'):
-                    return False
-                ticket['scanned_at'] = datetime.now(timezone.utc).isoformat()
-                save_tickets(tickets)
-                return True
-    return False
-
-
-def parse_iso_datetime(raw):
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        return None
-
-
-_display_tz = None
-
-
-def get_display_timezone():
-    global _display_tz
-    if _display_tz is None:
-        try:
-            _display_tz = ZoneInfo(APP_TIMEZONE)
-        except Exception:
-            _display_tz = ZoneInfo('America/Los_Angeles')
-    return _display_tz
-
-
-def display_timezone_label():
-    return datetime.now(get_display_timezone()).strftime('%Z')
-
-
-def format_display_datetime(iso_raw, date_only=False):
-    dt = parse_iso_datetime(iso_raw)
-    if not dt:
-        return '—'
-    local = dt.astimezone(get_display_timezone())
-    if date_only:
-        return local.strftime('%Y-%m-%d')
-    return local.strftime('%Y-%m-%d %H:%M')
-
-
-@app.template_filter('local_time')
-def local_ti
+        'vip_bundle_applied': vip
