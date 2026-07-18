@@ -1,4 +1,38 @@
-   return None
+nt(f'Failed to create data directory ({directory}):', e)
+        return False
+
+
+def load_tickets():
+    if not ensure_data_dir(tickets_file):
+        return []
+    if not os.path.exists(tickets_file):
+        return []
+    try:
+        with open(tickets_file, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError) as e:
+        print(f'Failed to load tickets file ({tickets_file}):', e)
+        return []
+
+
+def save_tickets(tickets):
+    if not ensure_data_dir(tickets_file):
+        return False
+    try:
+        with open(tickets_file, 'w', encoding='utf-8') as f:
+            json.dump(tickets, f, indent=2)
+        return True
+    except OSError as e:
+        print(f'Failed to save tickets file ({tickets_file}):', e)
+        return False
+
+
+def get_ticket_by_session(session_id):
+    for ticket in load_tickets():
+        if ticket.get('session_id') == session_id:
+            return ticket
+    return None
 
 
 def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False):
@@ -178,61 +212,4 @@ def verify_legacy_login(email, password):
     return False
 
 
-PASSWORD_RESET_HOURS = int(os.getenv('PASSWORD_RESET_HOURS', '1'))
-
-
-def hash_reset_token(token):
-    return hashlib.sha256(token.encode('utf-8')).hexdigest()
-
-
-def set_password_reset_token(email):
-    token = secrets.token_urlsafe(32)
-    expires = datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_HOURS)
-    normalized = email.strip().lower()
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == normalized:
-                member['password_reset_token'] = hash_reset_token(token)
-                member['password_reset_expires'] = expires.isoformat()
-                save_members(members)
-                return token
-    return None
-
-
-def verify_password_reset_token(email, token):
-    member = get_legacy_member(email)
-    if not member or not token or not member.get('password_reset_token'):
-        return False
-    expires_raw = member.get('password_reset_expires')
-    if not expires_raw:
-        return False
-    try:
-        expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return False
-    if datetime.now(timezone.utc) > expires:
-        return False
-    return member['password_reset_token'] == hash_reset_token(token)
-
-
-def update_member_password(email, new_password):
-    normalized = email.strip().lower()
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == normalized:
-                member['password_hash'] = hash_password(new_password)
-                member.pop('code_hash', None)
-                member.pop('password_reset_token', None)
-                member.pop('password_reset_expires', None)
-                save_members(members)
-                return True
-    return False
-
-
-def load_invites():
-    if not ensure_data_dir(invites_file):
-        retu
+PAS
