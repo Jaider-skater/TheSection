@@ -6,38 +6,49 @@
     <title>Your Ticket • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center p-6">
-    <div class="max-w-md w-full text-center">
-        {% if error %}
-            <h1 class="text-2xl font-bold mb-4">Ticket not found</h1>
-            <p class="text-zinc-400">{{ error }}</p>
-        {% else %}
-            <h1 class="text-3xl font-bold mb-2">Your Ticket</h1>
-            <p class="text-2xl font-black mb-1 {% if ticket.is_vip %}text-purple-400{% else %}text-emerald-400{% endif %}">
-                {% if ticket.is_vip %}VIP{% else %}GA{% endif %}
-            </p>
-            <p class="text-zinc-400 mb-6">{{ ticket.quantity }} {% if ticket.quantity == 1 %}guest{% else %}guests{% endif %}</p>
-
-            {% if ticket.scanned %}
-            <p class="mb-6 px-4 py-2 rounded-full border border-zinc-600 text-zinc-400 text-sm inline-block">Already scanned at the door</p>
+<body class="bg-zinc-950 text-white min-h-dvh">
+    <main class="min-h-dvh w-full flex flex-col items-center justify-center px-6 py-10 box-border">
+        <div class="w-full max-w-md mx-auto flex flex-col items-center text-center gap-5">
+            {% if error %}
+                <h1 class="text-2xl font-bold">Ticket not found</h1>
+                <p class="text-zinc-400">{{ error }}</p>
             {% else %}
-            <p class="mb-6 px-4 py-2 rounded-full border border-white/30 text-white text-sm inline-block">Ready for entry</p>
+                <div class="w-full flex flex-col items-center gap-2">
+                    <h1 class="text-3xl font-bold">Your Ticket</h1>
+                    <p class="text-2xl font-black {% if ticket.is_vip %}text-purple-400{% else %}text-emerald-400{% endif %}">
+                        {% if ticket.is_vip %}VIP{% else %}GA{% endif %}
+                    </p>
+                    <p class="text-zinc-400">
+                        {{ ticket.quantity }} {% if ticket.quantity == 1 %}guest{% else %}guests{% endif %}
+                    </p>
+                </div>
+
+                {% if ticket.scanned %}
+                <p class="px-4 py-2 rounded-full border border-zinc-600 text-zinc-400 text-sm">Already scanned at the door</p>
+                {% else %}
+                <p class="px-4 py-2 rounded-full border border-white/30 text-white text-sm">Ready for entry</p>
+                {% endif %}
+
+                <div class="bg-white p-5 sm:p-6 rounded-3xl shadow-2xl w-fit max-w-full">
+                    <img src="data:image/png;base64,{{ ticket_data }}"
+                         class="w-64 h-64 max-w-full mx-auto block" alt="QR Ticket">
+                </div>
+
+                <div class="w-full flex flex-col items-center gap-1">
+                    <p class="text-sm text-zinc-400">Ticket ID</p>
+                    <p class="font-mono text-lg break-all">{{ ticket.ticket_id }}</p>
+                </div>
+
+                <p class="text-zinc-500 text-xs leading-relaxed max-w-xs">
+                    Show this QR at the door. Viewing here does not use your ticket.
+                </p>
             {% endif %}
 
-            <div class="bg-white p-6 rounded-3xl shadow-2xl inline-block mb-6">
-                <img src="data:image/png;base64,{{ ticket_data }}"
-                     class="w-64 h-64 mx-auto" alt="QR Ticket">
+            <div class="w-full flex flex-col items-center gap-3 pt-2">
+                <a href="/legacy" class="text-zinc-400 hover:text-white text-sm">← Back to portal</a>
+                <a href="/" class="text-zinc-500 hover:text-zinc-300 text-sm">Home</a>
             </div>
-
-            <p class="text-sm text-zinc-400 mb-1">Ticket ID</p>
-            <p class="font-mono text-lg mb-6">{{ ticket.ticket_id }}</p>
-            <p class="text-zinc-500 text-xs leading-relaxed">Show this QR at the door. Viewing here does not use your ticket.</p>
-        {% endif %}
-
-        <div class="mt-8 flex flex-col gap-3">
-            <a href="/legacy" class="text-zinc-400 hover:text-white text-sm">← Back to portal</a>
-            <a href="/" class="text-zinc-500 hover:text-zinc-300 text-sm">Home</a>
         </div>
-    </div>
+    </main>
 </body>
 </html>
