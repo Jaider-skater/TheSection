@@ -1,4 +1,61 @@
-rn []
+SWORD_RESET_HOURS = int(os.getenv('PASSWORD_RESET_HOURS', '1'))
+
+
+def hash_reset_token(token):
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def set_password_reset_token(email):
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_HOURS)
+    normalized = email.strip().lower()
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').lower() == normalized:
+                member['password_reset_token'] = hash_reset_token(token)
+                member['password_reset_expires'] = expires.isoformat()
+                save_members(members)
+                return token
+    return None
+
+
+def verify_password_reset_token(email, token):
+    member = get_legacy_member(email)
+    if not member or not token or not member.get('password_reset_token'):
+        return False
+    expires_raw = member.get('password_reset_expires')
+    if not expires_raw:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    if datetime.now(timezone.utc) > expires:
+        return False
+    return member['password_reset_token'] == hash_reset_token(token)
+
+
+def update_member_password(email, new_password):
+    normalized = email.strip().lower()
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').lower() == normalized:
+                member['password_hash'] = hash_password(new_password)
+                member.pop('code_hash', None)
+                member.pop('password_reset_token', None)
+                member.pop('password_reset_expires', None)
+                save_members(members)
+                return True
+    return False
+
+
+def load_invites():
+    if not ensure_data_dir(invites_file):
+        return []
     if not os.path.exists(invites_file):
         return []
     try:
@@ -155,102 +212,4 @@ def invite_list_for_admin():
         elif invite.get('claimed_at'):
             status = 'claimed'
         elif invite.get('sent_at'):
-            status = 'sent'
-        rows.append({
-            'email': email,
-            'added_at': invite.get('added_at'),
-            'sent_at': invite.get('sent_at'),
-            'claimed_at': invite.get('claimed_at'),
-            'status': status,
-        })
-    return rows
-
-
-def invites_ready_to_send():
-    ready = []
-    for row in invite_list_for_admin():
-        if row['status'] in ('pending', 'sent'):
-            ready.append(row['email'])
-    return ready
-
-
-def create_member_from_invite(email, password):
-    normalized = email.strip().lower()
-    if get_legacy_member(normalized):
-        return False, 'An account with that email already exists.'
-    discount_code = generate_discount_code(normalized)
-    while discount_code_taken(discount_code):
-        discount_code = generate_discount_code(normalized)
-    with members_lock:
-        members = load_members()
-        members.append({
-            'email': normalized,
-            'password_hash': hash_password(password),
-            'saved_tickets': [],
-            'discount_code': discount_code,
-            'returning_guest_discount': True,
-            'joined_at': datetime.now(timezone.utc).isoformat(),
-        })
-        save_members(members)
-    mark_member_invite_claimed(normalized)
-    return True, None
-
-
-def clear_returning_guest_discount_if_purchased(email):
-    normalized = email.strip().lower()
-    member = get_legacy_member(normalized)
-    if not member or not member.get('returning_guest_discount'):
-        return
-    if not member_has_past_purchases(member):
-        return
-    with members_lock:
-        members = load_members()
-        for stored in members:
-            if stored.get('email', '').strip().lower() == normalized:
-                stored.pop('returning_guest_discount', None)
-                save_members(members)
-                break
-
-
-def member_has_past_purchases(member):
-    if not member:
-        return False
-    email = member.get('email', '').strip().lower()
-    if email:
-        for ticket in load_tickets():
-            if ticket.get('email', '').lower() == email:
-                return True
-    for ticket_id in member.get('saved_tickets', []):
-        if get_ticket_record(ticket_id):
-            return True
-    return False
-
-
-def member_has_returning_guest_discount(member):
-    return bool(member and member.get('returning_guest_discount'))
-
-
-def member_discount_eligible(member):
-    if not member:
-        return False
-    return member_has_past_purchases(member) or member_has_returning_guest_discount(member)
-
-
-def member_discount_active():
-    if not is_legacy_member_logged_in():
-        return False
-    member = get_logged_in_member()
-    return member_discount_eligible(member)
-
-
-def resolve_member_discount_application(requested):
-    if not requested:
-        return False
-    return member_discount_active()
-
-
-def sync_member_tickets_from_email(member):
-    email = member.get('email', '').strip().lower()
-    if not email:
-        return
-    for ticket in load_tick
+        
