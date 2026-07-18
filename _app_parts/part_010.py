@@ -1,181 +1,165 @@
-en_valid = verify_member_invite_token(email, token)
+ {guest_word} admitted"
+        if result['status'] == 'used':
+            qty = result['quantity']
+            guest_word = 'guest' if qty == 1 else 'guests'
+            return f"❌ Already used ({qty} {guest_word})"
+        if result['status'] == 'sold_out':
+            return '❌ Max capacity reached — congrats on selling this place out!'
+        return "Invalid ticket"
+
+    return render_template('verify.html', admission_totals=get_admission_totals())
+
+
+def portal_context(member=None, saved_ticket_details=None, error=None, success=None, next_url='', active_tab='login'):
+    logged_in = member or get_logged_in_member()
+    if logged_in:
+        sync_member_tickets_from_email(logged_in)
+        logged_in = get_logged_in_member()
+        if member_discount_eligible(logged_in) and not logged_in.get('discount_code'):
+            ensure_member_discount_code(logged_in)
+            logged_in = get_logged_in_member()
+        saved_ticket_details = []
+        for ticket_id in logged_in.get('saved_tickets', []):
+            record = get_ticket_record(ticket_id)
+            if record:
+                saved_ticket_details.append({
+                    'ticket_id': ticket_id,
+                    'quantity': record.get('quantity', 1),
+                    'ticket_type': record.get('ticket_type', 'general'),
+                    'purchased_at': record.get('purchased_at', ''),
+                    'scanned': bool(record.get('scanned_at')),
+                    'view_url': ticket_display_url(ticket_id),
+                })
+    return {
+        'error': error,
+        'success': success,
+        'member': logged_in,
+        'saved_ticket_details': saved_ticket_details or [],
+        'has_past_purchases': member_has_past_purchases(logged_in) if logged_in else False,
+        'has_returning_guest_discount': member_has_returning_guest_discount(logged_in) if logged_in else False,
+        'discount_eligible': member_discount_eligible(logged_in) if logged_in else False,
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
+        'member_discount_percent': int(member_discount * 100),
+        'vip_bundle_min': vip_bundle_min,
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
+        'next_url': next_url,
+        'active_tab': active_tab,
+        'show_scanner_link': is_scanner_admin_member(),
+    }
+
+
+@app.route('/legacy/reset-password', methods=['GET', 'POST'])
+@app.route('/reset-password', methods=['GET', 'POST'])
+def reset_password():
+    email = (
+        request.form.get('email', '').strip().lower()
+        or request.args.get('email', '').strip().lower()
+    )
+    token = request.form.get('token', '') or request.args.get('token', '')
+    error = None
+
+    if not email or not token:
+        return redirect(url_for('legacy_portal'))
+
+    token_valid = verify_password_reset_token(email, token)
     if request.method == 'POST':
         new_password = request.form.get('new_password', '')
         confirm_password = request.form.get('confirm_password', '')
         if not token_valid:
-            error = 'This invite link is invalid or has expired.'
+            error = 'This reset link is invalid or has expired. Request a new one from the member portal.'
         elif new_password != confirm_password:
             error = 'Passwords do not match.'
         elif len(new_password) < 8:
             error = 'Password must be at least 8 characters.'
+        elif update_member_password(email, new_password):
+            session['legacy_member_email'] = email
+            return redirect(url_for('legacy_portal'))
         else:
-            ok, create_error = create_member_from_invite(email, new_password)
-            if ok:
-                session['legacy_member_email'] = email
-                return redirect('/?open_tickets=1')
-            error = create_error or 'Could not create your account. Try again or contact support.'
+            error = 'Could not update password. Try again or contact support.'
 
     return render_template(
-        'legacy_invite_signup.html',
+        'legacy_reset_password.html',
         email=email,
         token=token,
         token_valid=token_valid,
         error=error,
-        invite_days=INVITE_EXPIRY_DAYS,
-        member_discount_percent=int(member_discount * 100),
+        success=None,
+        reset_hours=PASSWORD_RESET_HOURS,
     )
 
 
-@app.route('/admin/login', methods=['GET', 'POST'])
-def admin_login():
-    next_path = request.values.get('next') or '/admin'
-    if not next_path.startswith('/admin') or next_path.startswith('//'):
-        next_path = '/admin'
-
-    if request.method == 'POST':
-        key = (request.form.get('key') or '').strip()
-        if _admin_key_matches(key):
-            session['admin_authenticated'] = True
-            # Keep ?key= for bookmarkable links and download URLs that still expect it.
-            sep = '&' if '?' in next_path else '?'
-            return redirect(f'{next_path}{sep}key={key}')
-        return render_template(
-            'admin_login.html',
-            error='Invalid admin key. Try again.',
-            next_path=next_path,
-        ), 401
-
-    if require_admin():
-        return redirect(next_path)
-    return render_template('admin_login.html', error=None, next_path=next_path)
-
-
-@app.route('/admin/logout', methods=['POST', 'GET'])
-def admin_logout():
-    session.pop('admin_authenticated', None)
-    return redirect(url_for('admin_login'))
-
-
-@app.route('/admin/mailing-list', methods=['GET', 'POST'])
-def admin_mailing_list():
-    if not require_admin():
-        return admin_login_required('/admin/mailing-list')
-
-    key = admin_key_for_templates()
-    error = None
-    success = None
+@app.route('/members', methods=['GET', 'POST'])
+@app.route('/legacy', methods=['GET', 'POST'])
+def legacy_portal():
+    next_url = request.args.get('next', '')
+    member = get_logged_in_member()
 
     if request.method == 'POST':
         action = request.form.get('action')
-        if action == 'add_emails':
-            emails = normalize_email_list(request.form.get('emails', ''))
-            if not emails:
-                error = 'Add at least one valid email address.'
+        next_url = request.form.get('next') or request.args.get('next', '')
+
+        if action == 'register':
+            email = request.form.get('email', '').strip().lower()
+            password = request.form.get('password', '')
+            confirm_password = request.form.get('confirm_password', '')
+            if not email or not password:
+                error = 'Email and password are required.'
+            elif password != confirm_password:
+                error = 'Passwords do not match.'
+            elif len(password) < 8:
+                error = 'Password must be at least 8 characters.'
+            elif get_legacy_member(email):
+                error = 'An account with that email already exists.'
             else:
-                added, skipped = add_emails_to_invite_list(emails)
-                parts = []
-                if added:
-                    parts.append(f'Added {len(added)} email{"s" if len(added) != 1 else ""}.')
-                if skipped:
-                    parts.append(f'{len(skipped)} already on the list.')
-                success = ' '.join(parts) or 'No new emails added.'
-        elif action == 'remove_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_invite_list(email):
-                success = f'Removed {email} from the list.'
+                with members_lock:
+                    members = load_members()
+                    members.append({
+                        'email': email,
+                        'password_hash': hash_password(password),
+                        'saved_tickets': [],
+                        'joined_at': datetime.now(timezone.utc).isoformat(),
+                    })
+                    save_members(members)
+                session['legacy_member_email'] = email
+                if next_url.startswith('/'):
+                    return redirect(next_url)
+                return redirect(url_for('legacy_portal'))
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(error=error, next_url=next_url, active_tab='register'),
+            )
+
+        if action == 'login':
+            email = request.form.get('email', '').strip().lower()
+            password = request.form.get('password', '')
+            if verify_legacy_login(email, password):
+                session['legacy_member_email'] = email
+                if next_url.startswith('/'):
+                    return redirect(next_url)
+                return redirect(url_for('legacy_portal'))
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(
+                    error='Invalid email or password.',
+                    next_url=next_url,
+                    active_tab='login',
+                ),
+            )
+
+        if action == 'forgot_password':
+            logged_in_member = get_logged_in_member()
+            email = request.form.get('email', '').strip().lower()
+            if logged_in_member:
+                email = logged_in_member['email']
+            sent = False
+            member = get_legacy_member(email)
+            if not member:
+                print(f"Password reset skipped; no member account for {email}")
             else:
-                error = 'Could not remove that email.'
-        elif action == 'send_invites':
-            result = send_pending_member_invites()
-            sent_count = len(result['sent'])
-            failed_count = len(result['failed'])
-            if sent_count:
-                success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
-                if failed_count:
-                    success += f' {failed_count} failed to send.'
-            elif failed_count:
-                error = f'Could not send invites ({failed_count} failed). Check mail settings.'
-            else:
-                success = 'No pending invites to send.'
-
-    invites = invite_list_for_admin()
-    ready_count = len(invites_ready_to_send())
-    blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
-    return render_template(
-        'mailing_list.html',
-        invites=invites,
-        ready_count=ready_count,
-        blocked_count=blocked_count,
-        key=key,
-        error=error,
-        success=success,
-        member_discount_percent=int(member_discount * 100),
-        invite_days=INVITE_EXPIRY_DAYS,
-        timezone_label=display_timezone_label(),
-    )
-
-
-@app.route('/admin')
-def admin_dashboard():
-    if not require_admin():
-        return admin_login_required('/admin')
-
-    tickets = sorted(load_tickets(), key=lambda t: t.get('purchased_at', ''), reverse=True)
-    total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
-    return render_template(
-        'admin.html',
-        tickets=tickets,
-        tickets_json=json.dumps(tickets, indent=2),
-        total_admissions=total_admissions,
-        key=admin_key_for_templates(),
-        timezone_label=display_timezone_label(),
-    )
-
-
-@app.route('/admin/tickets.csv')
-def download_tickets_csv():
-    if not require_admin():
-        return admin_login_required('/admin')
-
-    tickets = load_tickets()
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        'purchased_at', 'ticket_id', 'email', 'quantity', 'ticket_type', 'access',
-        'legacy_discount', 'scanned_at', 'email_sent_at', 'verify_url',
-    ])
-    for ticket in tickets:
-        writer.writerow([
-            ticket.get('purchased_at', ''),
-            ticket.get('ticket_id', ''),
-            ticket.get('email', ''),
-            ticket.get('quantity', ''),
-            ticket.get('ticket_type', 'general'),
-            ticket.get('access', ''),
-            ticket.get('legacy_discount', False),
-            ticket.get('scanned_at', ''),
-            ticket.get('email_sent_at', ''),
-            ticket.get('verify_url', ''),
-        ])
-
-    return Response(
-        output.getvalue(),
-        mimetype='text/csv',
-        headers={'Content-Disposition': 'attachment; filename=thesection-tickets.csv'},
-    )
-
-
-@app.route('/admin/tickets.json')
-def download_tickets_json():
-    if not require_admin():
-        return admin_login_required('/admin')
-
-    return Response(
-        json.dumps(load_tickets(), indent=2),
-        mimetype='application/json',
-        headers={'Content-Disposition': 'attachment; filename=thesection-tickets.json'},
-    )
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+                token = set_password_reset_token(email)
+                if not token:
+                    print(f"Password reset token not saved for {email}")
+                else:
+                    reset_url = (
+     
