@@ -1,4 +1,59 @@
-                   f"{get_public_base_url()}/reset-password?"
+           elif len(password) < 8:
+                error = 'Password must be at least 8 characters.'
+            elif get_legacy_member(email):
+                error = 'An account with that email already exists.'
+            else:
+                with members_lock:
+                    members = load_members()
+                    members.append({
+                        'email': email,
+                        'password_hash': hash_password(password),
+                        'saved_tickets': [],
+                        'joined_at': datetime.now(timezone.utc).isoformat(),
+                    })
+                    save_members(members)
+                session['legacy_member_email'] = email
+                if next_url.startswith('/'):
+                    return redirect(next_url)
+                return redirect(url_for('legacy_portal'))
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(error=error, next_url=next_url, active_tab='register'),
+            )
+
+        if action == 'login':
+            email = request.form.get('email', '').strip().lower()
+            password = request.form.get('password', '')
+            if verify_legacy_login(email, password):
+                session['legacy_member_email'] = email
+                if next_url.startswith('/'):
+                    return redirect(next_url)
+                return redirect(url_for('legacy_portal'))
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(
+                    error='Invalid email or password.',
+                    next_url=next_url,
+                    active_tab='login',
+                ),
+            )
+
+        if action == 'forgot_password':
+            logged_in_member = get_logged_in_member()
+            email = request.form.get('email', '').strip().lower()
+            if logged_in_member:
+                email = logged_in_member['email']
+            sent = False
+            member = get_legacy_member(email)
+            if not member:
+                print(f"Password reset skipped; no member account for {email}")
+            else:
+                token = set_password_reset_token(email)
+                if not token:
+                    print(f"Password reset token not saved for {email}")
+                else:
+                    reset_url = (
+                        f"{get_public_base_url()}/reset-password?"
                         f"{urlencode({'email': email, 'token': token})}"
                     )
                     sent = deliver_password_reset_email(email, token, reset_url=reset_url)
@@ -72,6 +127,7 @@ def legacy_member_invite_signup():
             error='This invite link is incomplete. Use the link from your email.',
             invite_days=INVITE_EXPIRY_DAYS,
             member_discount_percent=int(member_discount * 100),
+            returning_guest_discount_percent=int(returning_guest_discount * 100),
         )
 
     token_valid = verify_member_invite_token(email, token)
@@ -99,6 +155,7 @@ def legacy_member_invite_signup():
         error=error,
         invite_days=INVITE_EXPIRY_DAYS,
         member_discount_percent=int(member_discount * 100),
+        returning_guest_discount_percent=int(returning_guest_discount * 100),
     )
 
 
@@ -111,67 +168,4 @@ def admin_login():
     if request.method == 'POST':
         key = (request.form.get('key') or '').strip()
         if _admin_key_matches(key):
-            session['admin_authenticated'] = True
-            # Keep ?key= for bookmarkable links and download URLs that still expect it.
-            sep = '&' if '?' in next_path else '?'
-            return redirect(f'{next_path}{sep}key={key}')
-        return render_template(
-            'admin_login.html',
-            error='Invalid admin key. Try again.',
-            next_path=next_path,
-        ), 401
-
-    if require_admin():
-        return redirect(next_path)
-    return render_template('admin_login.html', error=None, next_path=next_path)
-
-
-@app.route('/admin/logout', methods=['POST', 'GET'])
-def admin_logout():
-    session.pop('admin_authenticated', None)
-    return redirect(url_for('admin_login'))
-
-
-@app.route('/admin/mailing-list', methods=['GET', 'POST'])
-def admin_mailing_list():
-    if not require_admin():
-        return admin_login_required('/admin/mailing-list')
-
-    key = admin_key_for_templates()
-    error = None
-    success = None
-
-    if request.method == 'POST':
-        action = request.form.get('action')
-        if action == 'add_emails':
-            emails = normalize_email_list(request.form.get('emails', ''))
-            if not emails:
-                error = 'Add at least one valid email address.'
-            else:
-                added, skipped = add_emails_to_invite_list(emails)
-                parts = []
-                if added:
-                    parts.append(f'Added {len(added)} email{"s" if len(added) != 1 else ""}.')
-                if skipped:
-                    parts.append(f'{len(skipped)} already on the list.')
-                success = ' '.join(parts) or 'No new emails added.'
-        elif action == 'remove_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_invite_list(email):
-                success = f'Removed {email} from the list.'
-            else:
-                error = 'Could not remove that email.'
-        elif action == 'send_invites':
-            result = send_pending_member_invites()
-            sent_count = len(result['sent'])
-            failed_count = len(result['failed'])
-            if sent_count:
-                success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
-                if failed_count:
-                    success += f' {failed_count} failed to send.'
-            elif failed_count:
-                error = f'Could not send invites ({failed_count} failed). Check mail settings.'
-            else:
-                success = 'No pending invites to send.'
-
-    invites 
+            session['admin_authenti
