@@ -1,4 +1,11 @@
-    status = 'sent'
+acy_member(email)
+        status = 'pending'
+        if member:
+            status = 'account_exists'
+        elif invite.get('claimed_at'):
+            status = 'claimed'
+        elif invite.get('sent_at'):
+            status = 'sent'
         rows.append({
             'email': email,
             'added_at': invite.get('added_at'),
@@ -92,6 +99,21 @@ def resolve_member_discount_application(requested):
     return member_discount_active()
 
 
+def active_member_discount_rate(quantity=1):
+    """Percent rate (0–1) when member discount is applied.
+
+    Returning-guest list members get the higher rate only for quantity 1
+    so they can bring friends on multi-ticket orders at the normal member rate.
+    """
+    if not member_discount_active():
+        return 0.0
+    member = get_logged_in_member()
+    quantity = max(1, int(quantity or 1))
+    if member_has_returning_guest_discount(member) and quantity == 1:
+        return returning_guest_discount if returning_guest_discount > 0 else member_discount
+    return member_discount if member_discount > 0 else 0.0
+
+
 def sync_member_tickets_from_email(member):
     email = member.get('email', '').strip().lower()
     if not email:
@@ -148,14 +170,20 @@ def calculate_bulk_total_cents(ticket_type, quantity):
 def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
     base_total = base * quantity
+    quantity = max(1, int(quantity or 1))
 
-    if not apply_member_discount or member_discount <= 0:
+    if not apply_member_discount:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
-    if bulk_discount_applies(ticket_type, quantity):
-        return int(base_total * (1 - bulk_discount_rate(ticket_type) - member_discount))
+    rate = active_member_discount_rate(quantity)
+    if rate <= 0:
+        return calculate_bulk_total_cents(ticket_type, quantity)
 
-    return int(base_total * (1 - member_discount))
+    # Single-ticket returning-guest rate does not stack with bulk (qty is always 1).
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
+
+    return int(base_total * (1 - rate))
 
 
 def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
@@ -165,48 +193,16 @@ def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
 
 
 def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
+    quantity = max(1, int(quantity or 1))
     base = TICKET_TYPES[ticket_type]['price_cents']
     base_total_cents = base * quantity
     bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
+    rate = active_member_discount_rate(quantity) if apply_member_discount else 0.0
     total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
     unit_price = total_cents // quantity
 
     bulk_savings_active = bulk_only_total < base_total_cents
-    member_requested = apply_member_discount and member_discount > 0
+    member_requested = apply_member_discount and rate > 0
     stacked_discount_applied = (
         bulk_savings_active and member_requested and total_cents < bulk_only_total
-    )
-
-    member_only_total = (
-        int(base_total_cents * (1 - member_discount))
-        if member_requested
-        else None
-    )
-
-    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
-    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
-    member_discount_applied = (
-        member_requested
-        and not stacked_discount_applied
-        and not bulk_savings_active
-        and member_only_total is not None
-        and total_cents == member_only_total
-    )
-
-    combined_discount_percent = None
-    if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
-        combined_discount_percent = int(
-            (bulk_discount_rate(ticket_type) + member_discount) * 100
-        )
-
-    bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
-    bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
-
-    return {
-        'ticket_type': ticket_type,
-        'quantity': quantity,
-        'unit_price_cents': unit_price,
-        'total_cents': total_cents,
-        'base_total_cents': base_total_cents,
-        'base_unit_price_cents': base,
-        'vip_bundle_applied': vip
+    
