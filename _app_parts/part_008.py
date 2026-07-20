@@ -1,4 +1,59 @@
-')
+mail)
+            continue
+        invite_url = build_member_invite_url(email, token)
+        if deliver_member_invite_email(email, token, invite_url=invite_url):
+            mark_member_invite_sent(email)
+            sent.append(email)
+        else:
+            failed.append(email)
+    return {'sent': sent, 'failed': failed, 'skipped': skipped}
+
+
+@app.route('/')
+def home():
+    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
+
+
+@app.route('/api/member-status')
+def member_status():
+    member = get_logged_in_member()
+    discount_code = None
+    discount_eligible = False
+    if member:
+        discount_eligible = member_discount_eligible(member)
+        if discount_eligible:
+            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
+    return jsonify({
+        'logged_in': bool(member),
+        'email': session.get('legacy_member_email'),
+        'discount_code': discount_code,
+        'member_discount_eligible': discount_eligible,
+        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
+        'member_discount_percent': int(member_discount * 100),
+        'returning_guest_discount_percent': int(returning_guest_discount * 100),
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
+        'vip_bundle_min': vip_bundle_min,
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
+        'ticket_types': {
+            key: {
+                'name': meta['name'],
+                'price_cents': meta['price_cents'],
+                'access': meta.get('access'),
+            }
+            for key, meta in TICKET_TYPES.items()
+        },
+    })
+
+
+@app.route('/api/pricing')
+def pricing():
+    ticket_type = request.args.get('ticket_type', 'general')
+    quantity = max(1, int(request.args.get('quantity', 1)))
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    apply_member = resolve_member_discount_application(
+        request.args.get('apply_member_discount', '').lower() in ('1', 'true', 'yes')
     )
     return jsonify(pricing_breakdown(ticket_type, quantity, apply_member))
 
@@ -25,10 +80,14 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
     elif breakdown['member_discount_applied']:
         member = get_logged_in_member()
         code = member.get('discount_code') if member else None
+        applied_pct = breakdown.get('applied_member_discount_percent') or breakdown.get(
+            'member_discount_percent', 0
+        )
+        label = 'welcome' if breakdown.get('returning_single_ticket_rate') else 'member'
         if code:
-            description += f' · {breakdown["member_discount_percent"]}% member code {code}'
+            description += f' · {applied_pct}% {label} code {code}'
         else:
-            description += f' · {breakdown["member_discount_percent"]}% member discount'
+            description += f' · {applied_pct}% {label} discount'
     elif breakdown['bundle_discount_applied']:
         bulk_min = breakdown['bundle_min']
         description += f' · {breakdown["bundle_discount_percent"]}% bulk discount ({bulk_min}+ tickets)'
@@ -116,58 +175,4 @@ def create_checkout_session():
         ticket_type = data.get('ticket_type', 'general')
         apply_member_discount = bool(data.get('apply_member_discount'))
         checkout_session = build_checkout_session(
-            quantity, ticket_type, apply_member_discount=apply_member_discount,
-        )
-        print("Session created successfully:", checkout_session.url)
-        return jsonify({'url': checkout_session.url})
-    except Exception as e:
-        print("Error creating session:", str(e))
-        return jsonify({'error': str(e)}), 500
-
-# Replace your current /success route with this cleaner version:
-@app.route('/success')
-def success():
-    session_id = request.args.get('session_id')
-    print("Success page called with session_id:", session_id)
-
-    if not session_id:
-        return render_template('success.html', error="Missing session ID")
-
-    try:
-        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
-
-        metadata = checkout_session.metadata or {}
-        stripe_email = None
-        if checkout_session.customer_details:
-            stripe_email = checkout_session.customer_details.email
-
-        existing_ticket = get_ticket_by_session(session_id)
-        if existing_ticket:
-            ticket_id = existing_ticket['ticket_id']
-            quantity = existing_ticket['quantity']
-            ticket_type = existing_ticket.get('ticket_type', 'general')
-            access = existing_ticket.get('access')
-            delivery_email = ticket_recipient_email(existing_ticket.get('email'), metadata)
-        else:
-            quantity = 1
-            ticket_id = uuid.uuid4().hex[:12].upper()
-            ticket_type = metadata.get('ticket_type', 'general')
-            if ticket_type not in TICKET_TYPES:
-                ticket_type = 'general'
-            legacy_discount = metadata.get('legacy_discount') == 'true'
-
-            if checkout_session.line_items and checkout_session.line_items.data:
-                quantity = checkout_session.line_items.data[0].quantity
-
-            delivery_email = ticket_recipient_email(stripe_email, metadata)
-
-            record_ticket(
-                session_id, ticket_id, delivery_email, quantity,
-                ticket_type=ticket_type, legacy_discount=legacy_discount,
-            )
-            access = TICKET_TYPES[ticket_type].get('access')
-
-            if delivery_email:
-                purchased_member = get_legacy_member(delivery_email)
-                if purchased_member:
-                    add_saved_ticket_for_
+            quantity, ticket_type, app
