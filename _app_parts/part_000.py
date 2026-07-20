@@ -73,6 +73,10 @@ invites_file = os.getenv(
     'INVITES_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'member_invites.json'),
 )
+full_mailing_list_file = os.getenv(
+    'FULL_MAILING_LIST_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'full_mailing_list.json'),
+)
 INVITE_EXPIRY_DAYS = int(os.getenv('INVITE_EXPIRY_DAYS', '14'))
 APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'America/Los_Angeles')
 def parse_discount_value(raw, default=0.15):
@@ -113,6 +117,7 @@ tickets_lock = threading.Lock()
 members_lock = threading.Lock()
 scanner_settings_lock = threading.Lock()
 invites_lock = threading.Lock()
+full_list_lock = threading.Lock()
 
 TICKET_TYPES = {
     'general': {
@@ -170,10 +175,4 @@ app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', '587'))
 app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'true').lower() == 'true'
 app.config['MAIL_USERNAME'] = mail_username
-app.config['MAIL_PASSWORD'] = (os.getenv('MAIL_PASSWORD') or '').strip()
-app.config['MAIL_DEFAULT_SENDER'] = mail_sender
-app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
-mail = Mail(app)
-
-
-de
+app.config['MAIL_PASSWORD']

@@ -1,4 +1,145 @@
-led': failed, 'skipped': skipped}
+_email(
+            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
+        )
+        if result['sent']:
+            mark_email_sent(session_id)
+
+    thread = threading.Thread(target=_send, daemon=False)
+    thread.start()
+    thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
+    return result['sent']
+
+
+def build_password_reset_url(email, token, reset_url=None):
+    if reset_url:
+        return reset_url
+    query = urlencode({'email': email, 'token': token})
+    return f"{get_public_base_url()}/reset-password?{query}"
+
+
+def mail_from_address():
+    sender = app.config['MAIL_DEFAULT_SENDER']
+    return ('The Section', sender) if sender else sender
+
+
+def send_password_reset_email(customer_email, token, reset_url=None):
+    reset_url = build_password_reset_url(customer_email, token, reset_url)
+    hours_label = f'{PASSWORD_RESET_HOURS} hour{"s" if PASSWORD_RESET_HOURS != 1 else ""}'
+    plain_body = (
+        'You requested a password reset for your The Section member account.\n\n'
+        f'Open this link to choose a new password (expires in {hours_label}):\n'
+        f'{reset_url}\n\n'
+        'If you did not request this, you can ignore this email.\n'
+    )
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        '<p>You requested a password reset for your member account.</p>'
+        f'<p><a href="{reset_url}" style="display:inline-block;padding:12px 18px;'
+        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
+        'Choose a new password</a></p>'
+        f'<p style="color:#555;font-size:14px;">This link expires in {hours_label}.</p>'
+        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
+        f'<span style="word-break:break-all;">{reset_url}</span></p>'
+        '<p style="color:#555;font-size:14px;">If you did not request this, you can ignore this email.</p>'
+        '</div>'
+    )
+    with app.app_context():
+        try:
+            msg = Message(
+                'The Section — member password link',
+                sender=mail_from_address(),
+                recipients=[customer_email],
+            )
+            msg.body = plain_body
+            msg.html = html_body
+            mail.send(msg)
+            print(f"Password reset email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Password reset email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_password_reset_email(customer_email, token, reset_url=None):
+    sent = send_password_reset_email(customer_email, token, reset_url)
+    if not sent:
+        print(f"Password reset email not confirmed for {customer_email}")
+    return sent
+
+
+def build_member_invite_url(email, token):
+    query = urlencode({'email': email, 'token': token})
+    return f"{get_public_base_url()}/legacy/join?{query}"
+
+
+def send_member_invite_email(customer_email, token, invite_url=None):
+    invite_url = invite_url or build_member_invite_url(customer_email, token)
+    days_label = f'{INVITE_EXPIRY_DAYS} day{"s" if INVITE_EXPIRY_DAYS != 1 else ""}'
+    welcome_pct = int(returning_guest_discount * 100)
+    member_pct = int(member_discount * 100)
+    plain_body = (
+        "You've been to The Section before — welcome back!\n\n"
+        f'Create your member account for {welcome_pct}% off any single ticket for life '
+        f'(or {member_pct}% when you buy more than one):\n'
+        f'{invite_url}\n\n'
+        f'This link expires in {days_label}.\n'
+    )
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        '<p>You\'ve been to The Section before — welcome back!</p>'
+        f'<p>Create your member account to save tickets and get '
+        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
+        f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
+        f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
+        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
+        'Set up your account</a></p>'
+        f'<p style="color:#555;font-size:14px;">This link expires in {days_label}.</p>'
+        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
+        f'<span style="word-break:break-all;">{invite_url}</span></p>'
+        '</div>'
+    )
+    with app.app_context():
+        try:
+            msg = Message(
+                'The Section — welcome back (member invite)',
+                sender=mail_from_address(),
+                recipients=[customer_email],
+            )
+            msg.body = plain_body
+            msg.html = html_body
+            mail.send(msg)
+            print(f"Member invite email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Member invite email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_member_invite_email(customer_email, token, invite_url=None):
+    return send_member_invite_email(customer_email, token, invite_url=invite_url)
+
+
+def send_pending_member_invites():
+    sent = []
+    failed = []
+    skipped = []
+    for email in invites_ready_to_send():
+        if get_legacy_member(email):
+            skipped.append(email)
+            continue
+        token = set_member_invite_token(email)
+        if not token:
+            failed.append(email)
+            continue
+        invite_url = build_member_invite_url(email, token)
+        if deliver_member_invite_email(email, token, invite_url=invite_url):
+            mark_member_invite_sent(email)
+            sent.append(email)
+        else:
+            failed.append(email)
+    return {'sent': sent, 'failed': failed, 'skipped': skipped}
 
 
 @app.route('/')
@@ -24,155 +165,4 @@ def member_status():
         'member_discount_percent': int(member_discount * 100),
         'returning_guest_discount_percent': int(returning_guest_discount * 100),
         'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 100),
-        'vip_bundle_min': vip_bundle_min,
-        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
-        'ticket_types': {
-            key: {
-                'name': meta['name'],
-                'price_cents': meta['price_cents'],
-                'access': meta.get('access'),
-            }
-            for key, meta in TICKET_TYPES.items()
-        },
-    })
-
-
-@app.route('/api/pricing')
-def pricing():
-    ticket_type = request.args.get('ticket_type', 'general')
-    quantity = max(1, int(request.args.get('quantity', 1)))
-    if ticket_type not in TICKET_TYPES:
-        ticket_type = 'general'
-    apply_member = resolve_member_discount_application(
-        request.args.get('apply_member_discount', '').lower() in ('1', 'true', 'yes')
-    )
-    return jsonify(pricing_breakdown(ticket_type, quantity, apply_member))
-
-
-def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
-    if ticket_type not in TICKET_TYPES:
-        ticket_type = 'general'
-    quantity = max(1, int(quantity))
-
-    legacy_member = is_legacy_member_logged_in()
-    apply_member = resolve_member_discount_application(apply_member_discount)
-    breakdown = pricing_breakdown(ticket_type, quantity, apply_member)
-    unit_price = breakdown['unit_price_cents']
-    ticket_meta = TICKET_TYPES[ticket_type]
-    description = ticket_meta['description']
-    if breakdown['stacked_discount_applied']:
-        member = get_logged_in_member()
-        code = member.get('discount_code') if member else None
-        combined = breakdown.get('combined_discount_percent')
-        if combined:
-            description += f' · {combined}% off (bulk + member)'
-        if code:
-            description += f' · member code {code}'
-    elif breakdown['member_discount_applied']:
-        member = get_logged_in_member()
-        code = member.get('discount_code') if member else None
-        applied_pct = breakdown.get('applied_member_discount_percent') or breakdown.get(
-            'member_discount_percent', 0
-        )
-        label = 'welcome' if breakdown.get('returning_single_ticket_rate') else 'member'
-        if code:
-            description += f' · {applied_pct}% {label} code {code}'
-        else:
-            description += f' · {applied_pct}% {label} discount'
-    elif breakdown['bundle_discount_applied']:
-        bulk_min = breakdown['bundle_min']
-        description += f' · {breakdown["bundle_discount_percent"]}% bulk discount ({bulk_min}+ tickets)'
-
-    member = get_logged_in_member()
-    member_email = (member.get('email') or '').strip().lower() if member else ''
-
-    print(f"Creating {ticket_type} session for {quantity} tickets @ {unit_price}c")
-
-    checkout_kwargs = {
-        'payment_method_types': ['card'],
-        'line_items': [{
-            'price_data': {
-                'currency': 'usd',
-                'product_data': {
-                    'name': f"The Section - {ticket_meta['name']}",
-                    'description': description,
-                },
-                'unit_amount': unit_price,
-            },
-            'quantity': quantity,
-        }],
-        'mode': 'payment',
-        'metadata': {
-            'ticket_type': ticket_type,
-            'legacy_member': 'true' if legacy_member else 'false',
-            'legacy_discount': 'true' if breakdown['legacy_discount_applied'] else 'false',
-            'member_email': member_email,
-        },
-        'success_url': f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
-        'cancel_url': f"{base_url}/",
-    }
-    if member_email:
-        checkout_kwargs['customer_email'] = member_email
-
-    return stripe.checkout.Session.create(**checkout_kwargs)
-
-
-@app.route('/api/checkout-intent', methods=['GET', 'POST', 'DELETE'])
-def checkout_intent():
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        ticket_type = data.get('ticket_type', 'general')
-        if ticket_type not in TICKET_TYPES:
-            ticket_type = 'general'
-        session['checkout_intent'] = {
-            'quantity': max(1, int(data.get('quantity', 1))),
-            'ticket_type': ticket_type,
-            'apply_member_discount': bool(data.get('apply_member_discount')),
-        }
-        return jsonify({'ok': True})
-    if request.method == 'DELETE':
-        session.pop('checkout_intent', None)
-        return jsonify({'ok': True})
-    return jsonify(session.get('checkout_intent') or {})
-
-
-@app.route('/checkout/resume')
-def checkout_resume():
-    if not is_legacy_member_logged_in():
-        return redirect(url_for('legacy_portal', next='/checkout/resume'))
-    intent = session.pop('checkout_intent', None)
-    if not intent:
-        return redirect('/?open_tickets=1')
-    try:
-        checkout_session = build_checkout_session(
-            intent.get('quantity', 1),
-            intent.get('ticket_type', 'general'),
-            apply_member_discount=intent.get('apply_member_discount', False),
-        )
-        return redirect(checkout_session.url)
-    except Exception as e:
-        print("Error resuming checkout:", str(e))
-        return redirect('/?open_tickets=1')
-
-
-@app.route('/create-checkout-session', methods=['POST'])
-def create_checkout_session():
-    if not is_legacy_member_logged_in():
-        return jsonify({'error': 'Sign in to your member account before purchasing tickets.'}), 401
-
-    try:
-        data = request.get_json()
-        quantity = max(1, int(data.get('quantity', 1)))
-        ticket_type = data.get('ticket_type', 'general')
-        apply_member_discount = bool(data.get('apply_member_discount'))
-        checkout_session = build_checkout_session(
-            quantity, ticket_type, apply_member_discount=apply_member_discount,
-        )
-        print("Session created successfully:", checkout_session.url)
-        return jsonify({'url': checkout_session.url})
-    except Exception as e:
-        print("Error creating session:", str(e))
-        return jsonify({'error': str(e)}), 500
-
-# Replace your 
+        'bundle_discount_percent': int(bundle_discount * 100)

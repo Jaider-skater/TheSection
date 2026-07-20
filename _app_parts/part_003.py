@@ -1,4 +1,13 @@
-acy_member(email)
+es)
+                return True
+    return False
+
+
+def invite_list_for_admin():
+    rows = []
+    for invite in sorted(load_invites(), key=lambda i: i.get('added_at', ''), reverse=True):
+        email = invite.get('email', '').strip().lower()
+        member = get_legacy_member(email)
         status = 'pending'
         if member:
             status = 'account_exists'
@@ -43,168 +52,157 @@ def create_member_from_invite(email, password):
         })
         save_members(members)
     mark_member_invite_claimed(normalized)
+    # Exclusive list only — do not put returning-guest accounts on the full list.
     return True, None
 
 
-def clear_returning_guest_discount_if_purchased(email):
-    """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
-    return
+# --- Full mailing list (signups + founding + manual; no exclusive 20% perk) ---
 
 
-def member_has_past_purchases(member):
-    if not member:
+def load_full_mailing_list():
+    if not ensure_data_dir(full_mailing_list_file):
+        return []
+    if not os.path.exists(full_mailing_list_file):
+        return []
+    try:
+        with open(full_mailing_list_file, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError) as e:
+        print(f'Failed to load full mailing list ({full_mailing_list_file}):', e)
+        return []
+
+
+def save_full_mailing_list(entries):
+    if not ensure_data_dir(full_mailing_list_file):
         return False
-    email = member.get('email', '').strip().lower()
-    if email:
-        for ticket in load_tickets():
-            if ticket.get('email', '').lower() == email:
-                return True
-    for ticket_id in member.get('saved_tickets', []):
-        if get_ticket_record(ticket_id):
-            return True
-    return False
-
-
-def member_has_returning_guest_discount(member):
-    return bool(member and member.get('returning_guest_discount'))
-
-
-def member_discount_eligible(member):
-    if not member:
+    try:
+        with open(full_mailing_list_file, 'w', encoding='utf-8') as f:
+            json.dump(entries, f, indent=2)
+        return True
+    except OSError as e:
+        print(f'Failed to save full mailing list ({full_mailing_list_file}):', e)
         return False
-    return member_has_past_purchases(member) or member_has_returning_guest_discount(member)
 
 
-def member_discount_active():
-    if not is_legacy_member_logged_in():
-        return False
-    member = get_logged_in_member()
-    return member_discount_eligible(member)
+def is_on_exclusive_invite_list(email):
+    return get_member_invite(email) is not None
 
 
-def resolve_member_discount_application(requested):
-    if not requested:
-        return False
-    return member_discount_active()
+def add_emails_to_full_mailing_list(emails, source='manual'):
+    """Add emails to the general list. Skips exclusive invite-list addresses."""
+    added = []
+    skipped = []
+    with full_list_lock:
+        entries = load_full_mailing_list()
+        existing = {e.get('email', '').strip().lower() for e in entries}
+        for email in emails:
+            normalized = (email or '').strip().lower()
+            if not normalized or '@' not in normalized:
+                continue
+            if is_on_exclusive_invite_list(normalized):
+                skipped.append(normalized)
+                continue
+            if normalized in existing:
+                skipped.append(normalized)
+                continue
+            entries.append({
+                'email': normalized,
+                'added_at': datetime.now(timezone.utc).isoformat(),
+                'source': source,
+            })
+            existing.add(normalized)
+            added.append(normalized)
+        save_full_mailing_list(entries)
+    return added, skipped
 
 
-def active_member_discount_rate(quantity=1):
-    """Percent rate (0–1) when member discount is applied.
-
-    Mailing-list members keep returning_guest_discount for life:
-    - quantity 1 → higher welcome rate (default 20%)
-    - quantity 2+ → standard member rate (default 10%) for group/friend buys
-    """
-    if not member_discount_active():
-        return 0.0
-    member = get_logged_in_member()
-    quantity = max(1, int(quantity or 1))
-    if member_has_returning_guest_discount(member) and quantity == 1:
-        return returning_guest_discount if returning_guest_discount > 0 else member_discount
-    return member_discount if member_discount > 0 else 0.0
+def remove_email_from_full_mailing_list(email):
+    normalized = email.strip().lower()
+    with full_list_lock:
+        entries = load_full_mailing_list()
+        updated = [e for e in entries if e.get('email', '').strip().lower() != normalized]
+        if len(updated) == len(entries):
+            return False
+        save_full_mailing_list(updated)
+        return True
 
 
-def sync_member_tickets_from_email(member):
-    email = member.get('email', '').strip().lower()
-    if not email:
+def full_mailing_list_for_admin():
+    rows = []
+    for entry in sorted(load_full_mailing_list(), key=lambda e: e.get('added_at', ''), reverse=True):
+        email = entry.get('email', '').strip().lower()
+        member = get_legacy_member(email)
+        rows.append({
+            'email': email,
+            'added_at': entry.get('added_at'),
+            'source': entry.get('source') or 'manual',
+            'has_account': bool(member),
+        })
+    return rows
+
+
+def sync_members_into_full_mailing_list():
+    """Pull non-exclusive members (including founding) into the full list."""
+    emails = []
+    for member in load_members():
+        email = (member.get('email') or '').strip().lower()
+        if not email:
+            continue
+        if member.get('returning_guest_discount'):
+            continue
+        if is_on_exclusive_invite_list(email):
+            continue
+        emails.append(email)
+    return add_emails_to_full_mailing_list(emails, source='member')
+
+
+def subscribe_signup_to_full_list(email):
+    """Public self-signup → full list only if not on exclusive invite list."""
+    normalized = (email or '').strip().lower()
+    if not normalized:
         return
-    for ticket in load_tickets():
-        ticket_id = ticket.get('ticket_id')
-        if ticket.get('email', '').lower() == email and ticket_id:
-            add_saved_ticket_for_member(email, ticket_id)
+    if is_on_exclusive_invite_list(normalized):
+        return
+    add_emails_to_full_mailing_list([normalized], source='signup')
 
 
-def is_legacy_member_logged_in():
-    email = session.get('legacy_member_email')
-    return bool(email and get_legacy_member(email))
+def resolve_broadcast_recipients(lists):
+    """lists is a set like {'exclusive', 'full'}."""
+    emails = set()
+    if 'exclusive' in lists:
+        for invite in load_invites():
+            email = (invite.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    if 'full' in lists:
+        for entry in load_full_mailing_list():
+            email = (entry.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    return sorted(emails)
 
 
-def get_logged_in_member():
-    email = session.get('legacy_member_email')
-    if not email:
-        return None
-    return get_legacy_member(email)
-
-
-def ticket_recipient_email(stripe_email=None, metadata=None):
-    logged_in_email = (session.get('legacy_member_email') or '').strip().lower()
-    if logged_in_email:
-        return logged_in_email
-    if metadata:
-        meta_email = (metadata.get('member_email') or '').strip().lower()
-        if meta_email:
-            return meta_email
-    normalized = (stripe_email or '').strip().lower()
-    return normalized or None
-
-
-def bulk_discount_rate(ticket_type):
-    if ticket_type == 'vip':
-        return vip_bulk_discount
-    return bundle_discount
-
-
-def bulk_discount_applies(ticket_type, quantity):
-    minimum = vip_bundle_min if ticket_type == 'vip' else bundle_min
-    return quantity >= minimum
-
-
-def calculate_bulk_total_cents(ticket_type, quantity):
-    base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    base_total = base * quantity
-    if bulk_discount_applies(ticket_type, quantity):
-        return int(base_total * (1 - bulk_discount_rate(ticket_type)))
-    return base_total
-
-
-def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
-    base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    base_total = base * quantity
-    quantity = max(1, int(quantity or 1))
-
-    if not apply_member_discount:
-        return calculate_bulk_total_cents(ticket_type, quantity)
-
-    rate = active_member_discount_rate(quantity)
-    if rate <= 0:
-        return calculate_bulk_total_cents(ticket_type, quantity)
-
-    # Single-ticket returning-guest rate does not stack with bulk (qty is always 1).
-    if bulk_discount_applies(ticket_type, quantity):
-        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
-
-    return int(base_total * (1 - rate))
-
-
-def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
-    if quantity < 1:
-        quantity = 1
-    return calculate_total_cents(ticket_type, quantity, apply_member_discount) // quantity
-
-
-def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
-    quantity = max(1, int(quantity or 1))
-    base = TICKET_TYPES[ticket_type]['price_cents']
-    base_total_cents = base * quantity
-    bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
-    rate = active_member_discount_rate(quantity) if apply_member_discount else 0.0
-    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
-    unit_price = total_cents // quantity
-
-    bulk_savings_active = bulk_only_total < base_total_cents
-    member_requested = apply_member_discount and rate > 0
-    stacked_discount_applied = (
-        bulk_savings_active and member_requested and total_cents < bulk_only_total
+def send_broadcast_email(subject, body, recipients):
+    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
+    subject = (subject or '').strip()
+    body = (body or '').strip()
+    sent = []
+    failed = []
+    if not subject or not body or not recipients:
+        return sent, failed
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
+        + '</div>'
     )
-
-    member_only_total = (
-        int(base_total_cents * (1 - rate))
-        if member_requested
-        else None
-    )
-
-    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
-    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
-    member_discount_applied = (
-        member_requested
-      
+    with app.app_context():
+        for email in recipients:
+            try:
+                msg = Message(
+                    subject,
+                    sender=mail_from_address(),
+                    recipients=[email],
+                )
+             

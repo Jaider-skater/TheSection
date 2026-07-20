@@ -1,4 +1,162 @@
-.route('/verify/logout', methods=['POST'])
+            ticket_id = uuid.uuid4().hex[:12].upper()
+            ticket_type = metadata.get('ticket_type', 'general')
+            if ticket_type not in TICKET_TYPES:
+                ticket_type = 'general'
+            legacy_discount = metadata.get('legacy_discount') == 'true'
+
+            if checkout_session.line_items and checkout_session.line_items.data:
+                quantity = checkout_session.line_items.data[0].quantity
+
+            delivery_email = ticket_recipient_email(stripe_email, metadata)
+
+            record_ticket(
+                session_id, ticket_id, delivery_email, quantity,
+                ticket_type=ticket_type, legacy_discount=legacy_discount,
+            )
+            access = TICKET_TYPES[ticket_type].get('access')
+
+            if delivery_email:
+                purchased_member = get_legacy_member(delivery_email)
+                if purchased_member:
+                    add_saved_ticket_for_member(delivery_email, ticket_id)
+                    clear_returning_guest_discount_if_purchased(delivery_email)
+                    if member_has_past_purchases(purchased_member):
+                        ensure_member_discount_code(purchased_member)
+
+        ticket_data = build_qr_image(ticket_id)
+
+        email_sent = deliver_ticket_email(
+            session_id, delivery_email, ticket_id, quantity, ticket_data, ticket_type, access
+        )
+
+        return render_template('success.html',
+                               email=delivery_email,
+                               email_sent=email_sent,
+                               ticket_data=ticket_data,
+                               ticket_id=ticket_id,
+                               quantity=quantity,
+                               ticket_type=ticket_type,
+                               access=access,
+                               wallet_enabled=wallet_enabled)
+
+    except Exception as e:
+        print("SUCCESS ROUTE CRASH:", str(e))
+        return render_template('success.html', error=str(e))
+
+@app.route('/wallet/<ticket_id>.pkpass')
+def download_wallet_pass(ticket_id):
+    if not wallet_enabled:
+        return (
+            'Apple Wallet is not configured yet. Screenshot your ticket or download the QR code instead.',
+            503,
+        )
+
+    record = get_ticket_record(ticket_id)
+    if not record:
+        return 'Ticket not found', 404
+
+    quantity = int(record.get('quantity') or 1)
+    pkpass = build_wallet_pass(record.get('ticket_id', ticket_id), quantity)
+    if not pkpass:
+        return 'Could not create Apple Wallet pass. Use screenshot or download instead.', 503
+
+    filename = f"thesection-{normalize_ticket_id(ticket_id)}.pkpass"
+    return Response(
+        pkpass,
+        mimetype='application/vnd.apple.pkpass',
+        headers={'Content-Disposition': f'attachment; filename={filename}'},
+    )
+
+
+@app.route('/t/<ticket_id>')
+def show_ticket(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return render_template('ticket_view.html', error='Invalid ticket'), 404
+    record = get_ticket_record(normalized)
+    if not record:
+        return render_template('ticket_view.html', error='Ticket not found'), 404
+    meta = ticket_result_meta(record)
+    return render_template(
+        'ticket_view.html',
+        ticket={
+            'ticket_id': record.get('ticket_id', normalized),
+            'quantity': int(record.get('quantity') or 1),
+            'scanned': bool(record.get('scanned_at')),
+            **meta,
+        },
+        ticket_data=build_qr_image(normalized),
+    )
+
+
+@app.route('/api/admission-totals')
+def admission_totals():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    return jsonify(get_admission_totals())
+
+
+@app.route('/api/admission-totals/reset', methods=['POST'])
+def reset_admission_totals():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    recorded = reset_admission_counts()
+    totals = get_admission_totals()
+    return jsonify({'recorded': recorded, **totals})
+
+
+@app.route('/api/scanner-settings', methods=['GET', 'POST'])
+def scanner_settings():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        max_capacity = set_max_capacity(data.get('max_capacity'))
+        totals = get_admission_totals()
+        return jsonify({'max_capacity': max_capacity, **totals})
+
+    return jsonify({'max_capacity': get_max_capacity(), **get_admission_totals()})
+
+
+@app.route('/verify/login', methods=['GET', 'POST'])
+def verify_login():
+    if request.method == 'POST':
+        if not verify_auth_configured():
+            return render_template(
+                'verify_login.html',
+                error='Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.',
+            ), 503
+
+        email = request.form.get('email') or ''
+        password = request.form.get('password') or ''
+        if verify_scanner_credentials(email, password):
+            mark_scanner_session_authenticated()
+            # Keep member portal in sync so Door Scanner stays open after portal login.
+            if get_legacy_member(verify_login_email):
+                session['legacy_member_email'] = verify_login_email
+            next_url = (request.form.get('next') or '').strip()
+            if not next_url or not next_url.startswith('/'):
+                next_url = url_for('verify_ticket')
+            return redirect(next_url)
+
+        return render_template(
+            'verify_login.html',
+            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIFY_LOGIN_PASSWORD, or that member account password.',
+            next_url=request.form.get('next', ''),
+        )
+
+    if verify_authenticated():
+        return redirect(url_for('verify_ticket'))
+
+    next_url = request.args.get('next', '')
+    return render_template('verify_login.html', next_url=next_url)
+
+
+@app.route('/verify/logout', methods=['POST'])
 def verify_logout():
     session.pop('verify_authenticated', None)
     session.pop('verify_login_email', None)
@@ -22,147 +180,4 @@ def verify_ticket_native(ticket_id):
         return guard
 
     result = check_ticket(ticket_id)
-    return render_template(
-        'verify_result.html',
-        admission_totals=get_admission_totals(),
-        **result,
-    )
-
-
-@app.route('/verify', methods=['GET', 'POST'])
-def verify_ticket():
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-
-    if request.method == 'POST':
-        ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
-        ticket_id = parse_scanned_ticket(ticket_data)
-        if not ticket_id:
-            return "Invalid ticket"
-
-        result = check_ticket(ticket_id)
-        if request.is_json:
-            return jsonify({**result, 'admission_totals': get_admission_totals()})
-        if result['status'] == 'accepted':
-            qty = result['quantity']
-            guest_word = 'guest' if qty == 1 else 'guests'
-            type_label = 'VIP' if result.get('is_vip') else 'GA'
-            return f"✅ {type_label} — {qty} {guest_word} admitted"
-        if result['status'] == 'used':
-            qty = result['quantity']
-            guest_word = 'guest' if qty == 1 else 'guests'
-            return f"❌ Already used ({qty} {guest_word})"
-        if result['status'] == 'sold_out':
-            return '❌ Max capacity reached — congrats on selling this place out!'
-        return "Invalid ticket"
-
-    return render_template('verify.html', admission_totals=get_admission_totals())
-
-
-def portal_context(member=None, saved_ticket_details=None, error=None, success=None, next_url='', active_tab='login'):
-    logged_in = member or get_logged_in_member()
-    if logged_in:
-        sync_member_tickets_from_email(logged_in)
-        logged_in = get_logged_in_member()
-        if member_discount_eligible(logged_in) and not logged_in.get('discount_code'):
-            ensure_member_discount_code(logged_in)
-            logged_in = get_logged_in_member()
-        saved_ticket_details = []
-        for ticket_id in logged_in.get('saved_tickets', []):
-            record = get_ticket_record(ticket_id)
-            if record:
-                saved_ticket_details.append({
-                    'ticket_id': ticket_id,
-                    'quantity': record.get('quantity', 1),
-                    'ticket_type': record.get('ticket_type', 'general'),
-                    'purchased_at': record.get('purchased_at', ''),
-                    'scanned': bool(record.get('scanned_at')),
-                    'view_url': ticket_display_url(ticket_id),
-                })
-    return {
-        'error': error,
-        'success': success,
-        'member': logged_in,
-        'saved_ticket_details': saved_ticket_details or [],
-        'has_past_purchases': member_has_past_purchases(logged_in) if logged_in else False,
-        'has_returning_guest_discount': member_has_returning_guest_discount(logged_in) if logged_in else False,
-        'discount_eligible': member_discount_eligible(logged_in) if logged_in else False,
-        'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 100),
-        'member_discount_percent': int(member_discount * 100),
-        'returning_guest_discount_percent': int(returning_guest_discount * 100),
-        'vip_bundle_min': vip_bundle_min,
-        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
-        'next_url': next_url,
-        'active_tab': active_tab,
-        'show_scanner_link': is_scanner_admin_member(),
-    }
-
-
-@app.route('/legacy/reset-password', methods=['GET', 'POST'])
-@app.route('/reset-password', methods=['GET', 'POST'])
-def reset_password():
-    email = (
-        request.form.get('email', '').strip().lower()
-        or request.args.get('email', '').strip().lower()
-    )
-    token = request.form.get('token', '') or request.args.get('token', '')
-    error = None
-
-    if not email or not token:
-        return redirect(url_for('legacy_portal'))
-
-    token_valid = verify_password_reset_token(email, token)
-    if request.method == 'POST':
-        new_password = request.form.get('new_password', '')
-        confirm_password = request.form.get('confirm_password', '')
-        if not token_valid:
-            error = 'This reset link is invalid or has expired. Request a new one from the member portal.'
-        elif new_password != confirm_password:
-            error = 'Passwords do not match.'
-        elif len(new_password) < 8:
-            error = 'Password must be at least 8 characters.'
-        elif update_member_password(email, new_password):
-            session['legacy_member_email'] = email
-            return redirect(url_for('legacy_portal'))
-        else:
-            error = 'Could not update password. Try again or contact support.'
-
-    return render_template(
-        'legacy_reset_password.html',
-        email=email,
-        token=token,
-        token_valid=token_valid,
-        error=error,
-        success=None,
-        reset_hours=PASSWORD_RESET_HOURS,
-    )
-
-
-@app.route('/members', methods=['GET', 'POST'])
-@app.route('/legacy', methods=['GET', 'POST'])
-def legacy_portal():
-    next_url = request.args.get('next', '')
-    member = get_logged_in_member()
-
-    if request.method == 'POST':
-        action = request.form.get('action')
-        next_url = request.form.get('next') or request.args.get('next', '')
-
-        if action == 'register':
-            email = request.form.get('email', '').strip().lower()
-            password = request.form.get('password', '')
-            confirm_password = request.form.get('confirm_password', '')
-            if not email or not password:
-                error = 'Email and password are required.'
-            elif password != confirm_password:
-                error = 'Passwords do not match.'
-            elif len(password) < 8:
-                error = 'Password must be at least 8 characters.'
-            elif get_legacy_member(email):
-                error = 'An account with that email already exists.'
-            else:
-                with members_lock:
-                    members = load_members()
-   
+    return r

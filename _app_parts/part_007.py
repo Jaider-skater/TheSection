@@ -1,4 +1,189 @@
-           f"Guests: {quantity}\n"
+gacy_members()
+_bootstrap_email = os.getenv('LEGACY_BOOTSTRAP_EMAIL', '').strip().lower()
+if _bootstrap_email:
+    add_emails_to_full_mailing_list([_bootstrap_email], source='founding')
+log_storage_state()
+
+
+def extract_ticket_id_from_url(raw):
+    for marker in ('/verify/t/', '/t/'):
+        if marker in raw:
+            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
+            return normalize_ticket_id(ticket_id)
+    return None
+
+
+def load_scanner_settings():
+    if not ensure_data_dir(scanner_settings_file):
+        return {}
+    if not os.path.exists(scanner_settings_file):
+        return {}
+    try:
+        with open(scanner_settings_file, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(f'Failed to load scanner settings ({scanner_settings_file}):', e)
+        return {}
+
+
+def save_scanner_settings(settings):
+    if not ensure_data_dir(scanner_settings_file):
+        return False
+    try:
+        with open(scanner_settings_file, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except OSError as e:
+        print(f'Failed to save scanner settings ({scanner_settings_file}):', e)
+        return False
+
+
+def parse_max_capacity(raw):
+    if raw is None or raw == '':
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def get_max_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_capacity'))
+
+
+def set_max_capacity(value):
+    normalized = parse_max_capacity(value)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized is None:
+            settings.pop('max_capacity', None)
+        else:
+            settings['max_capacity'] = normalized
+        save_scanner_settings(settings)
+    return normalized
+
+
+def compute_admission_counts():
+    ga = 0
+    vip = 0
+    for ticket in load_tickets():
+        scanned_at = ticket.get('scanned_at')
+        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
+            continue
+        qty = int(ticket.get('quantity') or 1)
+        if ticket.get('ticket_type') == 'vip':
+            vip += qty
+        else:
+            ga += qty
+    return {'ga': ga, 'vip': vip, 'total': ga + vip}
+
+
+def admission_capacity_remaining():
+    max_capacity = get_max_capacity()
+    if not max_capacity:
+        return None
+    counts = compute_admission_counts()
+    return max(0, max_capacity - counts['total'])
+
+
+def get_admission_totals():
+    counts = compute_admission_counts()
+    max_capacity = get_max_capacity()
+    capacity_reached = bool(max_capacity and counts['total'] >= max_capacity)
+    spots_remaining = None
+    if max_capacity:
+        spots_remaining = max(0, max_capacity - counts['total'])
+    return {
+        **counts,
+        'max_capacity': max_capacity,
+        'capacity_reached': capacity_reached,
+        'spots_remaining': spots_remaining,
+        'reset_history': get_reset_history(),
+    }
+
+
+def check_ticket(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return {'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0, 'ticket_type': None, 'access': None, 'is_vip': False}
+
+    record = get_ticket_record(normalized)
+    if not record:
+        return {'status': 'invalid', 'ticket_id': normalized, 'quantity': 0, 'ticket_type': None, 'access': None, 'is_vip': False}
+
+    quantity = int(record.get('quantity') or 1)
+    display_id = record.get('ticket_id', normalized)
+    meta = ticket_result_meta(record)
+
+    if record.get('scanned_at'):
+        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    remaining = admission_capacity_remaining()
+    if remaining is not None and quantity > remaining:
+        return {'status': 'sold_out', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    if not mark_ticket_scanned(normalized):
+        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    return {'status': 'accepted', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+
+def parse_scanned_ticket(raw):
+    if not raw:
+        return None
+
+    raw = raw.strip()
+
+    ticket_id = extract_ticket_id_from_url(raw)
+    if ticket_id:
+        return ticket_id
+
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get('ticket_id'):
+            return normalize_ticket_id(data['ticket_id'])
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        data = ast.literal_eval(raw)
+        if isinstance(data, dict) and data.get('ticket_id'):
+            return normalize_ticket_id(data['ticket_id'])
+    except (ValueError, SyntaxError):
+        pass
+
+    return normalize_ticket_id(raw)
+
+
+def mark_email_sent(session_id):
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('session_id') == session_id:
+                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
+                save_tickets(tickets)
+                return
+
+
+def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+    view_url = ticket_display_url(ticket_id)
+    type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
+    with app.app_context():
+        try:
+            msg = Message(
+                "Your The Section Tickets",
+                sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            access_line = f"Access: {access}\n" if access else ''
+            msg.body = (
+                f"You're in for The Section!\n\n"
+                f"Ticket type: {type_label}\n"
+                f"Ticket ID: {ticket_id}\n"
+                f"Guests: {quantity}\n"
                 f"{access_line}\n"
                 f"Show the attached QR code at the door.\n"
                 f"Or open this link on your phone to view your ticket:\n{view_url}\n"
@@ -27,145 +212,4 @@ def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket
     result = {'sent': False}
 
     def _send():
-        result['sent'] = send_ticket_email(
-            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
-        )
-        if result['sent']:
-            mark_email_sent(session_id)
-
-    thread = threading.Thread(target=_send, daemon=False)
-    thread.start()
-    thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
-    return result['sent']
-
-
-def build_password_reset_url(email, token, reset_url=None):
-    if reset_url:
-        return reset_url
-    query = urlencode({'email': email, 'token': token})
-    return f"{get_public_base_url()}/reset-password?{query}"
-
-
-def mail_from_address():
-    sender = app.config['MAIL_DEFAULT_SENDER']
-    return ('The Section', sender) if sender else sender
-
-
-def send_password_reset_email(customer_email, token, reset_url=None):
-    reset_url = build_password_reset_url(customer_email, token, reset_url)
-    hours_label = f'{PASSWORD_RESET_HOURS} hour{"s" if PASSWORD_RESET_HOURS != 1 else ""}'
-    plain_body = (
-        'You requested a password reset for your The Section member account.\n\n'
-        f'Open this link to choose a new password (expires in {hours_label}):\n'
-        f'{reset_url}\n\n'
-        'If you did not request this, you can ignore this email.\n'
-    )
-    html_body = (
-        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
-        '<h2 style="margin:0 0 12px;">The Section</h2>'
-        '<p>You requested a password reset for your member account.</p>'
-        f'<p><a href="{reset_url}" style="display:inline-block;padding:12px 18px;'
-        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
-        'Choose a new password</a></p>'
-        f'<p style="color:#555;font-size:14px;">This link expires in {hours_label}.</p>'
-        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
-        f'<span style="word-break:break-all;">{reset_url}</span></p>'
-        '<p style="color:#555;font-size:14px;">If you did not request this, you can ignore this email.</p>'
-        '</div>'
-    )
-    with app.app_context():
-        try:
-            msg = Message(
-                'The Section — member password link',
-                sender=mail_from_address(),
-                recipients=[customer_email],
-            )
-            msg.body = plain_body
-            msg.html = html_body
-            mail.send(msg)
-            print(f"Password reset email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Password reset email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_password_reset_email(customer_email, token, reset_url=None):
-    sent = send_password_reset_email(customer_email, token, reset_url)
-    if not sent:
-        print(f"Password reset email not confirmed for {customer_email}")
-    return sent
-
-
-def build_member_invite_url(email, token):
-    query = urlencode({'email': email, 'token': token})
-    return f"{get_public_base_url()}/legacy/join?{query}"
-
-
-def send_member_invite_email(customer_email, token, invite_url=None):
-    invite_url = invite_url or build_member_invite_url(customer_email, token)
-    days_label = f'{INVITE_EXPIRY_DAYS} day{"s" if INVITE_EXPIRY_DAYS != 1 else ""}'
-    welcome_pct = int(returning_guest_discount * 100)
-    member_pct = int(member_discount * 100)
-    plain_body = (
-        "You've been to The Section before — welcome back!\n\n"
-        f'Create your member account for {welcome_pct}% off any single ticket for life '
-        f'(or {member_pct}% when you buy more than one):\n'
-        f'{invite_url}\n\n'
-        f'This link expires in {days_label}.\n'
-    )
-    html_body = (
-        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
-        '<h2 style="margin:0 0 12px;">The Section</h2>'
-        '<p>You\'ve been to The Section before — welcome back!</p>'
-        f'<p>Create your member account to save tickets and get '
-        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
-        f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
-        f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
-        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
-        'Set up your account</a></p>'
-        f'<p style="color:#555;font-size:14px;">This link expires in {days_label}.</p>'
-        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
-        f'<span style="word-break:break-all;">{invite_url}</span></p>'
-        '</div>'
-    )
-    with app.app_context():
-        try:
-            msg = Message(
-                'The Section — welcome back (member invite)',
-                sender=mail_from_address(),
-                recipients=[customer_email],
-            )
-            msg.body = plain_body
-            msg.html = html_body
-            mail.send(msg)
-            print(f"Member invite email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Member invite email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_member_invite_email(customer_email, token, invite_url=None):
-    return send_member_invite_email(customer_email, token, invite_url=invite_url)
-
-
-def send_pending_member_invites():
-    sent = []
-    failed = []
-    skipped = []
-    for email in invites_ready_to_send():
-        if get_legacy_member(email):
-            skipped.append(email)
-            continue
-        token = set_member_invite_token(email)
-        if not token:
-            failed.append(email)
-            continue
-        invite_url = build_member_invite_url(email, token)
-        if deliver_member_invite_email(email, token, invite_url=invite_url):
-            mark_member_invite_sent(email)
-            sent.append(email)
-        else:
-            failed.append(email)
-    return {'sent': sent, 'fai
+        result['sent'] = send_ticket

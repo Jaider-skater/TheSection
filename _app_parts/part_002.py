@@ -1,4 +1,15 @@
-mber.get('password_hash'):
+)
+    for member in load_members():
+        if member.get('email', '').lower() == normalized:
+            return member
+    return None
+
+
+def verify_legacy_login(email, password):
+    member = get_legacy_member(email)
+    if not member:
+        return False
+    if member.get('password_hash'):
         return verify_password(password, member['password_hash'])
     if member.get('code_hash'):
         return member.get('code_hash') == hash_member_code(password)
@@ -203,13 +214,4 @@ def mark_member_invite_sent(email):
         for invite in invites:
             if invite.get('email', '').strip().lower() == normalized:
                 invite['sent_at'] = datetime.now(timezone.utc).isoformat()
-                save_invites(invites)
-                return True
-    return False
-
-
-def invite_list_for_admin():
-    rows = []
-    for invite in sorted(load_invites(), key=lambda i: i.get('added_at', ''), reverse=True):
-        email = invite.get('email', '').strip().lower()
-        member = get_leg
+                save_invites(invit

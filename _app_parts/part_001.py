@@ -1,4 +1,10 @@
-f ensure_data_dir(path):
+ = (os.getenv('MAIL_PASSWORD') or '').strip()
+app.config['MAIL_DEFAULT_SENDER'] = mail_sender
+app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
+mail = Mail(app)
+
+
+def ensure_data_dir(path):
     directory = os.path.dirname(path)
     if not directory:
         return True
@@ -185,6 +191,7 @@ def bootstrap_legacy_members():
         })
         save_members(members)
         print(f'Bootstrap member created after deploy: {bootstrap_email}')
+    # Full-list subscribe runs after helpers are defined (see module init at bottom).
 
 
 def log_storage_state():
@@ -202,15 +209,4 @@ def log_storage_state():
 def get_legacy_member(email):
     if not email:
         return None
-    normalized = email.strip().lower()
-    for member in load_members():
-        if member.get('email', '').lower() == normalized:
-            return member
-    return None
-
-
-def verify_legacy_login(email, password):
-    member = get_legacy_member(email)
-    if not member:
-        return False
-    if me
+    normalized = email.strip().lower(

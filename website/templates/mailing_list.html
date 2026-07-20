@@ -1,1 +1,279 @@
-PLACEHOLDER_WILL_REPLACE
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mailing Lists • The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen p-6">
+    <div class="max-w-4xl mx-auto">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+                <h1 class="text-3xl font-bold">Mailing Lists</h1>
+                <p class="text-zinc-400 mt-1">
+                    Exclusive list ({{ returning_guest_discount_percent }}% single-ticket for life) and full list (signups + founding + manual).
+                </p>
+            </div>
+            <a href="/admin{% if key %}?key={{ key }}{% endif %}"
+               class="text-sm text-zinc-400 hover:text-white">← Ticket admin</a>
+        </div>
+
+        {% if error %}
+        <div class="mb-6 bg-red-900/40 border border-red-500/50 rounded-2xl p-5 text-red-200">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        {% if success %}
+        <div class="mb-6 bg-emerald-900/30 border border-emerald-500/40 rounded-2xl p-5 text-emerald-200">
+            {{ success }}
+        </div>
+        {% endif %}
+
+        {# —— Send broadcast —— #}
+        <div class="bg-zinc-900 border border-white/20 rounded-3xl p-6 mb-10">
+            <h2 class="text-lg font-semibold mb-1">Send email</h2>
+            <p class="text-zinc-400 text-sm mb-4">Choose which list(s) receive this message. Sends one email per address.</p>
+            <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="space-y-4" id="broadcast-form">
+                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                <input type="hidden" name="action" value="send_broadcast">
+                <div class="flex flex-col sm:flex-row gap-4 text-sm">
+                    <label class="inline-flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="list_exclusive" value="1"
+                               class="rounded border-zinc-600 bg-zinc-950">
+                        <span>Exclusive list ({{ invites|length }})</span>
+                    </label>
+                    <label class="inline-flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="list_full" value="1"
+                               class="rounded border-zinc-600 bg-zinc-950">
+                        <span>Full list ({{ full_list_count }})</span>
+                    </label>
+                </div>
+                <div>
+                    <label for="subject" class="block text-sm text-zinc-400 mb-2">Subject</label>
+                    <input type="text" id="subject" name="subject" required
+                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label for="body" class="block text-sm text-zinc-400 mb-2">Message</label>
+                    <textarea id="body" name="body" rows="6" required
+                              placeholder="Write your email…"
+                              class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white text-sm"></textarea>
+                </div>
+                <button type="submit"
+                        class="px-5 py-3 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
+                    Send to selected list(s)
+                </button>
+            </form>
+        </div>
+
+        {# —— Exclusive list —— #}
+        <section class="mb-12">
+            <h2 class="text-2xl font-bold mb-1">Exclusive list</h2>
+            <p class="text-zinc-400 text-sm mb-6">
+                Manual only. Invitees get {{ returning_guest_discount_percent }}% off any single ticket for life
+                ({{ member_discount_percent }}% when buying more than one). Not mixed with the full list.
+            </p>
+
+            <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
+                <h3 class="text-lg font-semibold mb-2">Add to exclusive list</h3>
+                <p class="text-zinc-400 text-sm mb-4">One per line (commas and semicolons also work).</p>
+                <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="space-y-4">
+                    {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                    <input type="hidden" name="action" value="add_emails">
+                    <textarea name="emails" rows="5" required
+                              placeholder="guest@example.com&#10;friend@gmail.com"
+                              class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white font-mono text-sm"></textarea>
+                    <button type="submit"
+                            class="px-5 py-3 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
+                        Add to exclusive list
+                    </button>
+                </form>
+            </div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+                <h3 class="text-lg font-semibold">
+                    {{ invites|length }} exclusive · {{ ready_count }} ready to invite
+                    {% if blocked_count %}<span class="text-zinc-500 font-normal text-sm">({{ blocked_count }} already have accounts)</span>{% endif %}
+                </h3>
+                {% if invites %}
+                <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" id="send-invites-form">
+                    {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                    <input type="hidden" name="action" value="send_invites">
+                    <button type="submit"
+                            {% if ready_count == 0 %}disabled{% endif %}
+                            class="px-5 py-3 border-2 border-white bg-black text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-black disabled:hover:text-white">
+                        {% if ready_count > 0 %}Send invite emails ({{ ready_count }}){% else %}No invites ready{% endif %}
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+
+            {% if invites %}
+            <div class="overflow-x-auto rounded-2xl border border-zinc-800">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-zinc-900 text-zinc-400">
+                        <tr>
+                            <th class="p-4">Email</th>
+                            <th class="p-4">Status</th>
+                            <th class="p-4">Added ({{ timezone_label }})</th>
+                            <th class="p-4">Sent ({{ timezone_label }})</th>
+                            <th class="p-4"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for invite in invites %}
+                        <tr class="border-t border-zinc-800">
+                            <td class="p-4 font-mono text-zinc-200">{{ invite.email }}</td>
+                            <td class="p-4">
+                                {% if invite.status == 'claimed' %}
+                                    <span class="text-emerald-400">Joined</span>
+                                {% elif invite.status == 'account_exists' %}
+                                    <span class="text-amber-300">Has account</span>
+                                {% elif invite.status == 'sent' %}
+                                    <span class="text-sky-300">Invite sent</span>
+                                {% else %}
+                                    <span class="text-zinc-400">Pending</span>
+                                {% endif %}
+                            </td>
+                            <td class="p-4 text-zinc-500">{{ invite.added_at | local_time }}</td>
+                            <td class="p-4 text-zinc-500">{{ invite.sent_at | local_time }}</td>
+                            <td class="p-4 text-right">
+                                {% if invite.status not in ['claimed', 'account_exists'] %}
+                                <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="inline" onsubmit="return confirm('Remove {{ invite.email }} from exclusive list?');">
+                                    {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                                    <input type="hidden" name="action" value="remove_email">
+                                    <input type="hidden" name="email" value="{{ invite.email }}">
+                                    <button type="submit" class="text-xs text-zinc-500 hover:text-red-400">Remove</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-zinc-500 text-center py-10 border border-dashed border-zinc-800 rounded-2xl">
+                No exclusive emails yet.
+            </p>
+            {% endif %}
+            <p class="text-zinc-600 text-xs mt-4 text-center">
+                Invite links expire in {{ invite_days }} days.
+            </p>
+        </section>
+
+        {# —— Full list —— #}
+        <section class="mb-8">
+            <h2 class="text-2xl font-bold mb-1">Full list</h2>
+            <p class="text-zinc-400 text-sm mb-6">
+                Public signups, founding members, and manual adds. No exclusive 20% perk.
+                Does not include exclusive-list addresses.
+            </p>
+
+            <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-6">
+                <h3 class="text-lg font-semibold mb-2">Add to full list</h3>
+                <p class="text-zinc-400 text-sm mb-4">One per line. Exclusive-list emails are skipped automatically.</p>
+                <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="space-y-4">
+                    {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                    <input type="hidden" name="action" value="add_full_emails">
+                    <textarea name="emails" rows="5" required
+                              placeholder="member@example.com&#10;founding@example.com"
+                              class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white font-mono text-sm"></textarea>
+                    <div class="flex flex-wrap gap-3">
+                        <button type="submit"
+                                class="px-5 py-3 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
+                            Add to full list
+                        </button>
+                    </div>
+                </form>
+                <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="mt-4">
+                    {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                    <input type="hidden" name="action" value="sync_full_list">
+                    <button type="submit"
+                            class="px-5 py-3 border border-zinc-600 text-zinc-200 font-semibold rounded-xl text-sm hover:border-white hover:text-white transition-colors">
+                        Sync existing members into full list
+                    </button>
+                    <p class="text-zinc-600 text-xs mt-2">Adds member accounts that are not exclusive / returning-guest.</p>
+                </form>
+            </div>
+
+            <h3 class="text-lg font-semibold mb-4">{{ full_list_count }} on full list</h3>
+            {% if full_list %}
+            <div class="overflow-x-auto rounded-2xl border border-zinc-800">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-zinc-900 text-zinc-400">
+                        <tr>
+                            <th class="p-4">Email</th>
+                            <th class="p-4">Source</th>
+                            <th class="p-4">Account</th>
+                            <th class="p-4">Added ({{ timezone_label }})</th>
+                            <th class="p-4"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in full_list %}
+                        <tr class="border-t border-zinc-800">
+                            <td class="p-4 font-mono text-zinc-200">{{ row.email }}</td>
+                            <td class="p-4 text-zinc-400">{{ row.source }}</td>
+                            <td class="p-4">
+                                {% if row.has_account %}
+                                <span class="text-emerald-400">Yes</span>
+                                {% else %}
+                                <span class="text-zinc-500">No</span>
+                                {% endif %}
+                            </td>
+                            <td class="p-4 text-zinc-500">{{ row.added_at | local_time }}</td>
+                            <td class="p-4 text-right">
+                                <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="inline" onsubmit="return confirm('Remove {{ row.email }} from full list?');">
+                                    {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                                    <input type="hidden" name="action" value="remove_full_email">
+                                    <input type="hidden" name="email" value="{{ row.email }}">
+                                    <button type="submit" class="text-xs text-zinc-500 hover:text-red-400">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-zinc-500 text-center py-10 border border-dashed border-zinc-800 rounded-2xl">
+                Full list is empty. Signups and founding members will appear here, or add emails above.
+            </p>
+            {% endif %}
+        </section>
+    </div>
+
+    <script>
+        (function () {
+            const form = document.getElementById('send-invites-form');
+            if (form) {
+                form.addEventListener('submit', function (e) {
+                    const count = {{ ready_count }};
+                    const msg = count === 1
+                        ? 'Send 1 invite email now?'
+                        : `Send invite emails to ${count} people now?`;
+                    if (!window.confirm(msg)) e.preventDefault();
+                });
+            }
+            const broadcast = document.getElementById('broadcast-form');
+            if (broadcast) {
+                broadcast.addEventListener('submit', function (e) {
+                    const exclusive = broadcast.querySelector('[name=list_exclusive]');
+                    const full = broadcast.querySelector('[name=list_full]');
+                    if (!exclusive.checked && !full.checked) {
+                        e.preventDefault();
+                        alert('Select at least one mailing list.');
+                        return;
+                    }
+                    if (!window.confirm('Send this email to everyone on the selected list(s)?')) {
+                        e.preventDefault();
+                    }
+                });
+            }
+        })();
+    </script>
+</body>
+</html>

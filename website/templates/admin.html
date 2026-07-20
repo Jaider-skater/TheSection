@@ -1,1 +1,107 @@
-x
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticket Admin • The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen p-6">
+    <div class="max-w-5xl mx-auto">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+                <h1 class="text-3xl font-bold">Ticket Sales</h1>
+                <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions</p>
+            </div>
+            <div class="flex flex-wrap gap-3">
+                <a href="/admin/tickets.csv{% if key %}?key={{ key }}{% endif %}"
+                   class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm">
+                    Download CSV
+                </a>
+                <a href="/admin/tickets.json{% if key %}?key={{ key }}{% endif %}"
+                   download="thesection-tickets.json"
+                   class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
+                    Download JSON
+                </a>
+                <a href="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}"
+                   class="px-4 py-2 border border-white text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
+                    Mailing Lists
+                </a>
+                <a href="/admin/logout"
+                   class="px-4 py-2 text-zinc-400 hover:text-white text-sm">
+                    Log out
+                </a>
+            </div>
+        </div>
+
+        {% if tickets %}
+        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                <h2 class="font-semibold">Ticket JSON</h2>
+                <button onclick="copyJson()"
+                        class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs">
+                    Copy JSON
+                </button>
+            </div>
+            <pre id="ticket-json" class="p-4 text-xs text-emerald-300 overflow-x-auto max-h-80">{{ tickets_json }}</pre>
+        </div>
+        <div class="overflow-x-auto rounded-2xl border border-zinc-800">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-zinc-900 text-zinc-400">
+                    <tr>
+                        <th class="p-4">Purchased ({{ timezone_label }})</th>
+                        <th class="p-4">Ticket ID</th>
+                        <th class="p-4">Email</th>
+                        <th class="p-4">Qty</th>
+                        <th class="p-4">Type</th>
+                        <th class="p-4">Access</th>
+                        <th class="p-4">Scanned</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ticket in tickets %}
+                    <tr class="border-t border-zinc-800">
+                        <td class="p-4 text-zinc-300">{{ ticket.purchased_at | local_time }}</td>
+                        <td class="p-4 font-mono">{{ ticket.ticket_id }}</td>
+                        <td class="p-4">{{ ticket.email or '—' }}</td>
+                        <td class="p-4">{{ ticket.quantity }}</td>
+                        <td class="p-4">
+                            {% if ticket.ticket_type == 'vip' %}
+                                <span class="text-white font-medium">VIP</span>
+                            {% else %}
+                                <span class="text-zinc-400">GA</span>
+                            {% endif %}
+                            {% if ticket.legacy_discount %}
+                                <span class="text-zinc-500 text-xs block">legacy discount</span>
+                            {% endif %}
+                        </td>
+                        <td class="p-4 text-zinc-400">{{ ticket.access or '—' }}</td>
+                        <td class="p-4">
+                            {% if ticket.scanned_at %}
+                                <span class="text-emerald-400">Yes</span>
+                            {% else %}
+                                <span class="text-zinc-500">No</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-10 text-center text-zinc-400">
+            No tickets sold yet.
+        </div>
+        {% endif %}
+    </div>
+
+<script>
+    function copyJson() {
+        const text = document.getElementById('ticket-json').textContent;
+        navigator.clipboard.writeText(text).then(() => {
+            alert('JSON copied to clipboard');
+        });
+    }
+</script>
+</body>
+</html>
