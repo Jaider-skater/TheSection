@@ -1,4 +1,65 @@
- {guest_word} admitted"
+Y_LOGIN_PASSWORD, or that member account password.',
+            next_url=request.form.get('next', ''),
+        )
+
+    if verify_authenticated():
+        return redirect(url_for('verify_ticket'))
+
+    next_url = request.args.get('next', '')
+    return render_template('verify_login.html', next_url=next_url)
+
+
+@app.route('/verify/logout', methods=['POST'])
+def verify_logout():
+    session.pop('verify_authenticated', None)
+    session.pop('verify_login_email', None)
+    # Auto-logout when leaving the scanner page: only clear the scanner flag.
+    # Keep the member portal session so staff who signed in via /legacy stay signed in.
+    auto_leave = request.headers.get('X-Scanner-Logout') == '1'
+    if not auto_leave:
+        # Explicit "Sign out" on the scanner: also leave the staff member portal account.
+        member_email = (session.get('legacy_member_email') or '').strip().lower()
+        if verify_login_email and member_email and secure_equal(member_email, verify_login_email):
+            session.pop('legacy_member_email', None)
+    if request.is_json or auto_leave:
+        return jsonify({'ok': True})
+    return redirect(url_for('home'))
+
+
+@app.route('/verify/t/<ticket_id>')
+def verify_ticket_native(ticket_id):
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+
+    result = check_ticket(ticket_id)
+    return render_template(
+        'verify_result.html',
+        admission_totals=get_admission_totals(),
+        **result,
+    )
+
+
+@app.route('/verify', methods=['GET', 'POST'])
+def verify_ticket():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+
+    if request.method == 'POST':
+        ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
+        ticket_id = parse_scanned_ticket(ticket_data)
+        if not ticket_id:
+            return "Invalid ticket"
+
+        result = check_ticket(ticket_id)
+        if request.is_json:
+            return jsonify({**result, 'admission_totals': get_admission_totals()})
+        if result['status'] == 'accepted':
+            qty = result['quantity']
+            guest_word = 'guest' if qty == 1 else 'guests'
+            type_label = 'VIP' if result.get('is_vip') else 'GA'
+            return f"✅ {type_label} — {qty} {guest_word} admitted"
         if result['status'] == 'used':
             qty = result['quantity']
             guest_word = 'guest' if qty == 1 else 'guests'
@@ -41,6 +102,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'bundle_min': bundle_min,
         'bundle_discount_percent': int(bundle_discount * 100),
         'member_discount_percent': int(member_discount * 100),
+        'returning_guest_discount_percent': int(returning_guest_discount * 100),
         'vip_bundle_min': vip_bundle_min,
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
         'next_url': next_url,
@@ -107,59 +169,4 @@ def legacy_portal():
                 error = 'Email and password are required.'
             elif password != confirm_password:
                 error = 'Passwords do not match.'
-            elif len(password) < 8:
-                error = 'Password must be at least 8 characters.'
-            elif get_legacy_member(email):
-                error = 'An account with that email already exists.'
-            else:
-                with members_lock:
-                    members = load_members()
-                    members.append({
-                        'email': email,
-                        'password_hash': hash_password(password),
-                        'saved_tickets': [],
-                        'joined_at': datetime.now(timezone.utc).isoformat(),
-                    })
-                    save_members(members)
-                session['legacy_member_email'] = email
-                if next_url.startswith('/'):
-                    return redirect(next_url)
-                return redirect(url_for('legacy_portal'))
-            return render_template(
-                'legacy_portal.html',
-                **portal_context(error=error, next_url=next_url, active_tab='register'),
-            )
-
-        if action == 'login':
-            email = request.form.get('email', '').strip().lower()
-            password = request.form.get('password', '')
-            if verify_legacy_login(email, password):
-                session['legacy_member_email'] = email
-                if next_url.startswith('/'):
-                    return redirect(next_url)
-                return redirect(url_for('legacy_portal'))
-            return render_template(
-                'legacy_portal.html',
-                **portal_context(
-                    error='Invalid email or password.',
-                    next_url=next_url,
-                    active_tab='login',
-                ),
-            )
-
-        if action == 'forgot_password':
-            logged_in_member = get_logged_in_member()
-            email = request.form.get('email', '').strip().lower()
-            if logged_in_member:
-                email = logged_in_member['email']
-            sent = False
-            member = get_legacy_member(email)
-            if not member:
-                print(f"Password reset skipped; no member account for {email}")
-            else:
-                token = set_password_reset_token(email)
-                if not token:
-                    print(f"Password reset token not saved for {email}")
-                else:
-                    reset_url = (
-     
+ 
