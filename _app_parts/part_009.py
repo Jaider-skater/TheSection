@@ -1,4 +1,58 @@
-member(delivery_email, ticket_id)
+ly_member_discount=apply_member_discount,
+        )
+        print("Session created successfully:", checkout_session.url)
+        return jsonify({'url': checkout_session.url})
+    except Exception as e:
+        print("Error creating session:", str(e))
+        return jsonify({'error': str(e)}), 500
+
+# Replace your current /success route with this cleaner version:
+@app.route('/success')
+def success():
+    session_id = request.args.get('session_id')
+    print("Success page called with session_id:", session_id)
+
+    if not session_id:
+        return render_template('success.html', error="Missing session ID")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
+
+        metadata = checkout_session.metadata or {}
+        stripe_email = None
+        if checkout_session.customer_details:
+            stripe_email = checkout_session.customer_details.email
+
+        existing_ticket = get_ticket_by_session(session_id)
+        if existing_ticket:
+            ticket_id = existing_ticket['ticket_id']
+            quantity = existing_ticket['quantity']
+            ticket_type = existing_ticket.get('ticket_type', 'general')
+            access = existing_ticket.get('access')
+            delivery_email = ticket_recipient_email(existing_ticket.get('email'), metadata)
+        else:
+            quantity = 1
+            ticket_id = uuid.uuid4().hex[:12].upper()
+            ticket_type = metadata.get('ticket_type', 'general')
+            if ticket_type not in TICKET_TYPES:
+                ticket_type = 'general'
+            legacy_discount = metadata.get('legacy_discount') == 'true'
+
+            if checkout_session.line_items and checkout_session.line_items.data:
+                quantity = checkout_session.line_items.data[0].quantity
+
+            delivery_email = ticket_recipient_email(stripe_email, metadata)
+
+            record_ticket(
+                session_id, ticket_id, delivery_email, quantity,
+                ticket_type=ticket_type, legacy_discount=legacy_discount,
+            )
+            access = TICKET_TYPES[ticket_type].get('access')
+
+            if delivery_email:
+                purchased_member = get_legacy_member(delivery_email)
+                if purchased_member:
+                    add_saved_ticket_for_member(delivery_email, ticket_id)
                     clear_returning_guest_discount_if_purchased(delivery_email)
                     if member_has_past_purchases(purchased_member):
                         ensure_member_discount_code(purchased_member)
@@ -125,65 +179,4 @@ def verify_login():
 
         return render_template(
             'verify_login.html',
-            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIFY_LOGIN_PASSWORD, or that member account password.',
-            next_url=request.form.get('next', ''),
-        )
-
-    if verify_authenticated():
-        return redirect(url_for('verify_ticket'))
-
-    next_url = request.args.get('next', '')
-    return render_template('verify_login.html', next_url=next_url)
-
-
-@app.route('/verify/logout', methods=['POST'])
-def verify_logout():
-    session.pop('verify_authenticated', None)
-    session.pop('verify_login_email', None)
-    # Auto-logout when leaving the scanner page: only clear the scanner flag.
-    # Keep the member portal session so staff who signed in via /legacy stay signed in.
-    auto_leave = request.headers.get('X-Scanner-Logout') == '1'
-    if not auto_leave:
-        # Explicit "Sign out" on the scanner: also leave the staff member portal account.
-        member_email = (session.get('legacy_member_email') or '').strip().lower()
-        if verify_login_email and member_email and secure_equal(member_email, verify_login_email):
-            session.pop('legacy_member_email', None)
-    if request.is_json or auto_leave:
-        return jsonify({'ok': True})
-    return redirect(url_for('home'))
-
-
-@app.route('/verify/t/<ticket_id>')
-def verify_ticket_native(ticket_id):
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-
-    result = check_ticket(ticket_id)
-    return render_template(
-        'verify_result.html',
-        admission_totals=get_admission_totals(),
-        **result,
-    )
-
-
-@app.route('/verify', methods=['GET', 'POST'])
-def verify_ticket():
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-
-    if request.method == 'POST':
-        ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
-        ticket_id = parse_scanned_ticket(ticket_data)
-        if not ticket_id:
-            return "Invalid ticket"
-
-        result = check_ticket(ticket_id)
-        if request.is_json:
-            return jsonify({**result, 'admission_totals': get_admission_totals()})
-        if result['status'] == 'accepted':
-            qty = result['quantity']
-            guest_word = 'guest' if qty == 1 else 'guests'
-            type_label = 'VIP' if result.get('is_vip') else 'GA'
-            return f"✅ {type_label} — {qty}
+            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIF
