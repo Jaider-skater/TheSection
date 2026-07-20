@@ -73,7 +73,7 @@ function memberCodeHintText() {
             return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
         }
         if (welcome && qty === 1) {
-            return `Tap to add ${memberPct}% welcome discount (one ticket)`;
+            return `Tap to add ${memberPct}% lifetime single-ticket discount`;
         }
         if (welcome && qty > 1) {
             return `Tap to add ${memberPct}% member discount (multi-ticket rate)`;
@@ -85,7 +85,7 @@ function memberCodeHintText() {
         return `${totalPct}% off (${bulkPct}% bulk + ${memberPct}% member)`;
     }
     if (pricing && pricing.returning_single_ticket_rate) {
-        return `${memberPct}% welcome discount applied (one ticket)`;
+        return `${memberPct}% lifetime single-ticket discount applied`;
     }
     if (pricing && pricing.member_discount_applied) {
         return `${memberPct}% member discount applied`;
@@ -140,7 +140,7 @@ function updateMemberBanner() {
                     const welcomePct = memberStatus.returning_guest_discount_percent || 20;
                     const memberPct = memberStatus.member_discount_percent || 10;
                     discountLine.textContent =
-                        `Welcome back — ${welcomePct}% off one ticket, or ${memberPct}% when buying more than one for friends. ` +
+                        `Welcome back — ${welcomePct}% off any single ticket for life, or ${memberPct}% when buying more than one for friends. ` +
                         `Bulk pricing (${bulkLabel}) stacks on multi-ticket orders. Tap your code below to apply.`;
                 } else {
                     discountLine.textContent =

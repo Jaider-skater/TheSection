@@ -184,7 +184,7 @@
             <p class="text-white font-medium mb-1">{% if has_returning_guest_discount %}Welcome back discount{% else %}Your discount code{% endif %}</p>
             <p class="text-zinc-400 text-sm mb-4">
                 {% if has_returning_guest_discount %}
-                {{ member_discount_percent }}% off your next ticket purchase — tap your code on the tickets page to apply. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) stacks when you qualify.
+                {{ returning_guest_discount_percent }}% off any single ticket for life (or {{ member_discount_percent }}% when you buy more than one for friends) — tap your code on the tickets page. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) stacks on multi-ticket orders when you qualify.
                 {% else %}
                 {{ member_discount_percent }}% off future purchases — tap your code on the tickets page to apply.
                 {% endif %}
