@@ -1,4 +1,72 @@
-_settings():
+ ticket_id,
+        }],
+        'eventTicket': {
+            'primaryFields': [{
+                'key': 'event',
+                'label': 'EVENT',
+                'value': 'The Section',
+            }],
+            'secondaryFields': [
+                {
+                    'key': 'guests',
+                    'label': 'GUESTS',
+                    'value': guest_label,
+                },
+                {
+                    'key': 'ticket',
+                    'label': 'TICKET',
+                    'value': ticket_id,
+                },
+            ],
+            'backFields': [{
+                'key': 'verify',
+                'label': 'VERIFY',
+                'value': verify_url,
+            }],
+        },
+    }
+
+    icon_png = make_pass_icon_png()
+    files = {
+        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
+        'icon.png': icon_png,
+        'icon@2x.png': icon_png,
+        'logo.png': icon_png,
+        'logo@2x.png': icon_png,
+    }
+    manifest = {
+        name: hashlib.sha1(data).hexdigest()
+        for name, data in files.items()
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
+    files['manifest.json'] = manifest_bytes
+
+    signature = sign_wallet_manifest(manifest_bytes)
+    if not signature:
+        return None
+
+    files['signature'] = signature
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
+bootstrap_legacy_members()
+log_storage_state()
+
+
+def extract_ticket_id_from_url(raw):
+    for marker in ('/verify/t/', '/t/'):
+        if marker in raw:
+            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
+            return normalize_ticket_id(ticket_id)
+    return None
+
+
+def load_scanner_settings():
     if not ensure_data_dir(scanner_settings_file):
         return {}
     if not os.path.exists(scanner_settings_file):
@@ -160,56 +228,4 @@ def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_t
         try:
             msg = Message(
                 "Your The Section Tickets",
-                sender=app.config['MAIL_DEFAULT_SENDER'],
-                recipients=[customer_email],
-            )
-            access_line = f"Access: {access}\n" if access else ''
-            msg.body = (
-                f"You're in for The Section!\n\n"
-                f"Ticket type: {type_label}\n"
-                f"Ticket ID: {ticket_id}\n"
-                f"Guests: {quantity}\n"
-                f"{access_line}\n"
-                f"Show the attached QR code at the door.\n"
-                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
-            )
-            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
-            mail.send(msg)
-            print(f"Ticket email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    if not customer_email:
-        return False
-
-    record = get_ticket_by_session(session_id)
-    if record and record.get('email_sent_at'):
-        return True
-
-    if record:
-        ticket_type = record.get('ticket_type', ticket_type)
-        access = record.get('access', access)
-
-    result = {'sent': False}
-
-    def _send():
-        result['sent'] = send_ticket_email(
-            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
-        )
-        if result['sent']:
-            mark_email_sent(session_id)
-
-    thread = threading.Thread(target=_send, daemon=False)
-    thread.start()
-    thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
-    return result['sent']
-
-
-def build_password_reset_url(email, token, reset_url=None):
-    if reset_url:
-        return reset_url
-    query = urlencode({'email': email, 'token'
+         
