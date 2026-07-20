@@ -1,4 +1,56 @@
-: token})
+       sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            access_line = f"Access: {access}\n" if access else ''
+            msg.body = (
+                f"You're in for The Section!\n\n"
+                f"Ticket type: {type_label}\n"
+                f"Ticket ID: {ticket_id}\n"
+                f"Guests: {quantity}\n"
+                f"{access_line}\n"
+                f"Show the attached QR code at the door.\n"
+                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
+            )
+            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
+            mail.send(msg)
+            print(f"Ticket email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+    if not customer_email:
+        return False
+
+    record = get_ticket_by_session(session_id)
+    if record and record.get('email_sent_at'):
+        return True
+
+    if record:
+        ticket_type = record.get('ticket_type', ticket_type)
+        access = record.get('access', access)
+
+    result = {'sent': False}
+
+    def _send():
+        result['sent'] = send_ticket_email(
+            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
+        )
+        if result['sent']:
+            mark_email_sent(session_id)
+
+    thread = threading.Thread(target=_send, daemon=False)
+    thread.start()
+    thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
+    return result['sent']
+
+
+def build_password_reset_url(email, token, reset_url=None):
+    if reset_url:
+        return reset_url
+    query = urlencode({'email': email, 'token': token})
     return f"{get_public_base_url()}/reset-password?{query}"
 
 
@@ -61,10 +113,12 @@ def build_member_invite_url(email, token):
 def send_member_invite_email(customer_email, token, invite_url=None):
     invite_url = invite_url or build_member_invite_url(customer_email, token)
     days_label = f'{INVITE_EXPIRY_DAYS} day{"s" if INVITE_EXPIRY_DAYS != 1 else ""}'
-    discount_pct = int(member_discount * 100)
+    welcome_pct = int(returning_guest_discount * 100)
+    member_pct = int(member_discount * 100)
     plain_body = (
         "You've been to The Section before — welcome back!\n\n"
-        f'Create your member account and get {discount_pct}% off your next ticket purchase:\n'
+        f'Create your member account and get {welcome_pct}% off one ticket '
+        f'(or {member_pct}% when you buy more than one):\n'
         f'{invite_url}\n\n'
         f'This link expires in {days_label}.\n'
     )
@@ -72,8 +126,9 @@ def send_member_invite_email(customer_email, token, invite_url=None):
         '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
         '<h2 style="margin:0 0 12px;">The Section</h2>'
         '<p>You\'ve been to The Section before — welcome back!</p>'
-        f'<p>Create your member account to save tickets to your profile and get '
-        f'<strong>{discount_pct}% off your next purchase</strong>.</p>'
+        f'<p>Create your member account to save tickets and get '
+        f'<strong>{welcome_pct}% off one ticket</strong> — or '
+        f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
         f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
         'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
         'Set up your account</a></p>'
@@ -113,58 +168,4 @@ def send_pending_member_invites():
             continue
         token = set_member_invite_token(email)
         if not token:
-            failed.append(email)
-            continue
-        invite_url = build_member_invite_url(email, token)
-        if deliver_member_invite_email(email, token, invite_url=invite_url):
-            mark_member_invite_sent(email)
-            sent.append(email)
-        else:
-            failed.append(email)
-    return {'sent': sent, 'failed': failed, 'skipped': skipped}
-
-
-@app.route('/')
-def home():
-    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
-
-
-@app.route('/api/member-status')
-def member_status():
-    member = get_logged_in_member()
-    discount_code = None
-    discount_eligible = False
-    if member:
-        discount_eligible = member_discount_eligible(member)
-        if discount_eligible:
-            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
-    return jsonify({
-        'logged_in': bool(member),
-        'email': session.get('legacy_member_email'),
-        'discount_code': discount_code,
-        'member_discount_eligible': discount_eligible,
-        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
-        'member_discount_percent': int(member_discount * 100),
-        'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 100),
-        'vip_bundle_min': vip_bundle_min,
-        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
-        'ticket_types': {
-            key: {
-                'name': meta['name'],
-                'price_cents': meta['price_cents'],
-                'access': meta.get('access'),
-            }
-            for key, meta in TICKET_TYPES.items()
-        },
-    })
-
-
-@app.route('/api/pricing')
-def pricing():
-    ticket_type = request.args.get('ticket_type', 'general')
-    quantity = max(1, int(request.args.get('quantity', 1)))
-    if ticket_type not in TICKET_TYPES:
-        ticket_type = 'general'
-    apply_member = resolve_member_discount_application(
-        request.args.get('apply_member_discount', '').lower() in ('1', 'true', 'yes
+            failed.append(e
