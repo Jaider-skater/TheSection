@@ -1,4 +1,67 @@
-= invite_list_for_admin()
+cated'] = True
+            # Keep ?key= for bookmarkable links and download URLs that still expect it.
+            sep = '&' if '?' in next_path else '?'
+            return redirect(f'{next_path}{sep}key={key}')
+        return render_template(
+            'admin_login.html',
+            error='Invalid admin key. Try again.',
+            next_path=next_path,
+        ), 401
+
+    if require_admin():
+        return redirect(next_path)
+    return render_template('admin_login.html', error=None, next_path=next_path)
+
+
+@app.route('/admin/logout', methods=['POST', 'GET'])
+def admin_logout():
+    session.pop('admin_authenticated', None)
+    return redirect(url_for('admin_login'))
+
+
+@app.route('/admin/mailing-list', methods=['GET', 'POST'])
+def admin_mailing_list():
+    if not require_admin():
+        return admin_login_required('/admin/mailing-list')
+
+    key = admin_key_for_templates()
+    error = None
+    success = None
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        if action == 'add_emails':
+            emails = normalize_email_list(request.form.get('emails', ''))
+            if not emails:
+                error = 'Add at least one valid email address.'
+            else:
+                added, skipped = add_emails_to_invite_list(emails)
+                parts = []
+                if added:
+                    parts.append(f'Added {len(added)} email{"s" if len(added) != 1 else ""}.')
+                if skipped:
+                    parts.append(f'{len(skipped)} already on the list.')
+                success = ' '.join(parts) or 'No new emails added.'
+        elif action == 'remove_email':
+            email = (request.form.get('email') or '').strip().lower()
+            if email and remove_email_from_invite_list(email):
+                success = f'Removed {email} from the list.'
+            else:
+                error = 'Could not remove that email.'
+        elif action == 'send_invites':
+            result = send_pending_member_invites()
+            sent_count = len(result['sent'])
+            failed_count = len(result['failed'])
+            if sent_count:
+                success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
+                if failed_count:
+                    success += f' {failed_count} failed to send.'
+            elif failed_count:
+                error = f'Could not send invites ({failed_count} failed). Check mail settings.'
+            else:
+                success = 'No pending invites to send.'
+
+    invites = invite_list_for_admin()
     ready_count = len(invites_ready_to_send())
     blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
     return render_template(
@@ -10,6 +73,7 @@
         error=error,
         success=success,
         member_discount_percent=int(member_discount * 100),
+        returning_guest_discount_percent=int(returning_guest_discount * 100),
         invite_days=INVITE_EXPIRY_DAYS,
         timezone_label=display_timezone_label(),
     )
