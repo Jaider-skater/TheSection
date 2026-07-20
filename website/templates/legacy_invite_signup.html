@@ -21,7 +21,10 @@
             {% if email %}
             <p class="text-zinc-400">For <span class="text-white">{{ email }}</span></p>
             {% endif %}
-            <p class="text-emerald-300 text-sm mt-3">{{ member_discount_percent }}% off your next ticket purchase</p>
+            <p class="text-emerald-300 text-sm mt-3">
+                {{ returning_guest_discount_percent }}% off one ticket ·
+                {{ member_discount_percent }}% when you buy more than one
+            </p>
         </div>
 
         {% if error %}

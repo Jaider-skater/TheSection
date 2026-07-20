@@ -12,7 +12,8 @@
             <div>
                 <h1 class="text-3xl font-bold">Returning Guest Invites</h1>
                 <p class="text-zinc-400 mt-1">
-                    Add past attendees, then send invite links for {{ member_discount_percent }}% off their first purchase.
+                    Add past attendees, then send invite links for {{ returning_guest_discount_percent }}% off one ticket
+                    ({{ member_discount_percent }}% when they buy more than one).
                 </p>
             </div>
             <a href="/admin{% if key %}?key={{ key }}{% endif %}"
@@ -116,7 +117,8 @@
         {% endif %}
 
         <p class="text-zinc-600 text-xs mt-8 text-center">
-            Invite links expire in {{ invite_days }} days. Recipients set a password and get {{ member_discount_percent }}% off their next ticket.
+            Invite links expire in {{ invite_days }} days. Recipients set a password and get
+            {{ returning_guest_discount_percent }}% off one ticket, or {{ member_discount_percent }}% when buying multiple.
         </p>
     </div>
 

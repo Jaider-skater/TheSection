@@ -53,18 +53,39 @@ async function loadMemberStatus() {
     }
 }
 
+function appliedMemberPct() {
+    if (pricing && pricing.applied_member_discount_percent != null) {
+        return pricing.applied_member_discount_percent;
+    }
+    if (memberStatus.returning_guest_discount && quantity === 1) {
+        return memberStatus.returning_guest_discount_percent || 20;
+    }
+    return memberStatus.member_discount_percent || 10;
+}
+
 function memberCodeHintText() {
-    const memberPct = memberStatus.member_discount_percent;
+    const memberPct = appliedMemberPct();
     const bulkPct = bulkPctForType();
+    const welcome = memberStatus.returning_guest_discount;
+    const qty = quantity;
     if (!memberDiscountApplied) {
         if (pricing && pricing.bundle_discount_applied) {
             return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
+        }
+        if (welcome && qty === 1) {
+            return `Tap to add ${memberPct}% welcome discount (one ticket)`;
+        }
+        if (welcome && qty > 1) {
+            return `Tap to add ${memberPct}% member discount (multi-ticket rate)`;
         }
         return `Tap to add ${memberPct}% member discount`;
     }
     if (pricing && pricing.stacked_discount_applied) {
         const totalPct = pricing.combined_discount_percent || (bulkPct + memberPct);
         return `${totalPct}% off (${bulkPct}% bulk + ${memberPct}% member)`;
+    }
+    if (pricing && pricing.returning_single_ticket_rate) {
+        return `${memberPct}% welcome discount applied (one ticket)`;
     }
     if (pricing && pricing.member_discount_applied) {
         return `${memberPct}% member discount applied`;
@@ -115,8 +136,16 @@ function updateMemberBanner() {
         if (discountLine) {
             const bulkLabel = formatBulkPricingLabel();
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                const welcome = memberStatus.returning_guest_discount ? 'Welcome back — ' : '';
-                discountLine.textContent = `${welcome}Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to apply ${memberStatus.member_discount_percent}% off.`;
+                if (memberStatus.returning_guest_discount) {
+                    const welcomePct = memberStatus.returning_guest_discount_percent || 20;
+                    const memberPct = memberStatus.member_discount_percent || 10;
+                    discountLine.textContent =
+                        `Welcome back — ${welcomePct}% off one ticket, or ${memberPct}% when buying more than one for friends. ` +
+                        `Bulk pricing (${bulkLabel}) stacks on multi-ticket orders. Tap your code below to apply.`;
+                } else {
+                    discountLine.textContent =
+                        `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to apply ${memberStatus.member_discount_percent}% off.`;
+                }
             } else {
                 discountLine.textContent = `Bulk pricing: ${bulkLabel}. Member discount unlocks after your first purchase.`;
             }
@@ -236,7 +265,9 @@ function updateModalQuantity() {
         }
 
         const bulkPct = bulkPctForType();
-        const memberPct = pricing.member_discount_percent;
+        const memberPct = pricing.applied_member_discount_percent != null
+            ? pricing.applied_member_discount_percent
+            : pricing.member_discount_percent;
         const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
         const bulkOnlyUnit = Math.round(pricing.base_unit_price_cents * (1 - bulkPct / 100));
         const bulkOnlyLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(bulkOnlyUnit)} each`;

@@ -47,6 +47,11 @@ services:
       # Stripe secret key only (sk_live_... or sk_test_...). Not pk_..., not SECRET_KEY.
       - key: STRIPE_SECRET_KEY
         sync: false
+      - key: MEMBER_DISCOUNT
+        value: "0.10"
+      # Welcome-back list rate: single ticket only (multi-ticket uses MEMBER_DISCOUNT)
+      - key: RETURNING_GUEST_DISCOUNT
+        value: "0.20"
       - key: BUNDLE_DISCOUNT
         value: "0.10"
       - key: LEGACY_BUNDLE_DISCOUNT
