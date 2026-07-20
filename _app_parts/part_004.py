@@ -1,16 +1,4 @@
-)
-
-    member_only_total = (
-        int(base_total_cents * (1 - rate))
-        if member_requested
-        else None
-    )
-
-    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
-    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
-    member_discount_applied = (
-        member_requested
-        and not stacked_discount_applied
+  and not stacked_discount_applied
         and not bulk_savings_active
         and member_only_total is not None
         and total_cents == member_only_total
@@ -214,4 +202,16 @@ def reset_admission_counts():
         if not isinstance(history, list):
             history = []
         history.append({
-            'res
+            'reset_at': now_iso,
+            'ga': counts['ga'],
+            'vip': counts['vip'],
+            'total': counts['total'],
+        })
+        settings['reset_history'] = history
+        settings['counting_epoch'] = now_iso
+        save_scanner_settings(settings)
+
+    return {
+        'reset_at': now_iso,
+        'ga': counts['ga'],
+        'vip'

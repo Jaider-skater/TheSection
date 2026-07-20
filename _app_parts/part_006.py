@@ -1,16 +1,4 @@
- ticket_id,
-        }],
-        'eventTicket': {
-            'primaryFields': [{
-                'key': 'event',
-                'label': 'EVENT',
-                'value': 'The Section',
-            }],
-            'secondaryFields': [
-                {
-                    'key': 'guests',
-                    'label': 'GUESTS',
-                    'value': guest_label,
+     'value': guest_label,
                 },
                 {
                     'key': 'ticket',
@@ -228,4 +216,12 @@ def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_t
         try:
             msg = Message(
                 "Your The Section Tickets",
-         
+                sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            access_line = f"Access: {access}\n" if access else ''
+            msg.body = (
+                f"You're in for The Section!\n\n"
+                f"Ticket type: {type_label}\n"
+                f"Ticket ID: {ticket_id}\n"
+     

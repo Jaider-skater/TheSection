@@ -1,16 +1,4 @@
-et_at': now_iso,
-            'ga': counts['ga'],
-            'vip': counts['vip'],
-            'total': counts['total'],
-        })
-        settings['reset_history'] = history
-        settings['counting_epoch'] = now_iso
-        save_scanner_settings(settings)
-
-    return {
-        'reset_at': now_iso,
-        'ga': counts['ga'],
-        'vip': counts['vip'],
+: counts['vip'],
         'total': counts['total'],
     }
 
@@ -209,4 +197,16 @@ def build_wallet_pass(ticket_id, quantity):
             'format': 'PKBarcodeFormatQR',
             'message': verify_url,
             'messageEncoding': 'iso-8859-1',
-            'altText':
+            'altText': ticket_id,
+        }],
+        'eventTicket': {
+            'primaryFields': [{
+                'key': 'event',
+                'label': 'EVENT',
+                'value': 'The Section',
+            }],
+            'secondaryFields': [
+                {
+                    'key': 'guests',
+                    'label': 'GUESTS',
+               

@@ -1,12 +1,4 @@
-       sender=app.config['MAIL_DEFAULT_SENDER'],
-                recipients=[customer_email],
-            )
-            access_line = f"Access: {access}\n" if access else ''
-            msg.body = (
-                f"You're in for The Section!\n\n"
-                f"Ticket type: {type_label}\n"
-                f"Ticket ID: {ticket_id}\n"
-                f"Guests: {quantity}\n"
+           f"Guests: {quantity}\n"
                 f"{access_line}\n"
                 f"Show the attached QR code at the door.\n"
                 f"Or open this link on your phone to view your ticket:\n{view_url}\n"
@@ -117,7 +109,7 @@ def send_member_invite_email(customer_email, token, invite_url=None):
     member_pct = int(member_discount * 100)
     plain_body = (
         "You've been to The Section before — welcome back!\n\n"
-        f'Create your member account and get {welcome_pct}% off one ticket '
+        f'Create your member account for {welcome_pct}% off any single ticket for life '
         f'(or {member_pct}% when you buy more than one):\n'
         f'{invite_url}\n\n'
         f'This link expires in {days_label}.\n'
@@ -127,7 +119,7 @@ def send_member_invite_email(customer_email, token, invite_url=None):
         '<h2 style="margin:0 0 12px;">The Section</h2>'
         '<p>You\'ve been to The Section before — welcome back!</p>'
         f'<p>Create your member account to save tickets and get '
-        f'<strong>{welcome_pct}% off one ticket</strong> — or '
+        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
         f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
         f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
         'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
@@ -168,4 +160,12 @@ def send_pending_member_invites():
             continue
         token = set_member_invite_token(email)
         if not token:
-            failed.append(e
+            failed.append(email)
+            continue
+        invite_url = build_member_invite_url(email, token)
+        if deliver_member_invite_email(email, token, invite_url=invite_url):
+            mark_member_invite_sent(email)
+            sent.append(email)
+        else:
+            failed.append(email)
+    return {'sent': sent, 'fai
