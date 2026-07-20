@@ -47,19 +47,8 @@ def create_member_from_invite(email, password):
 
 
 def clear_returning_guest_discount_if_purchased(email):
-    normalized = email.strip().lower()
-    member = get_legacy_member(normalized)
-    if not member or not member.get('returning_guest_discount'):
-        return
-    if not member_has_past_purchases(member):
-        return
-    with members_lock:
-        members = load_members()
-        for stored in members:
-            if stored.get('email', '').strip().lower() == normalized:
-                stored.pop('returning_guest_discount', None)
-                save_members(members)
-                break
+    """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
+    return
 
 
 def member_has_past_purchases(member):
@@ -102,8 +91,9 @@ def resolve_member_discount_application(requested):
 def active_member_discount_rate(quantity=1):
     """Percent rate (0–1) when member discount is applied.
 
-    Returning-guest list members get the higher rate only for quantity 1
-    so they can bring friends on multi-ticket orders at the normal member rate.
+    Mailing-list members keep returning_guest_discount for life:
+    - quantity 1 → higher welcome rate (default 20%)
+    - quantity 2+ → standard member rate (default 10%) for group/friend buys
     """
     if not member_discount_active():
         return 0.0
@@ -205,4 +195,16 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
     member_requested = apply_member_discount and rate > 0
     stacked_discount_applied = (
         bulk_savings_active and member_requested and total_cents < bulk_only_total
-    
+    )
+
+    member_only_total = (
+        int(base_total_cents * (1 - rate))
+        if member_requested
+        else None
+    )
+
+    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
+    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
+    member_discount_applied = (
+        member_requested
+      
