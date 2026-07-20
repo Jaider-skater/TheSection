@@ -1,4 +1,11 @@
-SWORD_RESET_HOURS = int(os.getenv('PASSWORD_RESET_HOURS', '1'))
+mber.get('password_hash'):
+        return verify_password(password, member['password_hash'])
+    if member.get('code_hash'):
+        return member.get('code_hash') == hash_member_code(password)
+    return False
+
+
+PASSWORD_RESET_HOURS = int(os.getenv('PASSWORD_RESET_HOURS', '1'))
 
 
 def hash_reset_token(token):
@@ -205,11 +212,4 @@ def invite_list_for_admin():
     rows = []
     for invite in sorted(load_invites(), key=lambda i: i.get('added_at', ''), reverse=True):
         email = invite.get('email', '').strip().lower()
-        member = get_legacy_member(email)
-        status = 'pending'
-        if member:
-            status = 'account_exists'
-        elif invite.get('claimed_at'):
-            status = 'claimed'
-        elif invite.get('sent_at'):
-        
+        member = get_leg
