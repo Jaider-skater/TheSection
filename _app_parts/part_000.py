@@ -95,6 +95,11 @@ vip_bulk_discount = parse_discount_value(
     0.10,
 )
 member_discount = parse_discount_value(os.getenv('MEMBER_DISCOUNT', '0.10'))
+# Mailing-list / returning-guest: 20% on a single ticket only; multi-ticket uses member_discount (10%).
+returning_guest_discount = parse_discount_value(
+    os.getenv('RETURNING_GUEST_DISCOUNT', '0.20'),
+    0.20,
+)
 # Flask session secret (NOT a Stripe key). Use a random string, not sk_.../pk_...
 _flask_secret = clean_env_value(os.getenv('SECRET_KEY', 'thesection-legacy-portal-change-me'))
 if _flask_secret.startswith(('sk_', 'pk_')):
@@ -171,12 +176,4 @@ app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
 mail = Mail(app)
 
 
-def ensure_data_dir(path):
-    directory = os.path.dirname(path)
-    if not directory:
-        return True
-    try:
-        os.makedirs(directory, exist_ok=True)
-        return True
-    except OSError as e:
-        pri
+de
