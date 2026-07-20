@@ -1,11 +1,4 @@
-           elif len(password) < 8:
-                error = 'Password must be at least 8 characters.'
-            elif get_legacy_member(email):
-                error = 'An account with that email already exists.'
-            else:
-                with members_lock:
-                    members = load_members()
-                    members.append({
+                 members.append({
                         'email': email,
                         'password_hash': hash_password(password),
                         'saved_tickets': [],
@@ -168,4 +161,10 @@ def admin_login():
     if request.method == 'POST':
         key = (request.form.get('key') or '').strip()
         if _admin_key_matches(key):
-            session['admin_authenti
+            session['admin_authenticated'] = True
+            # Keep ?key= for bookmarkable links and download URLs that still expect it.
+            sep = '&' if '?' in next_path else '?'
+            return redirect(f'{next_path}{sep}key={key}')
+        return render_template(
+            'admin_login.html',
+            error='Invalid admin key. 

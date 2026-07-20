@@ -1,15 +1,4 @@
-Y_LOGIN_PASSWORD, or that member account password.',
-            next_url=request.form.get('next', ''),
-        )
-
-    if verify_authenticated():
-        return redirect(url_for('verify_ticket'))
-
-    next_url = request.args.get('next', '')
-    return render_template('verify_login.html', next_url=next_url)
-
-
-@app.route('/verify/logout', methods=['POST'])
+.route('/verify/logout', methods=['POST'])
 def verify_logout():
     session.pop('verify_authenticated', None)
     session.pop('verify_login_email', None)
@@ -169,4 +158,11 @@ def legacy_portal():
                 error = 'Email and password are required.'
             elif password != confirm_password:
                 error = 'Passwords do not match.'
- 
+            elif len(password) < 8:
+                error = 'Password must be at least 8 characters.'
+            elif get_legacy_member(email):
+                error = 'An account with that email already exists.'
+            else:
+                with members_lock:
+                    members = load_members()
+   

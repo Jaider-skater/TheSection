@@ -1,12 +1,4 @@
-ly_member_discount=apply_member_discount,
-        )
-        print("Session created successfully:", checkout_session.url)
-        return jsonify({'url': checkout_session.url})
-    except Exception as e:
-        print("Error creating session:", str(e))
-        return jsonify({'error': str(e)}), 500
-
-# Replace your current /success route with this cleaner version:
+current /success route with this cleaner version:
 @app.route('/success')
 def success():
     session_id = request.args.get('session_id')
@@ -179,4 +171,15 @@ def verify_login():
 
         return render_template(
             'verify_login.html',
-            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIF
+            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIFY_LOGIN_PASSWORD, or that member account password.',
+            next_url=request.form.get('next', ''),
+        )
+
+    if verify_authenticated():
+        return redirect(url_for('verify_ticket'))
+
+    next_url = request.args.get('next', '')
+    return render_template('verify_login.html', next_url=next_url)
+
+
+@app

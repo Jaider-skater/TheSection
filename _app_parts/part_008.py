@@ -1,12 +1,4 @@
-mail)
-            continue
-        invite_url = build_member_invite_url(email, token)
-        if deliver_member_invite_email(email, token, invite_url=invite_url):
-            mark_member_invite_sent(email)
-            sent.append(email)
-        else:
-            failed.append(email)
-    return {'sent': sent, 'failed': failed, 'skipped': skipped}
+led': failed, 'skipped': skipped}
 
 
 @app.route('/')
@@ -175,4 +167,12 @@ def create_checkout_session():
         ticket_type = data.get('ticket_type', 'general')
         apply_member_discount = bool(data.get('apply_member_discount'))
         checkout_session = build_checkout_session(
-            quantity, ticket_type, app
+            quantity, ticket_type, apply_member_discount=apply_member_discount,
+        )
+        print("Session created successfully:", checkout_session.url)
+        return jsonify({'url': checkout_session.url})
+    except Exception as e:
+        print("Error creating session:", str(e))
+        return jsonify({'error': str(e)}), 500
+
+# Replace your 
