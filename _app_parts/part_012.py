@@ -1,10 +1,4 @@
-cated'] = True
-            # Keep ?key= for bookmarkable links and download URLs that still expect it.
-            sep = '&' if '?' in next_path else '?'
-            return redirect(f'{next_path}{sep}key={key}')
-        return render_template(
-            'admin_login.html',
-            error='Invalid admin key. Try again.',
+Try again.',
             next_path=next_path,
         ), 401
 
