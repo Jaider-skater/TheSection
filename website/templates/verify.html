@@ -9,10 +9,13 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
     <div class="max-w-lg mx-auto text-center">
-        <div class="flex items-center justify-between mb-2 text-xs">
-            <a href="/" class="text-zinc-500 hover:text-white transition-colors">← Home</a>
+        <div class="flex items-center justify-between mb-3 text-sm">
+            <a href="/"
+               class="px-3 py-1.5 rounded-lg border border-zinc-600 text-zinc-200 hover:border-white hover:text-white transition-colors">
+                ← Home
+            </a>
             <form method="POST" action="/verify/logout">
-                <button type="submit" class="text-zinc-500 hover:text-white transition-colors">Sign out</button>
+                <button type="submit" class="text-zinc-500 hover:text-white transition-colors text-xs">Sign out</button>
             </form>
         </div>
         <div id="admission-totals" class="grid grid-cols-3 gap-2 mb-2">
