@@ -33,8 +33,13 @@
                 {{ quantity }} {% if quantity == 1 %}guest{% else %}guests{% endif %}
             </p>
             <p class="text-zinc-300 mb-4 text-lg">Welcome to The Section</p>
+            {% if vip_overflow_note %}
+            <p class="text-purple-200 mb-4 text-sm">{{ vip_overflow_note }}</p>
+            {% endif %}
             {% if admission_totals.capacity_reached %}
             <p class="text-amber-300 mb-8">Max capacity reached — congrats on selling this place out!</p>
+            {% elif admission_totals.vip_capacity_reached and not is_vip %}
+            <p class="text-purple-200 mb-8 text-sm">VIP area is full for this event.</p>
             {% else %}
             <p class="mb-8">&nbsp;</p>
             {% endif %}
