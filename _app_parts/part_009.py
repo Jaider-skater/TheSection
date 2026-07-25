@@ -1,4 +1,56 @@
-,
+ember invite email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_member_invite_email(customer_email, token, invite_url=None):
+    return send_member_invite_email(customer_email, token, invite_url=invite_url)
+
+
+def send_pending_member_invites():
+    sent = []
+    failed = []
+    skipped = []
+    for email in invites_ready_to_send():
+        if get_legacy_member(email):
+            skipped.append(email)
+            continue
+        token = set_member_invite_token(email)
+        if not token:
+            failed.append(email)
+            continue
+        invite_url = build_member_invite_url(email, token)
+        if deliver_member_invite_email(email, token, invite_url=invite_url):
+            mark_member_invite_sent(email)
+            sent.append(email)
+        else:
+            failed.append(email)
+    return {'sent': sent, 'failed': failed, 'skipped': skipped}
+
+
+@app.route('/')
+def home():
+    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
+
+
+@app.route('/api/member-status')
+def member_status():
+    member = get_logged_in_member()
+    discount_code = None
+    discount_eligible = False
+    if member:
+        discount_eligible = member_discount_eligible(member)
+        if discount_eligible:
+            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
+    return jsonify({
+        'logged_in': bool(member),
+        'email': session.get('legacy_member_email'),
+        'discount_code': discount_code,
+        'member_discount_eligible': discount_eligible,
+        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
+        'member_discount_percent': int(member_discount * 100),
+        'returning_guest_discount_percent': int(returning_guest_discount * 100),
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
         'vip_bundle_min': vip_bundle_min,
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
         'ticket_types': {
@@ -127,51 +179,4 @@ def checkout_resume():
         return redirect(checkout_session.url)
     except Exception as e:
         print("Error resuming checkout:", str(e))
-        return redirect('/?open_tickets=1')
-
-
-@app.route('/create-checkout-session', methods=['POST'])
-def create_checkout_session():
-    if not is_legacy_member_logged_in():
-        return jsonify({'error': 'Sign in to your member account before purchasing tickets.'}), 401
-
-    try:
-        data = request.get_json()
-        quantity = max(1, int(data.get('quantity', 1)))
-        ticket_type = data.get('ticket_type', 'general')
-        apply_member_discount = bool(data.get('apply_member_discount'))
-        checkout_session = build_checkout_session(
-            quantity, ticket_type, apply_member_discount=apply_member_discount,
-        )
-        print("Session created successfully:", checkout_session.url)
-        return jsonify({'url': checkout_session.url})
-    except Exception as e:
-        print("Error creating session:", str(e))
-        return jsonify({'error': str(e)}), 500
-
-# Replace your current /success route with this cleaner version:
-@app.route('/success')
-def success():
-    session_id = request.args.get('session_id')
-    print("Success page called with session_id:", session_id)
-
-    if not session_id:
-        return render_template('success.html', error="Missing session ID")
-
-    try:
-        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
-
-        metadata = checkout_session.metadata or {}
-        stripe_email = None
-        if checkout_session.customer_details:
-            stripe_email = checkout_session.customer_details.email
-
-        existing_ticket = get_ticket_by_session(session_id)
-        if existing_ticket:
-            ticket_id = existing_ticket['ticket_id']
-            quantity = existing_ticket['quantity']
-            ticket_type = existing_ticket.get('ticket_type', 'general')
-            access = existing_ticket.get('access')
-            delivery_email = ticket_recipient_email(existing_ticket.get('email'), metadata)
-        else:
-            quantity = 1
+        return redirect('/?open_tickets
