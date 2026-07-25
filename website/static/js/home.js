@@ -53,9 +53,11 @@ async function loadMemberStatus() {
     }
 }
 
-function appliedMemberPct() {
-    if (pricing && pricing.applied_member_discount_percent != null) {
-        return pricing.applied_member_discount_percent;
+function eligibleMemberPct() {
+    // Rate that will apply if they tap the code (never use applied=0 when code is off).
+    if (pricing && pricing.eligible_member_discount_percent != null
+        && pricing.eligible_member_discount_percent > 0) {
+        return pricing.eligible_member_discount_percent;
     }
     if (memberStatus.returning_guest_discount && quantity === 1) {
         return memberStatus.returning_guest_discount_percent || 20;
@@ -63,8 +65,17 @@ function appliedMemberPct() {
     return memberStatus.member_discount_percent || 10;
 }
 
+function appliedMemberPct() {
+    if (memberDiscountApplied && pricing
+        && pricing.applied_member_discount_percent != null
+        && pricing.applied_member_discount_percent > 0) {
+        return pricing.applied_member_discount_percent;
+    }
+    return eligibleMemberPct();
+}
+
 function memberCodeHintText() {
-    const memberPct = appliedMemberPct();
+    const memberPct = memberDiscountApplied ? appliedMemberPct() : eligibleMemberPct();
     const bulkPct = bulkPctForType();
     const welcome = memberStatus.returning_guest_discount;
     const qty = quantity;
@@ -265,9 +276,12 @@ function updateModalQuantity() {
         }
 
         const bulkPct = bulkPctForType();
-        const memberPct = pricing.applied_member_discount_percent != null
+        const memberPct = (memberDiscountApplied && pricing.applied_member_discount_percent > 0)
             ? pricing.applied_member_discount_percent
-            : pricing.member_discount_percent;
+            : (pricing.eligible_member_discount_percent
+                || (memberStatus.returning_guest_discount && quantity === 1
+                    ? (memberStatus.returning_guest_discount_percent || 20)
+                    : (pricing.member_discount_percent || memberStatus.member_discount_percent || 10)));
         const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
         const bulkOnlyUnit = Math.round(pricing.base_unit_price_cents * (1 - bulkPct / 100));
         const bulkOnlyLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(bulkOnlyUnit)} each`;
