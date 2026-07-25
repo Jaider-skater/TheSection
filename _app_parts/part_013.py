@@ -1,4 +1,148 @@
-token_valid,
+ers(members)
+                if exclusive:
+                    mark_member_invite_claimed(email)
+                else:
+                    subscribe_signup_to_full_list(email)
+                session['legacy_member_email'] = email
+                if next_url.startswith('/'):
+                    return redirect(next_url)
+                return redirect(url_for('legacy_portal'))
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(error=error, next_url=next_url, active_tab='register'),
+            )
+
+        if action == 'login':
+            email = request.form.get('email', '').strip().lower()
+            password = request.form.get('password', '')
+            if verify_legacy_login(email, password):
+                session['legacy_member_email'] = email
+                if next_url.startswith('/'):
+                    return redirect(next_url)
+                return redirect(url_for('legacy_portal'))
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(
+                    error='Invalid email or password.',
+                    next_url=next_url,
+                    active_tab='login',
+                ),
+            )
+
+        if action == 'forgot_password':
+            logged_in_member = get_logged_in_member()
+            email = request.form.get('email', '').strip().lower()
+            if logged_in_member:
+                email = logged_in_member['email']
+            sent = False
+            member = get_legacy_member(email)
+            if not member:
+                print(f"Password reset skipped; no member account for {email}")
+            else:
+                token = set_password_reset_token(email)
+                if not token:
+                    print(f"Password reset token not saved for {email}")
+                else:
+                    reset_url = (
+                        f"{get_public_base_url()}/reset-password?"
+                        f"{urlencode({'email': email, 'token': token})}"
+                    )
+                    sent = deliver_password_reset_email(email, token, reset_url=reset_url)
+                    print(f"Password reset delivery for {email}: sent={sent}")
+
+            if logged_in_member:
+                if sent:
+                    success_msg = (
+                        f'We sent a password reset link to {email}. '
+                        'Check your inbox and spam folder.'
+                    )
+                else:
+                    success_msg = (
+                        'We could not send the reset email right now. '
+                        'Please try again in a few minutes.'
+                    )
+                active_tab = 'login'
+            else:
+                success_msg = (
+                    'If an account exists for that email, we sent a password reset link. '
+                    'Check your inbox and spam folder.'
+                )
+                active_tab = 'forgot'
+
+            return render_template(
+                'legacy_portal.html',
+                **portal_context(
+                    success=success_msg,
+                    next_url=next_url,
+                    active_tab=active_tab,
+                ),
+            )
+
+        if action == 'logout':
+            session.pop('legacy_member_email', None)
+            return redirect(url_for('legacy_portal'))
+
+        if action == 'save_ticket' and member:
+            ticket_id = request.form.get('ticket_id', '')
+            record = get_ticket_record(ticket_id)
+            if record:
+                add_saved_ticket_for_member(member['email'], ticket_id)
+                refreshed = get_legacy_member(member['email'])
+                if refreshed and member_has_past_purchases(refreshed):
+                    ensure_member_discount_code(refreshed)
+            return redirect(url_for('legacy_portal'))
+
+        if action == 'remove_ticket' and member:
+            ticket_id = request.form.get('ticket_id', '')
+            remove_saved_ticket_for_member(member['email'], ticket_id)
+            return redirect(url_for('legacy_portal'))
+
+    return render_template('legacy_portal.html', **portal_context(next_url=next_url))
+
+
+@app.route('/legacy/join', methods=['GET', 'POST'])
+def legacy_member_invite_signup():
+    email = (
+        request.form.get('email', '').strip().lower()
+        or request.args.get('email', '').strip().lower()
+    )
+    token = request.form.get('token', '') or request.args.get('token', '')
+    error = None
+
+    if not email or not token:
+        return render_template(
+            'legacy_invite_signup.html',
+            email='',
+            token='',
+            token_valid=False,
+            error='This invite link is incomplete. Use the link from your email.',
+            invite_days=INVITE_EXPIRY_DAYS,
+            member_discount_percent=int(member_discount * 100),
+            returning_guest_discount_percent=int(returning_guest_discount * 100),
+        )
+
+    token_valid = verify_member_invite_token(email, token)
+    if request.method == 'POST':
+        new_password = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+        if not token_valid:
+            error = 'This invite link is invalid or has expired.'
+        elif new_password != confirm_password:
+            error = 'Passwords do not match.'
+        elif len(new_password) < 8:
+            error = 'Password must be at least 8 characters.'
+        else:
+            ok, create_error = create_member_from_invite(email, new_password)
+            if ok:
+                session['legacy_member_email'] = email
+                return redirect('/?open_tickets=1')
+            error = create_error or 'Could not create your account. Try again or contact support.'
+
+    return render_template(
+        'legacy_invite_signup.html',
+        email=email,
+        token=token,
+        token_valid=token_valid,
         error=error,
         invite_days=INVITE_EXPIRY_DAYS,
         member_discount_percent=int(member_discount * 100),
@@ -27,141 +171,4 @@ def admin_login():
 
     if require_admin():
         return redirect(next_path)
-    return render_template('admin_login.html', error=None, next_path=next_path)
-
-
-@app.route('/admin/logout', methods=['POST', 'GET'])
-def admin_logout():
-    session.pop('admin_authenticated', None)
-    return redirect(url_for('admin_login'))
-
-
-@app.route('/admin/mailing-list', methods=['GET', 'POST'])
-def admin_mailing_list():
-    if not require_admin():
-        return admin_login_required('/admin/mailing-list')
-
-    key = admin_key_for_templates()
-    error = None
-    success = None
-
-    if request.method == 'POST':
-        action = request.form.get('action')
-        if action == 'add_emails':
-            emails = normalize_email_list(request.form.get('emails', ''))
-            if not emails:
-                error = 'Add at least one valid email address.'
-            else:
-                added, skipped = add_emails_to_invite_list(emails)
-                parts = []
-                if added:
-                    parts.append(f'Added {len(added)} exclusive email{"s" if len(added) != 1 else ""}.')
-                if skipped:
-                    parts.append(f'{len(skipped)} already on exclusive list.')
-                success = ' '.join(parts) or 'No new emails added.'
-        elif action == 'remove_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_invite_list(email):
-                success = f'Removed {email} from exclusive list.'
-            else:
-                error = 'Could not remove that email.'
-        elif action == 'send_invites':
-            result = send_pending_member_invites()
-            sent_count = len(result['sent'])
-            failed_count = len(result['failed'])
-            if sent_count:
-                success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
-                if failed_count:
-                    success += f' {failed_count} failed to send.'
-            elif failed_count:
-                error = f'Could not send invites ({failed_count} failed). Check mail settings.'
-            else:
-                success = 'No pending invites to send.'
-        elif action == 'add_full_emails':
-            emails = normalize_email_list(request.form.get('emails', ''))
-            if not emails:
-                error = 'Add at least one valid email address for the full list.'
-            else:
-                added, skipped = add_emails_to_full_mailing_list(emails, source='manual')
-                parts = []
-                if added:
-                    parts.append(f'Added {len(added)} to full list.')
-                if skipped:
-                    parts.append(
-                        f'{len(skipped)} skipped (already on full list or exclusive list).'
-                    )
-                success = ' '.join(parts) or 'No new emails added to full list.'
-        elif action == 'remove_full_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_full_mailing_list(email):
-                success = f'Removed {email} from full list.'
-            else:
-                error = 'Could not remove that email from the full list.'
-        elif action == 'sync_full_list':
-            added, skipped = sync_members_into_full_mailing_list()
-            success = (
-                f'Synced members into full list: {len(added)} added, '
-                f'{len(skipped)} already present or exclusive.'
-            )
-        elif action == 'send_broadcast':
-            subject = (request.form.get('subject') or '').strip()
-            body = (request.form.get('body') or '').strip()
-            lists = set()
-            if request.form.get('list_exclusive'):
-                lists.add('exclusive')
-            if request.form.get('list_full'):
-                lists.add('full')
-            if not lists:
-                error = 'Select at least one mailing list to send to.'
-            elif not subject or not body:
-                error = 'Subject and message body are required.'
-            else:
-                recipients = resolve_broadcast_recipients(lists)
-                if not recipients:
-                    error = 'No recipients on the selected list(s).'
-                else:
-                    sent, failed = send_broadcast_email(subject, body, recipients)
-                    if sent:
-                        success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
-                        if failed:
-                            success += f' {len(failed)} failed.'
-                    elif failed:
-                        error = f'All {len(failed)} sends failed. Check mail settings.'
-                    else:
-                        error = 'Nothing was sent.'
-
-    invites = invite_list_for_admin()
-    ready_count = len(invites_ready_to_send())
-    blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
-    full_list = full_mailing_list_for_admin()
-    return render_template(
-        'mailing_list.html',
-        invites=invites,
-        ready_count=ready_count,
-        blocked_count=blocked_count,
-        full_list=full_list,
-        full_list_count=len(full_list),
-        key=key,
-        error=error,
-        success=success,
-        member_discount_percent=int(member_discount * 100),
-        returning_guest_discount_percent=int(returning_guest_discount * 100),
-        invite_days=INVITE_EXPIRY_DAYS,
-        timezone_label=display_timezone_label(),
-    )
-
-
-@app.route('/admin')
-def admin_dashboard():
-    if not require_admin():
-        return admin_login_required('/admin')
-
-    tickets = sorted(load_tickets(), key=lambda t: t.get('purchased_at', ''), reverse=True)
-    total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
-    return render_template(
-        'admin.html',
-        tickets=tickets,
-        tickets_json=json.dumps(tickets, indent=2),
-        total_admissions=total_admissions,
-        key=admin_key_for_templates(),
- 
+    return render_template('ad
