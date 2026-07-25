@@ -1,4 +1,81 @@
-ounts():
+(no period re-use).
+                # VIP + admission_as ga: leave vip_redeemed_at unset for later VIP use.
+                save_tickets(tickets)
+                return True
+    return False
+
+
+def parse_iso_datetime(raw):
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+_display_tz = None
+
+
+def get_display_timezone():
+    global _display_tz
+    if _display_tz is None:
+        try:
+            _display_tz = ZoneInfo(APP_TIMEZONE)
+        except Exception:
+            _display_tz = ZoneInfo('America/Los_Angeles')
+    return _display_tz
+
+
+def display_timezone_label():
+    return datetime.now(get_display_timezone()).strftime('%Z')
+
+
+def format_display_datetime(iso_raw, date_only=False):
+    dt = parse_iso_datetime(iso_raw)
+    if not dt:
+        return '—'
+    local = dt.astimezone(get_display_timezone())
+    if date_only:
+        return local.strftime('%Y-%m-%d')
+    return local.strftime('%Y-%m-%d %H:%M')
+
+
+@app.template_filter('local_time')
+def local_time_filter(iso_raw):
+    return format_display_datetime(iso_raw)
+
+
+@app.template_filter('local_date')
+def local_date_filter(iso_raw):
+    return format_display_datetime(iso_raw, date_only=True)
+
+
+def get_counting_epoch():
+    settings = load_scanner_settings()
+    return parse_iso_datetime(settings.get('counting_epoch'))
+
+
+def get_reset_history():
+    settings = load_scanner_settings()
+    history = settings.get('reset_history', [])
+    return history if isinstance(history, list) else []
+
+
+def ticket_counts_for_current_period(scanned_at):
+    scanned = parse_iso_datetime(scanned_at)
+    if not scanned:
+        return False
+    counting_epoch = get_counting_epoch()
+    if counting_epoch is None:
+        return True
+    return scanned >= counting_epoch
+
+
+def reset_admission_counts():
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     counts = compute_admission_counts()
@@ -153,63 +230,4 @@ def build_qr_image(ticket_id):
 
 def ticket_display_url(ticket_id):
     normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return None
-    return f"{base_url}/t/{normalized}"
-
-
-def make_pass_icon_png():
-    from PIL import Image, ImageDraw
-    img = Image.new('RGB', (87, 87), color=(24, 24, 27))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle((20, 20, 66, 66), fill='white')
-    draw.rectangle((28, 28, 36, 36), fill='black')
-    draw.rectangle((50, 28, 58, 36), fill='black')
-    draw.rectangle((28, 50, 36, 58), fill='black')
-    draw.rectangle((50, 50, 58, 58), fill='black')
-    buf = BytesIO()
-    img.save(buf, format='PNG')
-    return buf.getvalue()
-
-
-def sign_wallet_manifest(manifest_bytes):
-    with tempfile.TemporaryDirectory() as tmp:
-        manifest_path = os.path.join(tmp, 'manifest.json')
-        signature_path = os.path.join(tmp, 'signature')
-        with open(manifest_path, 'wb') as f:
-            f.write(manifest_bytes)
-
-        result = subprocess.run(
-            [
-                'openssl', 'smime', '-binary', '-sign',
-                '-signer', wallet_cert_path,
-                '-inkey', wallet_key_path,
-                '-certfile', wallet_wwdr_path,
-                '-in', manifest_path,
-                '-out', signature_path,
-                '-outform', 'DER',
-            ],
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            print('Wallet signing failed:', result.stderr.decode('utf-8', errors='ignore'))
-            return None
-
-        with open(signature_path, 'rb') as f:
-            return f.read()
-
-
-def build_wallet_pass(ticket_id, quantity):
-    if not wallet_enabled:
-        return None
-
-    verify_url = f"{base_url}/verify/t/{ticket_id}"
-    guest_label = '1 guest' if quantity == 1 else f'{quantity} guests'
-    pass_json = {
-        'formatVersion': 1,
-        'passTypeIdentifier': wallet_pass_type_id,
-        'teamIdentifier': wallet_team_id,
-        'organizationName': 'The Section',
-        'description': 'The Section Ticket',
-        'se
+    if not norma
