@@ -1,4 +1,42 @@
-alse)
+                f"You're in for The Section!\n\n"
+                f"Ticket type: {type_label}\n"
+                f"Ticket ID: {ticket_id}\n"
+                f"Guests: {quantity}\n"
+                f"{access_line}\n"
+                f"Show the attached QR code at the door.\n"
+                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
+            )
+            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
+            mail.send(msg)
+            print(f"Ticket email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+    if not customer_email:
+        return False
+
+    record = get_ticket_by_session(session_id)
+    if record and record.get('email_sent_at'):
+        return True
+
+    if record:
+        ticket_type = record.get('ticket_type', ticket_type)
+        access = record.get('access', access)
+
+    result = {'sent': False}
+
+    def _send():
+        result['sent'] = send_ticket_email(
+            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
+        )
+        if result['sent']:
+            mark_email_sent(session_id)
+
+    thread = threading.Thread(target=_send, daemon=False)
     thread.start()
     thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
     return result['sent']
@@ -129,38 +167,4 @@ def send_pending_member_invites():
             continue
         invite_url = build_member_invite_url(email, token)
         if deliver_member_invite_email(email, token, invite_url=invite_url):
-            mark_member_invite_sent(email)
-            sent.append(email)
-        else:
-            failed.append(email)
-    return {'sent': sent, 'failed': failed, 'skipped': skipped}
-
-
-@app.route('/')
-def home():
-    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
-
-
-@app.route('/api/member-status')
-def member_status():
-    member = get_logged_in_member()
-    discount_code = None
-    discount_eligible = False
-    if member:
-        member = ensure_returning_guest_flag_for_exclusive_member(member)
-        discount_eligible = member_discount_eligible(member)
-        if discount_eligible:
-            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
-            member = get_logged_in_member() or member
-    return jsonify({
-        'logged_in': bool(member),
-        'email': session.get('legacy_member_email'),
-        'discount_code': discount_code,
-        'member_discount_eligible': discount_eligible,
-        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
-        'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
-        'returning_guest_discount_percent': (
-            int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20
-        ),
-        'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 1
+     
