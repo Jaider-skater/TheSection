@@ -1,15 +1,64 @@
-unt_applied': member_discount_applied,
+
+    )
+
+    member_only_total = (
+        int(base_total_cents * (1 - rate))
+        if member_requested
+        else None
+    )
+
+    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
+    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
+    member_discount_applied = (
+        member_requested
+        and not stacked_discount_applied
+        and not bulk_savings_active
+        and member_only_total is not None
+        and total_cents == member_only_total
+    )
+
+    combined_discount_percent = None
+    if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
+        combined_discount_percent = int(
+            (bulk_discount_rate(ticket_type) + rate) * 100
+        )
+
+    bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
+    bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
+    member = get_logged_in_member()
+    if member:
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+    is_returning = member_has_returning_guest_discount(member)
+    applied_pct = int(round(rate * 100)) if rate > 0 else 0
+    eligible_pct = int(round(eligible_rate * 100)) if eligible_rate > 0 else 0
+    # Welcome rate only when returning guest buys exactly one ticket.
+    returning_single_ticket_rate = bool(is_returning and quantity == 1 and rate > 0)
+
+    return {
+        'ticket_type': ticket_type,
+        'quantity': quantity,
+        'unit_price_cents': unit_price,
+        'total_cents': total_cents,
+        'base_total_cents': base_total_cents,
+        'base_unit_price_cents': base,
+        'vip_bundle_applied': vip_bundle_applied,
+        'bundle_discount_applied': bundle_discount_applied,
+        'member_discount_applied': member_discount_applied,
         'stacked_discount_applied': stacked_discount_applied,
         'combined_discount_percent': combined_discount_percent,
         'legacy_discount_applied': total_cents < base_total_cents,
         'bundle_min': bulk_min,
         'bundle_discount_percent': bulk_percent,
-        # Standard ongoing member rate (multi-ticket / post-welcome).
-        'member_discount_percent': int(member_discount * 100),
-        # Rate actually used for this cart (20% single welcome vs 10% multi).
+        # Standard ongoing member rate (multi-ticket).
+        'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
+        # Rate used when code is ON for this cart.
         'applied_member_discount_percent': applied_pct,
+        # Rate that would apply if they tap the code (for UI copy).
+        'eligible_member_discount_percent': eligible_pct,
         'returning_guest_discount': is_returning,
-        'returning_guest_discount_percent': int(returning_guest_discount * 100),
+        'returning_guest_discount_percent': (
+            int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20
+        ),
         'returning_single_ticket_rate': returning_single_ticket_rate,
         'vip_bundle_min': vip_bundle_min,
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
@@ -162,67 +211,4 @@ def ticket_counts_for_current_period(scanned_at):
     return scanned >= counting_epoch
 
 
-def reset_admission_counts():
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    counts = compute_admission_counts()
-
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        history = settings.get('reset_history', [])
-        if not isinstance(history, list):
-            history = []
-        history.append({
-            'reset_at': now_iso,
-            'ga': counts['ga'],
-            'vip': counts['vip'],
-            'total': counts['total'],
-        })
-        settings['reset_history'] = history
-        settings['counting_epoch'] = now_iso
-        save_scanner_settings(settings)
-
-    return {
-        'reset_at': now_iso,
-        'ga': counts['ga'],
-        'vip': counts['vip'],
-        'total': counts['total'],
-    }
-
-
-def _admin_key_matches(provided):
-    key = (provided or '').strip()
-    expected = (admin_key or '').strip()
-    if not key or not expected:
-        return False
-    try:
-        return secrets.compare_digest(key, expected)
-    except (TypeError, ValueError):
-        return key == expected
-
-
-def require_admin():
-    if session.get('admin_authenticated') is True:
-        return True
-    key = request.args.get('key') or request.form.get('key') or ''
-    if _admin_key_matches(key):
-        session['admin_authenticated'] = True
-        return True
-    return False
-
-
-def admin_key_for_templates():
-    return (request.args.get('key') or request.form.get('key') or '').strip()
-
-
-def admin_login_required(next_path=None):
-    """Return admin login page when the request is not authorized."""
-    if next_path is None:
-        next_path = request.path or '/admin'
-    if not next_path.startswith('/admin'):
-        next_path = '/admin'
-    provided = (request.args.get('key') or request.form.get('key') or '').strip()
-    error = 'Invalid admin key. Try again.' if provided else None
-    return render_template(
-        'admin_login.html',
-        error=
+def reset_admission_c
