@@ -1,4 +1,54 @@
-_email(
+ion_id') == session_id:
+                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
+                save_tickets(tickets)
+                return
+
+
+def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+    view_url = ticket_display_url(ticket_id)
+    type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
+    with app.app_context():
+        try:
+            msg = Message(
+                "Your The Section Tickets",
+                sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            access_line = f"Access: {access}\n" if access else ''
+            msg.body = (
+                f"You're in for The Section!\n\n"
+                f"Ticket type: {type_label}\n"
+                f"Ticket ID: {ticket_id}\n"
+                f"Guests: {quantity}\n"
+                f"{access_line}\n"
+                f"Show the attached QR code at the door.\n"
+                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
+            )
+            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
+            mail.send(msg)
+            print(f"Ticket email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+    if not customer_email:
+        return False
+
+    record = get_ticket_by_session(session_id)
+    if record and record.get('email_sent_at'):
+        return True
+
+    if record:
+        ticket_type = record.get('ticket_type', ticket_type)
+        access = record.get('access', access)
+
+    result = {'sent': False}
+
+    def _send():
+        result['sent'] = send_ticket_email(
             customer_email, ticket_id, quantity, ticket_data, ticket_type, access
         )
         if result['sent']:
@@ -113,56 +163,4 @@ def send_member_invite_email(customer_email, token, invite_url=None):
             print(f"Member invite email sent to {customer_email}")
             return True
         except Exception as e:
-            print(f"Member invite email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_member_invite_email(customer_email, token, invite_url=None):
-    return send_member_invite_email(customer_email, token, invite_url=invite_url)
-
-
-def send_pending_member_invites():
-    sent = []
-    failed = []
-    skipped = []
-    for email in invites_ready_to_send():
-        if get_legacy_member(email):
-            skipped.append(email)
-            continue
-        token = set_member_invite_token(email)
-        if not token:
-            failed.append(email)
-            continue
-        invite_url = build_member_invite_url(email, token)
-        if deliver_member_invite_email(email, token, invite_url=invite_url):
-            mark_member_invite_sent(email)
-            sent.append(email)
-        else:
-            failed.append(email)
-    return {'sent': sent, 'failed': failed, 'skipped': skipped}
-
-
-@app.route('/')
-def home():
-    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
-
-
-@app.route('/api/member-status')
-def member_status():
-    member = get_logged_in_member()
-    discount_code = None
-    discount_eligible = False
-    if member:
-        discount_eligible = member_discount_eligible(member)
-        if discount_eligible:
-            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
-    return jsonify({
-        'logged_in': bool(member),
-        'email': session.get('legacy_member_email'),
-        'discount_code': discount_code,
-        'member_discount_eligible': discount_eligible,
-        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
-        'member_discount_percent': int(member_discount * 100),
-        'returning_guest_discount_percent': int(returning_guest_discount * 100),
-        'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 100)
+            print(f"M
