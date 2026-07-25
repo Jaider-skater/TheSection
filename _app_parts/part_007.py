@@ -1,4 +1,41 @@
-lized:
+ge = 'Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.'
+        if request.method == 'POST' or request.is_json:
+            return jsonify({'error': message}), 503
+        return render_template('verify_login.html', error=message), 503
+
+    if verify_authenticated():
+        # Member-portal staff access: pin a scanner flag so API fetches stay authorized.
+        if is_scanner_admin_member() and not verify_scanner_session_authenticated():
+            mark_scanner_session_authenticated()
+        return None
+
+    if request.method == 'POST' or request.is_json:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    next_url = request.full_path if request.query_string else request.path
+    if next_url.endswith('?'):
+        next_url = next_url[:-1]
+    return redirect(url_for('verify_login', next=next_url))
+
+
+def build_qr_png_bytes(ticket_id):
+    qr_payload = f"{base_url}/verify/t/{ticket_id}"
+    qr = qrcode.QRCode(version=1, box_size=12, border=4)
+    qr.add_data(qr_payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    return buffered.getvalue()
+
+
+def build_qr_image(ticket_id):
+    return base64.b64encode(build_qr_png_bytes(ticket_id)).decode()
+
+
+def ticket_display_url(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
         return None
     return f"{base_url}/t/{normalized}"
 
@@ -178,50 +215,4 @@ def get_max_capacity():
 
 
 def set_max_capacity(value):
-    normalized = parse_max_capacity(value)
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        if normalized is None:
-            settings.pop('max_capacity', None)
-        else:
-            settings['max_capacity'] = normalized
-        save_scanner_settings(settings)
-    return normalized
-
-
-def get_max_vip_capacity():
-    settings = load_scanner_settings()
-    return parse_max_capacity(settings.get('max_vip_capacity'))
-
-
-def set_max_vip_capacity(value):
-    normalized = parse_max_capacity(value)
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        if normalized is None:
-            settings.pop('max_vip_capacity', None)
-        else:
-            settings['max_vip_capacity'] = normalized
-        save_scanner_settings(settings)
-    return normalized
-
-
-def admission_entry_type(ticket):
-    """How this ticket counted for the door: vip or ga."""
-    admitted = ticket.get('admission_as')
-    if admitted in ('vip', 'ga'):
-        return admitted
-    return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
-
-
-def compute_admission_counts():
-    ga = 0
-    vip = 0
-    for ticket in load_tickets():
-        scanned_at = ticket.get('scanned_at')
-        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
-            continue
-        qty = int(ticket.get('quantity') or 1)
-        if admission_entry_type(ticket) == 'vip':
-            vip += qty
-       
+    normalized = parse_max_capacity(
