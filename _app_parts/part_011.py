@@ -1,4 +1,38 @@
- 1
+heckout_session(
+            quantity, ticket_type, apply_member_discount=apply_member_discount,
+        )
+        print("Session created successfully:", checkout_session.url)
+        return jsonify({'url': checkout_session.url})
+    except Exception as e:
+        print("Error creating session:", str(e))
+        return jsonify({'error': str(e)}), 500
+
+# Replace your current /success route with this cleaner version:
+@app.route('/success')
+def success():
+    session_id = request.args.get('session_id')
+    print("Success page called with session_id:", session_id)
+
+    if not session_id:
+        return render_template('success.html', error="Missing session ID")
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
+
+        metadata = checkout_session.metadata or {}
+        stripe_email = None
+        if checkout_session.customer_details:
+            stripe_email = checkout_session.customer_details.email
+
+        existing_ticket = get_ticket_by_session(session_id)
+        if existing_ticket:
+            ticket_id = existing_ticket['ticket_id']
+            quantity = existing_ticket['quantity']
+            ticket_type = existing_ticket.get('ticket_type', 'general')
+            access = existing_ticket.get('access')
+            delivery_email = ticket_recipient_email(existing_ticket.get('email'), metadata)
+        else:
+            quantity = 1
             ticket_id = uuid.uuid4().hex[:12].upper()
             ticket_type = metadata.get('ticket_type', 'general')
             if ticket_type not in TICKET_TYPES:
@@ -108,6 +142,24 @@ def reset_admission_totals():
     return jsonify({'recorded': recorded, **totals})
 
 
+@app.route('/api/admission-totals/reset-history', methods=['DELETE', 'POST'])
+def delete_admission_reset_history_entry():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    entry_id = (
+        data.get('id')
+        or data.get('entry_id')
+        or request.args.get('id')
+        or request.form.get('id')
+        or ''
+    )
+    if not delete_reset_history_entry(entry_id):
+        return jsonify({'error': 'History entry not found.'}), 404
+    return jsonify(get_admission_totals())
+
+
 @app.route('/api/scanner-settings', methods=['GET', 'POST'])
 def scanner_settings():
     guard = protect_scanner_response()
@@ -137,48 +189,4 @@ def verify_login():
 
         email = request.form.get('email') or ''
         password = request.form.get('password') or ''
-        if verify_scanner_credentials(email, password):
-            mark_scanner_session_authenticated()
-            # Keep member portal in sync so Door Scanner stays open after portal login.
-            if get_legacy_member(verify_login_email):
-                session['legacy_member_email'] = verify_login_email
-            next_url = (request.form.get('next') or '').strip()
-            if not next_url or not next_url.startswith('/'):
-                next_url = url_for('verify_ticket')
-            return redirect(next_url)
-
-        return render_template(
-            'verify_login.html',
-            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIFY_LOGIN_PASSWORD, or that member account password.',
-            next_url=request.form.get('next', ''),
-        )
-
-    if verify_authenticated():
-        return redirect(url_for('verify_ticket'))
-
-    next_url = request.args.get('next', '')
-    return render_template('verify_login.html', next_url=next_url)
-
-
-@app.route('/verify/logout', methods=['POST'])
-def verify_logout():
-    session.pop('verify_authenticated', None)
-    session.pop('verify_login_email', None)
-    # Auto-logout when leaving the scanner page: only clear the scanner flag.
-    # Keep the member portal session so staff who signed in via /legacy stay signed in.
-    auto_leave = request.headers.get('X-Scanner-Logout') == '1'
-    if not auto_leave:
-        # Explicit "Sign out" on the scanner: also leave the staff member portal account.
-        member_email = (session.get('legacy_member_email') or '').strip().lower()
-        if verify_login_email and member_email and secure_equal(member_email, verify_login_email):
-            session.pop('legacy_member_email', None)
-    if request.is_json or auto_leave:
-        return jsonify({'ok': True})
-    return redirect(url_for('home'))
-
-
-@app.route('/verify/t/<ticket_id>')
-def verify_ticket_native(ticket_id):
-    guard = protect_scanner_response()
-    if guard:
-        return g
+    
