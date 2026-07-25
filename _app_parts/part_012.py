@@ -1,4 +1,48 @@
-uard
+    if verify_scanner_credentials(email, password):
+            mark_scanner_session_authenticated()
+            # Keep member portal in sync so Door Scanner stays open after portal login.
+            if get_legacy_member(verify_login_email):
+                session['legacy_member_email'] = verify_login_email
+            next_url = (request.form.get('next') or '').strip()
+            if not next_url or not next_url.startswith('/'):
+                next_url = url_for('verify_ticket')
+            return redirect(next_url)
+
+        return render_template(
+            'verify_login.html',
+            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIFY_LOGIN_PASSWORD, or that member account password.',
+            next_url=request.form.get('next', ''),
+        )
+
+    if verify_authenticated():
+        return redirect(url_for('verify_ticket'))
+
+    next_url = request.args.get('next', '')
+    return render_template('verify_login.html', next_url=next_url)
+
+
+@app.route('/verify/logout', methods=['POST'])
+def verify_logout():
+    session.pop('verify_authenticated', None)
+    session.pop('verify_login_email', None)
+    # Auto-logout when leaving the scanner page: only clear the scanner flag.
+    # Keep the member portal session so staff who signed in via /legacy stay signed in.
+    auto_leave = request.headers.get('X-Scanner-Logout') == '1'
+    if not auto_leave:
+        # Explicit "Sign out" on the scanner: also leave the staff member portal account.
+        member_email = (session.get('legacy_member_email') or '').strip().lower()
+        if verify_login_email and member_email and secure_equal(member_email, verify_login_email):
+            session.pop('legacy_member_email', None)
+    if request.is_json or auto_leave:
+        return jsonify({'ok': True})
+    return redirect(url_for('home'))
+
+
+@app.route('/verify/t/<ticket_id>')
+def verify_ticket_native(ticket_id):
+    guard = protect_scanner_response()
+    if guard:
+        return guard
 
     result = check_ticket(ticket_id)
     return render_template(
@@ -118,48 +162,4 @@ def reset_password():
         token_valid=token_valid,
         error=error,
         success=None,
-        reset_hours=PASSWORD_RESET_HOURS,
-    )
-
-
-@app.route('/members', methods=['GET', 'POST'])
-@app.route('/legacy', methods=['GET', 'POST'])
-def legacy_portal():
-    next_url = request.args.get('next', '')
-    member = get_logged_in_member()
-
-    if request.method == 'POST':
-        action = request.form.get('action')
-        next_url = request.form.get('next') or request.args.get('next', '')
-
-        if action == 'register':
-            email = request.form.get('email', '').strip().lower()
-            password = request.form.get('password', '')
-            confirm_password = request.form.get('confirm_password', '')
-            if not email or not password:
-                error = 'Email and password are required.'
-            elif password != confirm_password:
-                error = 'Passwords do not match.'
-            elif len(password) < 8:
-                error = 'Password must be at least 8 characters.'
-            elif get_legacy_member(email):
-                error = 'An account with that email already exists.'
-            else:
-                exclusive = is_on_exclusive_invite_list(email)
-                with members_lock:
-                    members = load_members()
-                    new_member = {
-                        'email': email,
-                        'password_hash': hash_password(password),
-                        'saved_tickets': [],
-                        'joined_at': datetime.now(timezone.utc).isoformat(),
-                    }
-                    if exclusive:
-                        # On exclusive list → lifetime single-ticket perk (not full list).
-                        code = generate_discount_code(email)
-                        while discount_code_taken(code):
-                            code = generate_discount_code(email)
-                        new_member['discount_code'] = code
-                        new_member['returning_guest_discount'] = True
-                    members.append(new_member)
-                    save_memb
+        reset_hours=PASSWOR
