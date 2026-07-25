@@ -62,7 +62,47 @@ def get_counting_epoch():
 def get_reset_history():
     settings = load_scanner_settings()
     history = settings.get('reset_history', [])
-    return history if isinstance(history, list) else []
+    if not isinstance(history, list):
+        return []
+    # Ensure each entry has a stable id for delete buttons.
+    changed = False
+    for entry in history:
+        if isinstance(entry, dict) and not entry.get('id'):
+            entry['id'] = entry.get('reset_at') or secrets.token_hex(8)
+            changed = True
+    if changed:
+        with scanner_settings_lock:
+            settings = load_scanner_settings()
+            settings['reset_history'] = history
+            save_scanner_settings(settings)
+    return history
+
+
+def delete_reset_history_entry(entry_id):
+    """Remove one reset history row by id (or legacy reset_at string)."""
+    target = (entry_id or '').strip()
+    if not target:
+        return False
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        history = settings.get('reset_history', [])
+        if not isinstance(history, list):
+            return False
+        updated = []
+        removed = False
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            eid = str(entry.get('id') or entry.get('reset_at') or '')
+            if not removed and eid == target:
+                removed = True
+                continue
+            updated.append(entry)
+        if not removed:
+            return False
+        settings['reset_history'] = updated
+        save_scanner_settings(settings)
+        return True
 
 
 def ticket_counts_for_current_period(scanned_at):
@@ -86,6 +126,7 @@ def reset_admission_counts():
         if not isinstance(history, list):
             history = []
         history.append({
+            'id': secrets.token_hex(8),
             'reset_at': now_iso,
             'ga': counts['ga'],
             'vip': counts['vip'],
@@ -193,41 +234,4 @@ def mark_scanner_session_authenticated():
 
 def protect_scanner_response():
     if not verify_auth_configured():
-        message = 'Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.'
-        if request.method == 'POST' or request.is_json:
-            return jsonify({'error': message}), 503
-        return render_template('verify_login.html', error=message), 503
-
-    if verify_authenticated():
-        # Member-portal staff access: pin a scanner flag so API fetches stay authorized.
-        if is_scanner_admin_member() and not verify_scanner_session_authenticated():
-            mark_scanner_session_authenticated()
-        return None
-
-    if request.method == 'POST' or request.is_json:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    next_url = request.full_path if request.query_string else request.path
-    if next_url.endswith('?'):
-        next_url = next_url[:-1]
-    return redirect(url_for('verify_login', next=next_url))
-
-
-def build_qr_png_bytes(ticket_id):
-    qr_payload = f"{base_url}/verify/t/{ticket_id}"
-    qr = qrcode.QRCode(version=1, box_size=12, border=4)
-    qr.add_data(qr_payload)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    return buffered.getvalue()
-
-
-def build_qr_image(ticket_id):
-    return base64.b64encode(build_qr_png_bytes(ticket_id)).decode()
-
-
-def ticket_display_url(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not norma
+        messa
