@@ -97,13 +97,24 @@ def remove_saved_ticket_for_member(email, ticket_id):
     return False
 
 
-def ticket_result_meta(record):
+def ticket_result_meta(record, admission_as=None):
     ticket_type = record.get('ticket_type', 'general')
     access = record.get('access') or TICKET_TYPES.get(ticket_type, {}).get('access')
+    admitted = admission_as or record.get('admission_as')
+    # Door display: how they entered this scan (VIP ticket may enter as GA when VIP full).
+    is_vip_entry = (admitted or ticket_type) == 'vip'
     return {
         'ticket_type': ticket_type,
-        'access': access,
-        'is_vip': ticket_type == 'vip',
+        'access': access if is_vip_entry else None,
+        'is_vip': is_vip_entry,
+        'ticket_is_vip': ticket_type == 'vip',
+        'admission_as': admitted or ticket_type,
+        'vip_redeemed': bool(record.get('vip_redeemed_at')),
+        'vip_deferred': bool(
+            ticket_type == 'vip'
+            and admitted == 'ga'
+            and not record.get('vip_redeemed_at')
+        ),
     }
 
 
@@ -125,7 +136,12 @@ def get_ticket_record(ticket_id):
     return None
 
 
-def mark_ticket_scanned(ticket_id):
+def mark_ticket_scanned(ticket_id, admission_as=None):
+    """Record door entry. admission_as is 'vip' or 'ga'.
+
+    VIP tickets admitted as GA (VIP area full) do not set vip_redeemed_at so the
+    ticket can still be used as VIP at a later event after counts reset.
+    """
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
         return False
@@ -133,82 +149,27 @@ def mark_ticket_scanned(ticket_id):
         tickets = load_tickets()
         for ticket in tickets:
             if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
-                if ticket.get('scanned_at'):
+                ticket_type = ticket.get('ticket_type', 'general')
+                entry = admission_as or ('vip' if ticket_type == 'vip' else 'general')
+                if entry == 'general':
+                    entry = 'ga'
+                if entry not in ('vip', 'ga'):
+                    entry = 'ga'
+
+                # Already fully used as VIP, or GA ticket already used ever.
+                if ticket.get('vip_redeemed_at'):
                     return False
-                ticket['scanned_at'] = datetime.now(timezone.utc).isoformat()
-                save_tickets(tickets)
-                return True
-    return False
+                if ticket_type != 'vip' and ticket.get('scanned_at'):
+                    return False
+                # Same counting period already admitted.
+                if ticket_counts_for_current_period(ticket.get('scanned_at')):
+                    return False
 
-
-def parse_iso_datetime(raw):
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        return None
-
-
-_display_tz = None
-
-
-def get_display_timezone():
-    global _display_tz
-    if _display_tz is None:
-        try:
-            _display_tz = ZoneInfo(APP_TIMEZONE)
-        except Exception:
-            _display_tz = ZoneInfo('America/Los_Angeles')
-    return _display_tz
-
-
-def display_timezone_label():
-    return datetime.now(get_display_timezone()).strftime('%Z')
-
-
-def format_display_datetime(iso_raw, date_only=False):
-    dt = parse_iso_datetime(iso_raw)
-    if not dt:
-        return '—'
-    local = dt.astimezone(get_display_timezone())
-    if date_only:
-        return local.strftime('%Y-%m-%d')
-    return local.strftime('%Y-%m-%d %H:%M')
-
-
-@app.template_filter('local_time')
-def local_time_filter(iso_raw):
-    return format_display_datetime(iso_raw)
-
-
-@app.template_filter('local_date')
-def local_date_filter(iso_raw):
-    return format_display_datetime(iso_raw, date_only=True)
-
-
-def get_counting_epoch():
-    settings = load_scanner_settings()
-    return parse_iso_datetime(settings.get('counting_epoch'))
-
-
-def get_reset_history():
-    settings = load_scanner_settings()
-    history = settings.get('reset_history', [])
-    return history if isinstance(history, list) else []
-
-
-def ticket_counts_for_current_period(scanned_at):
-    scanned = parse_iso_datetime(scanned_at)
-    if not scanned:
-        return False
-    counting_epoch = get_counting_epoch()
-    if counting_epoch is None:
-        return True
-    return scanned >= counting_epoch
-
-
-def reset_admission_c
+                now_iso = datetime.now(timezone.utc).isoformat()
+                ticket['scanned_at'] = now_iso
+                ticket['admission_as'] = entry
+                if entry == 'vip' or ticket_type != 'vip':
+                    # Full VIP redeem, or any GA ticket → permanent for that privilege.
+                    if entry == 'vip':
+                        ticket['vip_redeemed_at'] = now_iso
+                    # GA tickets stay void forever via scanned_at 
