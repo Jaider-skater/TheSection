@@ -31,9 +31,35 @@ def member_has_returning_guest_discount(member):
     return bool(member and member.get('returning_guest_discount'))
 
 
+def ensure_returning_guest_flag_for_exclusive_member(member):
+    """Exclusive-list emails keep the lifetime single-ticket perk even if they signed up without the invite link."""
+    if not member:
+        return member
+    if member.get('returning_guest_discount'):
+        return member
+    email = (member.get('email') or '').strip().lower()
+    if not email or not is_on_exclusive_invite_list(email):
+        return member
+    with members_lock:
+        members = load_members()
+        for stored in members:
+            if stored.get('email', '').strip().lower() == email:
+                stored['returning_guest_discount'] = True
+                if not stored.get('discount_code'):
+                    code = generate_discount_code(email)
+                    while discount_code_taken(code, exclude_email=email):
+                        code = generate_discount_code(email)
+                    stored['discount_code'] = code
+                save_members(members)
+                member = stored
+                break
+    return member
+
+
 def member_discount_eligible(member):
     if not member:
         return False
+    member = ensure_returning_guest_flag_for_exclusive_member(member)
     return member_has_past_purchases(member) or member_has_returning_guest_discount(member)
 
 
@@ -50,20 +76,28 @@ def resolve_member_discount_application(requested):
     return member_discount_active()
 
 
-def active_member_discount_rate(quantity=1):
-    """Percent rate (0–1) when member discount is applied.
+def active_member_discount_rate(quantity=1, require_active=True):
+    """Percent rate (0–1) for the logged-in member at this quantity.
 
-    Mailing-list members keep returning_guest_discount for life:
+    Exclusive-list members keep returning_guest_discount for life:
     - quantity 1 → higher welcome rate (default 20%)
     - quantity 2+ → standard member rate (default 10%) for group/friend buys
+
+    If require_active is False, returns the eligible rate even when the code is not applied.
     """
-    if not member_discount_active():
-        return 0.0
     member = get_logged_in_member()
+    if member:
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+    if require_active and not member_discount_active():
+        return 0.0
+    if not member or not member_discount_eligible(member):
+        return 0.0
     quantity = max(1, int(quantity or 1))
     if member_has_returning_guest_discount(member) and quantity == 1:
-        return returning_guest_discount if returning_guest_discount > 0 else member_discount
-    return member_discount if member_discount > 0 else 0.0
+        rate = returning_guest_discount if returning_guest_discount > 0 else member_discount
+        return rate if rate > 0 else 0.20
+    rate = member_discount if member_discount > 0 else 0.0
+    return rate if rate > 0 else 0.10
 
 
 def sync_member_tickets_from_email(member):
@@ -149,7 +183,8 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
     base = TICKET_TYPES[ticket_type]['price_cents']
     base_total_cents = base * quantity
     bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
-    rate = active_member_discount_rate(quantity) if apply_member_discount else 0.0
+    eligible_rate = active_member_discount_rate(quantity, require_active=False)
+    rate = eligible_rate if apply_member_discount else 0.0
     total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
     unit_price = total_cents // quantity
 
@@ -157,45 +192,3 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
     member_requested = apply_member_discount and rate > 0
     stacked_discount_applied = (
         bulk_savings_active and member_requested and total_cents < bulk_only_total
-    )
-
-    member_only_total = (
-        int(base_total_cents * (1 - rate))
-        if member_requested
-        else None
-    )
-
-    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
-    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
-    member_discount_applied = (
-        member_requested
-        and not stacked_discount_applied
-        and not bulk_savings_active
-        and member_only_total is not None
-        and total_cents == member_only_total
-    )
-
-    combined_discount_percent = None
-    if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
-        combined_discount_percent = int(
-            (bulk_discount_rate(ticket_type) + rate) * 100
-        )
-
-    bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
-    bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
-    member = get_logged_in_member()
-    is_returning = member_has_returning_guest_discount(member)
-    applied_pct = int(round(rate * 100)) if rate > 0 else 0
-    # Welcome rate only when returning guest buys exactly one ticket.
-    returning_single_ticket_rate = bool(is_returning and quantity == 1 and rate > 0)
-
-    return {
-        'ticket_type': ticket_type,
-        'quantity': quantity,
-        'unit_price_cents': unit_price,
-        'total_cents': total_cents,
-        'base_total_cents': base_total_cents,
-        'base_unit_price_cents': base,
-        'vip_bundle_applied': vip_bundle_applied,
-        'bundle_discount_applied': bundle_discount_applied,
-        'member_disco
