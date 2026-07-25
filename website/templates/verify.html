@@ -206,11 +206,46 @@
             const ga = entry.ga ?? 0;
             const vip = entry.vip ?? 0;
             const total = entry.total ?? (ga + vip);
+            const entryId = entry.id || entry.reset_at || '';
+            const safeId = String(entryId).replace(/"/g, '&quot;');
             return `<li class="flex items-center justify-between gap-3 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
-                <span class="text-zinc-500">${when}</span>
-                <span class="tabular-nums text-zinc-300">GA ${ga} · VIP ${vip} · ${total} total</span>
+                <div class="min-w-0 text-left">
+                    <span class="text-zinc-500 block">${when}</span>
+                    <span class="tabular-nums text-zinc-300 text-[11px]">GA ${ga} · VIP ${vip} · ${total} total</span>
+                </div>
+                <button type="button"
+                        data-reset-id="${safeId}"
+                        onclick="deleteResetHistoryEntry(this.dataset.resetId)"
+                        class="shrink-0 text-[11px] text-zinc-500 hover:text-red-400 transition-colors px-2 py-1">
+                    Delete
+                </button>
             </li>`;
         }).join('');
+    }
+
+    async function deleteResetHistoryEntry(entryId) {
+        if (!entryId) return;
+        if (!window.confirm('Delete this reset history entry?')) return;
+        try {
+            const response = await fetch('/api/admission-totals/reset-history', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: entryId }),
+            });
+            if (response.status === 401) {
+                redirectToScannerLogin();
+                return;
+            }
+            if (!response.ok) {
+                alert('Could not delete that entry. Try again.');
+                return;
+            }
+            const totals = await response.json();
+            updateAdmissionTotals(totals);
+        } catch (err) {
+            console.warn('Failed to delete reset history entry', err);
+            alert('Could not delete that entry. Check your connection.');
+        }
     }
 
     function redirectToScannerLogin() {
