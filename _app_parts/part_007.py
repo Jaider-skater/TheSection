@@ -1,4 +1,68 @@
-gacy_members()
+rialNumber': normalize_ticket_id(ticket_id),
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'backgroundColor': 'rgb(24, 24, 27)',
+        'labelColor': 'rgb(161, 161, 170)',
+        'barcodes': [{
+            'format': 'PKBarcodeFormatQR',
+            'message': verify_url,
+            'messageEncoding': 'iso-8859-1',
+            'altText': ticket_id,
+        }],
+        'eventTicket': {
+            'primaryFields': [{
+                'key': 'event',
+                'label': 'EVENT',
+                'value': 'The Section',
+            }],
+            'secondaryFields': [
+                {
+                    'key': 'guests',
+                    'label': 'GUESTS',
+                    'value': guest_label,
+                },
+                {
+                    'key': 'ticket',
+                    'label': 'TICKET',
+                    'value': ticket_id,
+                },
+            ],
+            'backFields': [{
+                'key': 'verify',
+                'label': 'VERIFY',
+                'value': verify_url,
+            }],
+        },
+    }
+
+    icon_png = make_pass_icon_png()
+    files = {
+        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
+        'icon.png': icon_png,
+        'icon@2x.png': icon_png,
+        'logo.png': icon_png,
+        'logo@2x.png': icon_png,
+    }
+    manifest = {
+        name: hashlib.sha1(data).hexdigest()
+        for name, data in files.items()
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
+    files['manifest.json'] = manifest_bytes
+
+    signature = sign_wallet_manifest(manifest_bytes)
+    if not signature:
+        return None
+
+    files['signature'] = signature
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
+bootstrap_legacy_members()
 _bootstrap_email = os.getenv('LEGACY_BOOTSTRAP_EMAIL', '').strip().lower()
 if _bootstrap_email:
     add_emails_to_full_mailing_list([_bootstrap_email], source='founding')
@@ -162,54 +226,4 @@ def mark_email_sent(session_id):
     with tickets_lock:
         tickets = load_tickets()
         for ticket in tickets:
-            if ticket.get('session_id') == session_id:
-                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
-                save_tickets(tickets)
-                return
-
-
-def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    view_url = ticket_display_url(ticket_id)
-    type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
-    with app.app_context():
-        try:
-            msg = Message(
-                "Your The Section Tickets",
-                sender=app.config['MAIL_DEFAULT_SENDER'],
-                recipients=[customer_email],
-            )
-            access_line = f"Access: {access}\n" if access else ''
-            msg.body = (
-                f"You're in for The Section!\n\n"
-                f"Ticket type: {type_label}\n"
-                f"Ticket ID: {ticket_id}\n"
-                f"Guests: {quantity}\n"
-                f"{access_line}\n"
-                f"Show the attached QR code at the door.\n"
-                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
-            )
-            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
-            mail.send(msg)
-            print(f"Ticket email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    if not customer_email:
-        return False
-
-    record = get_ticket_by_session(session_id)
-    if record and record.get('email_sent_at'):
-        return True
-
-    if record:
-        ticket_type = record.get('ticket_type', ticket_type)
-        access = record.get('access', access)
-
-    result = {'sent': False}
-
-    def _send():
-        result['sent'] = send_ticket
+            if ticket.get('sess
