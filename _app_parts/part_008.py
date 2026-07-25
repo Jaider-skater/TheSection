@@ -1,4 +1,50 @@
- else:
+value)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized is None:
+            settings.pop('max_capacity', None)
+        else:
+            settings['max_capacity'] = normalized
+        save_scanner_settings(settings)
+    return normalized
+
+
+def get_max_vip_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_vip_capacity'))
+
+
+def set_max_vip_capacity(value):
+    normalized = parse_max_capacity(value)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized is None:
+            settings.pop('max_vip_capacity', None)
+        else:
+            settings['max_vip_capacity'] = normalized
+        save_scanner_settings(settings)
+    return normalized
+
+
+def admission_entry_type(ticket):
+    """How this ticket counted for the door: vip or ga."""
+    admitted = ticket.get('admission_as')
+    if admitted in ('vip', 'ga'):
+        return admitted
+    return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
+
+
+def compute_admission_counts():
+    ga = 0
+    vip = 0
+    for ticket in load_tickets():
+        scanned_at = ticket.get('scanned_at')
+        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
+            continue
+        qty = int(ticket.get('quantity') or 1)
+        if admission_entry_type(ticket) == 'vip':
+            vip += qty
+        else:
             ga += qty
     return {'ga': ga, 'vip': vip, 'total': ga + vip}
 
@@ -164,42 +210,3 @@ def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_t
             )
             access_line = f"Access: {access}\n" if access else ''
             msg.body = (
-                f"You're in for The Section!\n\n"
-                f"Ticket type: {type_label}\n"
-                f"Ticket ID: {ticket_id}\n"
-                f"Guests: {quantity}\n"
-                f"{access_line}\n"
-                f"Show the attached QR code at the door.\n"
-                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
-            )
-            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
-            mail.send(msg)
-            print(f"Ticket email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    if not customer_email:
-        return False
-
-    record = get_ticket_by_session(session_id)
-    if record and record.get('email_sent_at'):
-        return True
-
-    if record:
-        ticket_type = record.get('ticket_type', ticket_type)
-        access = record.get('access', access)
-
-    result = {'sent': False}
-
-    def _send():
-        result['sent'] = send_ticket_email(
-            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
-        )
-        if result['sent']:
-            mark_email_sent(session_id)
-
-    thread = threading.Thread(target=_send, daemon=F
