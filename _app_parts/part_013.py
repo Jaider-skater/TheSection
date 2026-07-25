@@ -1,4 +1,48 @@
-ers(members)
+D_RESET_HOURS,
+    )
+
+
+@app.route('/members', methods=['GET', 'POST'])
+@app.route('/legacy', methods=['GET', 'POST'])
+def legacy_portal():
+    next_url = request.args.get('next', '')
+    member = get_logged_in_member()
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        next_url = request.form.get('next') or request.args.get('next', '')
+
+        if action == 'register':
+            email = request.form.get('email', '').strip().lower()
+            password = request.form.get('password', '')
+            confirm_password = request.form.get('confirm_password', '')
+            if not email or not password:
+                error = 'Email and password are required.'
+            elif password != confirm_password:
+                error = 'Passwords do not match.'
+            elif len(password) < 8:
+                error = 'Password must be at least 8 characters.'
+            elif get_legacy_member(email):
+                error = 'An account with that email already exists.'
+            else:
+                exclusive = is_on_exclusive_invite_list(email)
+                with members_lock:
+                    members = load_members()
+                    new_member = {
+                        'email': email,
+                        'password_hash': hash_password(password),
+                        'saved_tickets': [],
+                        'joined_at': datetime.now(timezone.utc).isoformat(),
+                    }
+                    if exclusive:
+                        # On exclusive list → lifetime single-ticket perk (not full list).
+                        code = generate_discount_code(email)
+                        while discount_code_taken(code):
+                            code = generate_discount_code(email)
+                        new_member['discount_code'] = code
+                        new_member['returning_guest_discount'] = True
+                    members.append(new_member)
+                    save_members(members)
                 if exclusive:
                     mark_member_invite_claimed(email)
                 else:
@@ -121,54 +165,4 @@ def legacy_member_invite_signup():
             returning_guest_discount_percent=int(returning_guest_discount * 100),
         )
 
-    token_valid = verify_member_invite_token(email, token)
-    if request.method == 'POST':
-        new_password = request.form.get('new_password', '')
-        confirm_password = request.form.get('confirm_password', '')
-        if not token_valid:
-            error = 'This invite link is invalid or has expired.'
-        elif new_password != confirm_password:
-            error = 'Passwords do not match.'
-        elif len(new_password) < 8:
-            error = 'Password must be at least 8 characters.'
-        else:
-            ok, create_error = create_member_from_invite(email, new_password)
-            if ok:
-                session['legacy_member_email'] = email
-                return redirect('/?open_tickets=1')
-            error = create_error or 'Could not create your account. Try again or contact support.'
-
-    return render_template(
-        'legacy_invite_signup.html',
-        email=email,
-        token=token,
-        token_valid=token_valid,
-        error=error,
-        invite_days=INVITE_EXPIRY_DAYS,
-        member_discount_percent=int(member_discount * 100),
-        returning_guest_discount_percent=int(returning_guest_discount * 100),
-    )
-
-
-@app.route('/admin/login', methods=['GET', 'POST'])
-def admin_login():
-    next_path = request.values.get('next') or '/admin'
-    if not next_path.startswith('/admin') or next_path.startswith('//'):
-        next_path = '/admin'
-
-    if request.method == 'POST':
-        key = (request.form.get('key') or '').strip()
-        if _admin_key_matches(key):
-            session['admin_authenticated'] = True
-            # Keep ?key= for bookmarkable links and download URLs that still expect it.
-            sep = '&' if '?' in next_path else '?'
-            return redirect(f'{next_path}{sep}key={key}')
-        return render_template(
-            'admin_login.html',
-            error='Invalid admin key. Try again.',
-            next_path=next_path,
-        ), 401
-
-    if require_admin():
-        return redirect(next_path)
-    return render_template('ad
+    token_valid = verify_member_invite_token(email
