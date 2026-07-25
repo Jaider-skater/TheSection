@@ -1,4 +1,67 @@
-error,
+ounts():
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    counts = compute_admission_counts()
+
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        history = settings.get('reset_history', [])
+        if not isinstance(history, list):
+            history = []
+        history.append({
+            'reset_at': now_iso,
+            'ga': counts['ga'],
+            'vip': counts['vip'],
+            'total': counts['total'],
+        })
+        settings['reset_history'] = history
+        settings['counting_epoch'] = now_iso
+        save_scanner_settings(settings)
+
+    return {
+        'reset_at': now_iso,
+        'ga': counts['ga'],
+        'vip': counts['vip'],
+        'total': counts['total'],
+    }
+
+
+def _admin_key_matches(provided):
+    key = (provided or '').strip()
+    expected = (admin_key or '').strip()
+    if not key or not expected:
+        return False
+    try:
+        return secrets.compare_digest(key, expected)
+    except (TypeError, ValueError):
+        return key == expected
+
+
+def require_admin():
+    if session.get('admin_authenticated') is True:
+        return True
+    key = request.args.get('key') or request.form.get('key') or ''
+    if _admin_key_matches(key):
+        session['admin_authenticated'] = True
+        return True
+    return False
+
+
+def admin_key_for_templates():
+    return (request.args.get('key') or request.form.get('key') or '').strip()
+
+
+def admin_login_required(next_path=None):
+    """Return admin login page when the request is not authorized."""
+    if next_path is None:
+        next_path = request.path or '/admin'
+    if not next_path.startswith('/admin'):
+        next_path = '/admin'
+    provided = (request.args.get('key') or request.form.get('key') or '').strip()
+    error = 'Invalid admin key. Try again.' if provided else None
+    return render_template(
+        'admin_login.html',
+        error=error,
         next_path=next_path,
     ), 401
 
@@ -149,68 +212,4 @@ def build_wallet_pass(ticket_id, quantity):
         'teamIdentifier': wallet_team_id,
         'organizationName': 'The Section',
         'description': 'The Section Ticket',
-        'serialNumber': normalize_ticket_id(ticket_id),
-        'foregroundColor': 'rgb(255, 255, 255)',
-        'backgroundColor': 'rgb(24, 24, 27)',
-        'labelColor': 'rgb(161, 161, 170)',
-        'barcodes': [{
-            'format': 'PKBarcodeFormatQR',
-            'message': verify_url,
-            'messageEncoding': 'iso-8859-1',
-            'altText': ticket_id,
-        }],
-        'eventTicket': {
-            'primaryFields': [{
-                'key': 'event',
-                'label': 'EVENT',
-                'value': 'The Section',
-            }],
-            'secondaryFields': [
-                {
-                    'key': 'guests',
-                    'label': 'GUESTS',
-                    'value': guest_label,
-                },
-                {
-                    'key': 'ticket',
-                    'label': 'TICKET',
-                    'value': ticket_id,
-                },
-            ],
-            'backFields': [{
-                'key': 'verify',
-                'label': 'VERIFY',
-                'value': verify_url,
-            }],
-        },
-    }
-
-    icon_png = make_pass_icon_png()
-    files = {
-        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
-        'icon.png': icon_png,
-        'icon@2x.png': icon_png,
-        'logo.png': icon_png,
-        'logo@2x.png': icon_png,
-    }
-    manifest = {
-        name: hashlib.sha1(data).hexdigest()
-        for name, data in files.items()
-    }
-    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
-    files['manifest.json'] = manifest_bytes
-
-    signature = sign_wallet_manifest(manifest_bytes)
-    if not signature:
-        return None
-
-    files['signature'] = signature
-
-    output = BytesIO()
-    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for name, data in files.items():
-            archive.writestr(name, data)
-    return output.getvalue()
-
-
-bootstrap_le
+        'se
