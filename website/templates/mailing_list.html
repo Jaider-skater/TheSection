@@ -15,8 +15,11 @@
                     Exclusive list ({{ returning_guest_discount_percent }}% single-ticket for life) and full list (signups + founding + manual).
                 </p>
             </div>
-            <a href="/admin{% if key %}?key={{ key }}{% endif %}"
-               class="text-sm text-zinc-400 hover:text-white">← Ticket admin</a>
+            <div class="flex flex-wrap items-center gap-4 text-sm">
+                <a href="/admin{% if key %}?key={{ key }}{% endif %}"
+                   class="text-zinc-400 hover:text-white">← Ticket admin</a>
+                <a href="/" class="text-zinc-400 hover:text-white">Home</a>
+            </div>
         </div>
 
         {% if error %}
