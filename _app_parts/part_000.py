@@ -56,7 +56,28 @@ def secure_equal(left, right):
 base_url = get_public_base_url()
 tickets_file = os.getenv('TICKETS_FILE', os.path.join(os.path.dirname(__file__), 'data', 'tickets.json'))
 admin_key = clean_env_value(os.getenv('ADMIN_KEY', 'section2024'))
-verify_login_email = clean_env_value(os.getenv('VERIFY_LOGIN_EMAIL', '')).lower()
+
+
+def parse_staff_emails(*raw_values):
+    """Comma/semicolon/newline-separated staff emails (both old and new accounts)."""
+    emails = []
+    seen = set()
+    for raw in raw_values:
+        text = raw or ''
+        for part in text.replace(';', ',').replace('\n', ',').split(','):
+            email = clean_env_value(part).lower()
+            if email and '@' in email and email not in seen:
+                seen.add(email)
+                emails.append(email)
+    return emails
+
+
+# Support one or many staff emails, e.g. "a@x.com,b@y.com" or VERIFY_LOGIN_EMAILS extra list.
+staff_emails = parse_staff_emails(
+    os.getenv('VERIFY_LOGIN_EMAIL', ''),
+    os.getenv('VERIFY_LOGIN_EMAILS', ''),
+)
+verify_login_email = staff_emails[0] if staff_emails else ''
 verify_login_password = clean_env_value(os.getenv('VERIFY_LOGIN_PASSWORD', ''))
 wallet_team_id = os.getenv('WALLET_TEAM_ID', '')
 wallet_pass_type_id = os.getenv('WALLET_PASS_TYPE_ID', 'pass.com.thesection.ticket')
@@ -163,16 +184,4 @@ elif stripe.api_key.startswith('sk_test_'):
     print(f'Stripe mode: TEST (sandbox) (from {_stripe_key_source})')
 else:
     print(
-        'WARNING: No Stripe secret key found. Set STRIPE_SECRET_KEY=sk_live_... on Render '
-        '(not SECRET_KEY, and not the pk_live_ publishable key).'
-    )
-
-# Email Config (Gmail app password — set MAIL_* env vars on Render)
-DEFAULT_MAIL_USERNAME = 'thesectionevents@gmail.com'
-mail_username = (os.getenv('MAIL_USERNAME') or DEFAULT_MAIL_USERNAME).strip()
-mail_sender = (os.getenv('MAIL_DEFAULT_SENDER') or mail_username).strip() or mail_username
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', '587'))
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'true').lower() == 'true'
-app.config['MAIL_USERNAME'] = mail_username
-app.config['MAIL_PASSWORD
+        'WARNING: No Stripe secret key found. Set STRIPE_SEC
