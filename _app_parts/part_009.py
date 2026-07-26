@@ -1,4 +1,57 @@
-stomer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+tatus': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    # Reload for vip_redeemed / admission_as on response meta.
+    record = get_ticket_record(normalized) or record
+    meta = ticket_result_meta(record, admission_as=admission_as)
+    result = {
+        'status': 'accepted',
+        'ticket_id': display_id,
+        'quantity': quantity,
+        **meta,
+    }
+    if vip_note:
+        result['vip_overflow_note'] = vip_note
+    return result
+
+
+def parse_scanned_ticket(raw):
+    if not raw:
+        return None
+
+    raw = raw.strip()
+
+    ticket_id = extract_ticket_id_from_url(raw)
+    if ticket_id:
+        return ticket_id
+
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get('ticket_id'):
+            return normalize_ticket_id(data['ticket_id'])
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        data = ast.literal_eval(raw)
+        if isinstance(data, dict) and data.get('ticket_id'):
+            return normalize_ticket_id(data['ticket_id'])
+    except (ValueError, SyntaxError):
+        pass
+
+    return normalize_ticket_id(raw)
+
+
+def mark_email_sent(session_id):
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('session_id') == session_id:
+                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
+                save_tickets(tickets)
+                return
+
+
+def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
     view_url = ticket_display_url(ticket_id)
     type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
     with app.app_context():
@@ -132,34 +185,4 @@ def send_member_invite_email(customer_email, token, invite_url=None):
     html_body = (
         '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
         '<h2 style="margin:0 0 12px;">The Section</h2>'
-        '<p>You\'ve been to The Section before — welcome back!</p>'
-        f'<p>Create your member account to save tickets and get '
-        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
-        f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
-        f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
-        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
-        'Set up your account</a></p>'
-        f'<p style="color:#555;font-size:14px;">This link expires in {days_label}.</p>'
-        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
-        f'<span style="word-break:break-all;">{invite_url}</span></p>'
-        '</div>'
-    )
-    with app.app_context():
-        try:
-            msg = Message(
-                'The Section — welcome back (member invite)',
-                sender=mail_from_address(),
-                recipients=[customer_email],
-            )
-            msg.body = plain_body
-            msg.html = html_body
-            mail.send(msg)
-            print(f"Member invite email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Member invite email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_member_invite_email(customer_email, token, invite_url=None):
-    return send_member_invite_emai
+      
