@@ -168,11 +168,11 @@ else:
     )
 
 # Email Config (Gmail app password — set MAIL_* env vars on Render)
-DEFAULT_MAIL_USERNAME = 'hallieworkshop@gmail.com'
+DEFAULT_MAIL_USERNAME = 'thesectionevents@gmail.com'
 mail_username = (os.getenv('MAIL_USERNAME') or DEFAULT_MAIL_USERNAME).strip()
 mail_sender = (os.getenv('MAIL_DEFAULT_SENDER') or mail_username).strip() or mail_username
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', '587'))
 app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'true').lower() == 'true'
 app.config['MAIL_USERNAME'] = mail_username
-app.config['MAIL_PASSWORD']
+app.config['MAIL_PASSWORD
