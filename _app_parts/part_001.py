@@ -1,4 +1,4 @@
- = (os.getenv('MAIL_PASSWORD') or '').strip()
+'] = (os.getenv('MAIL_PASSWORD') or '').strip()
 app.config['MAIL_DEFAULT_SENDER'] = mail_sender
 app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
 mail = Mail(app)
@@ -209,4 +209,4 @@ def log_storage_state():
 def get_legacy_member(email):
     if not email:
         return None
-    normalized = email.strip().lower(
+    normalized = email.strip().lowe
