@@ -1,4 +1,34 @@
- if not recipients:
+append(
+                        f'{len(skipped)} skipped (already on full list or exclusive list).'
+                    )
+                success = ' '.join(parts) or 'No new emails added to full list.'
+        elif action == 'remove_full_email':
+            email = (request.form.get('email') or '').strip().lower()
+            if email and remove_email_from_full_mailing_list(email):
+                success = f'Removed {email} from full list.'
+            else:
+                error = 'Could not remove that email from the full list.'
+        elif action == 'sync_full_list':
+            added, skipped = sync_members_into_full_mailing_list()
+            success = (
+                f'Synced members into full list: {len(added)} added, '
+                f'{len(skipped)} already present or exclusive.'
+            )
+        elif action == 'send_broadcast':
+            subject = (request.form.get('subject') or '').strip()
+            body = (request.form.get('body') or '').strip()
+            lists = set()
+            if request.form.get('list_exclusive'):
+                lists.add('exclusive')
+            if request.form.get('list_full'):
+                lists.add('full')
+            if not lists:
+                error = 'Select at least one mailing list to send to.'
+            elif not subject or not body:
+                error = 'Subject and message body are required.'
+            else:
+                recipients = resolve_broadcast_recipients(lists)
+                if not recipients:
                     error = 'No recipients on the selected list(s).'
                 else:
                     sent, failed = send_broadcast_email(subject, body, recipients)
