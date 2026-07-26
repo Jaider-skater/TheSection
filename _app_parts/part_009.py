@@ -1,3 +1,15 @@
+stomer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
+    view_url = ticket_display_url(ticket_id)
+    type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
+    with app.app_context():
+        try:
+            msg = Message(
+                "Your The Section Tickets",
+                sender=app.config['MAIL_DEFAULT_SENDER'],
+                recipients=[customer_email],
+            )
+            access_line = f"Access: {access}\n" if access else ''
+            msg.body = (
                 f"You're in for The Section!\n\n"
                 f"Ticket type: {type_label}\n"
                 f"Ticket ID: {ticket_id}\n"
@@ -150,21 +162,4 @@ def send_member_invite_email(customer_email, token, invite_url=None):
 
 
 def deliver_member_invite_email(customer_email, token, invite_url=None):
-    return send_member_invite_email(customer_email, token, invite_url=invite_url)
-
-
-def send_pending_member_invites():
-    sent = []
-    failed = []
-    skipped = []
-    for email in invites_ready_to_send():
-        if get_legacy_member(email):
-            skipped.append(email)
-            continue
-        token = set_member_invite_token(email)
-        if not token:
-            failed.append(email)
-            continue
-        invite_url = build_member_invite_url(email, token)
-        if deliver_member_invite_email(email, token, invite_url=invite_url):
-     
+    return send_member_invite_emai
