@@ -1,4 +1,42 @@
-return redirect('/?open_tickets=1')
+eturn stripe.checkout.Session.create(**checkout_kwargs)
+
+
+@app.route('/api/checkout-intent', methods=['GET', 'POST', 'DELETE'])
+def checkout_intent():
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        ticket_type = data.get('ticket_type', 'general')
+        if ticket_type not in TICKET_TYPES:
+            ticket_type = 'general'
+        session['checkout_intent'] = {
+            'quantity': max(1, int(data.get('quantity', 1))),
+            'ticket_type': ticket_type,
+            'apply_member_discount': bool(data.get('apply_member_discount')),
+        }
+        return jsonify({'ok': True})
+    if request.method == 'DELETE':
+        session.pop('checkout_intent', None)
+        return jsonify({'ok': True})
+    return jsonify(session.get('checkout_intent') or {})
+
+
+@app.route('/checkout/resume')
+def checkout_resume():
+    if not is_legacy_member_logged_in():
+        return redirect(url_for('legacy_portal', next='/checkout/resume'))
+    intent = session.pop('checkout_intent', None)
+    if not intent:
+        return redirect('/?open_tickets=1')
+    try:
+        checkout_session = build_checkout_session(
+            intent.get('quantity', 1),
+            intent.get('ticket_type', 'general'),
+            apply_member_discount=intent.get('apply_member_discount', False),
+        )
+        return redirect(checkout_session.url)
+    except Exception as e:
+        print("Error resuming checkout:", str(e))
+        return redirect('/?open_tickets=1')
 
 
 @app.route('/create-checkout-session', methods=['POST'])
@@ -138,52 +176,4 @@ def show_ticket(ticket_id):
 
 
 @app.route('/api/admission-totals')
-def admission_totals():
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-    return jsonify(get_admission_totals())
-
-
-@app.route('/api/admission-totals/reset', methods=['POST'])
-def reset_admission_totals():
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-    recorded = reset_admission_counts()
-    totals = get_admission_totals()
-    return jsonify({'recorded': recorded, **totals})
-
-
-@app.route('/api/admission-totals/reset-history', methods=['DELETE', 'POST'])
-def delete_admission_reset_history_entry():
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-    data = request.get_json(silent=True) or {}
-    entry_id = (
-        data.get('id')
-        or data.get('entry_id')
-        or request.args.get('id')
-        or request.form.get('id')
-        or ''
-    )
-    if not delete_reset_history_entry(entry_id):
-        return jsonify({'error': 'History entry not found.'}), 404
-    return jsonify(get_admission_totals())
-
-
-@app.route('/api/scanner-settings', methods=['GET', 'POST'])
-def scanner_settings():
-    guard = protect_scanner_response()
-    if guard:
-        return guard
-
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        if 'max_capacity' in data:
-            set_max_capacity(data.get('max_capacity'))
-        if 'max_vip_capacity' in data:
-            set_max_vip_capacity(data.get('max_vip_capacity'))
-        totals = get_admission_totals()
- 
+def admission_
