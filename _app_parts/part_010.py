@@ -1,4 +1,34 @@
-l(customer_email, token, invite_url=invite_url)
+  '<p>You\'ve been to The Section before — welcome back!</p>'
+        f'<p>Create your member account to save tickets and get '
+        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
+        f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
+        f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
+        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
+        'Set up your account</a></p>'
+        f'<p style="color:#555;font-size:14px;">This link expires in {days_label}.</p>'
+        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
+        f'<span style="word-break:break-all;">{invite_url}</span></p>'
+        '</div>'
+    )
+    with app.app_context():
+        try:
+            msg = Message(
+                'The Section — welcome back (member invite)',
+                sender=mail_from_address(),
+                recipients=[customer_email],
+            )
+            msg.body = plain_body
+            msg.html = html_body
+            mail.send(msg)
+            print(f"Member invite email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Member invite email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_member_invite_email(customer_email, token, invite_url=None):
+    return send_member_invite_email(customer_email, token, invite_url=invite_url)
 
 
 def send_pending_member_invites():
@@ -140,42 +170,4 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
     if member_email:
         checkout_kwargs['customer_email'] = member_email
 
-    return stripe.checkout.Session.create(**checkout_kwargs)
-
-
-@app.route('/api/checkout-intent', methods=['GET', 'POST', 'DELETE'])
-def checkout_intent():
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        ticket_type = data.get('ticket_type', 'general')
-        if ticket_type not in TICKET_TYPES:
-            ticket_type = 'general'
-        session['checkout_intent'] = {
-            'quantity': max(1, int(data.get('quantity', 1))),
-            'ticket_type': ticket_type,
-            'apply_member_discount': bool(data.get('apply_member_discount')),
-        }
-        return jsonify({'ok': True})
-    if request.method == 'DELETE':
-        session.pop('checkout_intent', None)
-        return jsonify({'ok': True})
-    return jsonify(session.get('checkout_intent') or {})
-
-
-@app.route('/checkout/resume')
-def checkout_resume():
-    if not is_legacy_member_logged_in():
-        return redirect(url_for('legacy_portal', next='/checkout/resume'))
-    intent = session.pop('checkout_intent', None)
-    if not intent:
-        return redirect('/?open_tickets=1')
-    try:
-        checkout_session = build_checkout_session(
-            intent.get('quantity', 1),
-            intent.get('ticket_type', 'general'),
-            apply_member_discount=intent.get('apply_member_discount', False),
-        )
-        return redirect(checkout_session.url)
-    except Exception as e:
-        print("Error resuming checkout:", str(e))
-        
+    r
