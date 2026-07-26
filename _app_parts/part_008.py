@@ -1,4 +1,53 @@
-  except OSError as e:
+ifest_bytes)
+    if not signature:
+        return None
+
+    files['signature'] = signature
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
+bootstrap_legacy_members()
+_founding = bootstrap_staff_emails()
+if _founding:
+    add_emails_to_full_mailing_list(_founding, source='founding')
+log_storage_state()
+
+
+def extract_ticket_id_from_url(raw):
+    for marker in ('/verify/t/', '/t/'):
+        if marker in raw:
+            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
+            return normalize_ticket_id(ticket_id)
+    return None
+
+
+def load_scanner_settings():
+    if not ensure_data_dir(scanner_settings_file):
+        return {}
+    if not os.path.exists(scanner_settings_file):
+        return {}
+    try:
+        with open(scanner_settings_file, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(f'Failed to load scanner settings ({scanner_settings_file}):', e)
+        return {}
+
+
+def save_scanner_settings(settings):
+    if not ensure_data_dir(scanner_settings_file):
+        return False
+    try:
+        with open(scanner_settings_file, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except OSError as e:
         print(f'Failed to save scanner settings ({scanner_settings_file}):', e)
         return False
 
@@ -166,57 +215,4 @@ def check_ticket(ticket_id):
 
     if not mark_ticket_scanned(normalized, admission_as=admission_as):
         meta = ticket_result_meta(record)
-        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    # Reload for vip_redeemed / admission_as on response meta.
-    record = get_ticket_record(normalized) or record
-    meta = ticket_result_meta(record, admission_as=admission_as)
-    result = {
-        'status': 'accepted',
-        'ticket_id': display_id,
-        'quantity': quantity,
-        **meta,
-    }
-    if vip_note:
-        result['vip_overflow_note'] = vip_note
-    return result
-
-
-def parse_scanned_ticket(raw):
-    if not raw:
-        return None
-
-    raw = raw.strip()
-
-    ticket_id = extract_ticket_id_from_url(raw)
-    if ticket_id:
-        return ticket_id
-
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict) and data.get('ticket_id'):
-            return normalize_ticket_id(data['ticket_id'])
-    except json.JSONDecodeError:
-        pass
-
-    try:
-        data = ast.literal_eval(raw)
-        if isinstance(data, dict) and data.get('ticket_id'):
-            return normalize_ticket_id(data['ticket_id'])
-    except (ValueError, SyntaxError):
-        pass
-
-    return normalize_ticket_id(raw)
-
-
-def mark_email_sent(session_id):
-    with tickets_lock:
-        tickets = load_tickets()
-        for ticket in tickets:
-            if ticket.get('session_id') == session_id:
-                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
-                save_tickets(tickets)
-                return
-
-
-def send_ticket_email(cu
+        return {'s
