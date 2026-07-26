@@ -38,13 +38,13 @@ services:
         value: "14"
       - key: APP_TIMEZONE
         value: America/Los_Angeles
-      # Staff account: portal + scanner + admin (set password in dashboard)
+      # Staff accounts (comma-separated ok): portal + scanner + admin
       - key: LEGACY_BOOTSTRAP_EMAIL
-        value: thesectionevents@gmail.com
+        value: thesectionevents@gmail.com,hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD
         sync: false
       - key: VERIFY_LOGIN_EMAIL
-        value: thesectionevents@gmail.com
+        value: thesectionevents@gmail.com,hallieworkshop@gmail.com
       - key: VERIFY_LOGIN_PASSWORD
         sync: false
       # Stripe secret key only (sk_live_... or sk_test_...). Not pk_..., not SECRET_KEY.
