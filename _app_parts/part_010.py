@@ -1,4 +1,21 @@
-       mark_member_invite_sent(email)
+l(customer_email, token, invite_url=invite_url)
+
+
+def send_pending_member_invites():
+    sent = []
+    failed = []
+    skipped = []
+    for email in invites_ready_to_send():
+        if get_legacy_member(email):
+            skipped.append(email)
+            continue
+        token = set_member_invite_token(email)
+        if not token:
+            failed.append(email)
+            continue
+        invite_url = build_member_invite_url(email, token)
+        if deliver_member_invite_email(email, token, invite_url=invite_url):
+            mark_member_invite_sent(email)
             sent.append(email)
         else:
             failed.append(email)
@@ -161,17 +178,4 @@ def checkout_resume():
         return redirect(checkout_session.url)
     except Exception as e:
         print("Error resuming checkout:", str(e))
-        return redirect('/?open_tickets=1')
-
-
-@app.route('/create-checkout-session', methods=['POST'])
-def create_checkout_session():
-    if not is_legacy_member_logged_in():
-        return jsonify({'error': 'Sign in to your member account before purchasing tickets.'}), 401
-
-    try:
-        data = request.get_json()
-        quantity = max(1, int(data.get('quantity', 1)))
-        ticket_type = data.get('ticket_type', 'general')
-        apply_member_discount = bool(data.get('apply_member_discount'))
-        checkout_session = build_c
+        
