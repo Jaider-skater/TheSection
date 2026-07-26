@@ -1,3 +1,38 @@
+ed_in) if logged_in else False,
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
+        'member_discount_percent': int(member_discount * 100),
+        'returning_guest_discount_percent': int(returning_guest_discount * 100),
+        'vip_bundle_min': vip_bundle_min,
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
+        'next_url': next_url,
+        'active_tab': active_tab,
+        'show_scanner_link': is_scanner_admin_member(),
+    }
+
+
+@app.route('/legacy/reset-password', methods=['GET', 'POST'])
+@app.route('/reset-password', methods=['GET', 'POST'])
+def reset_password():
+    email = (
+        request.form.get('email', '').strip().lower()
+        or request.args.get('email', '').strip().lower()
+    )
+    token = request.form.get('token', '') or request.args.get('token', '')
+    error = None
+
+    if not email or not token:
+        return redirect(url_for('legacy_portal'))
+
+    token_valid = verify_password_reset_token(email, token)
+    if request.method == 'POST':
+        new_password = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+        if not token_valid:
+            error = 'This reset link is invalid or has expired. Request a new one from the member portal.'
+        elif new_password != confirm_password:
+            error = 'Passwords do not match.'
+        elif len(new_password) < 8:
             error = 'Password must be at least 8 characters.'
         elif update_member_password(email, new_password):
             session['legacy_member_email'] = email
@@ -129,40 +164,4 @@ def legacy_portal():
 
             return render_template(
                 'legacy_portal.html',
-                **portal_context(
-                    success=success_msg,
-                    next_url=next_url,
-                    active_tab=active_tab,
-                ),
-            )
-
-        if action == 'logout':
-            session.pop('legacy_member_email', None)
-            return redirect(url_for('legacy_portal'))
-
-        if action == 'save_ticket' and member:
-            ticket_id = request.form.get('ticket_id', '')
-            record = get_ticket_record(ticket_id)
-            if record:
-                add_saved_ticket_for_member(member['email'], ticket_id)
-                refreshed = get_legacy_member(member['email'])
-                if refreshed and member_has_past_purchases(refreshed):
-                    ensure_member_discount_code(refreshed)
-            return redirect(url_for('legacy_portal'))
-
-        if action == 'remove_ticket' and member:
-            ticket_id = request.form.get('ticket_id', '')
-            remove_saved_ticket_for_member(member['email'], ticket_id)
-            return redirect(url_for('legacy_portal'))
-
-    return render_template('legacy_portal.html', **portal_context(next_url=next_url))
-
-
-@app.route('/legacy/join', methods=['GET', 'POST'])
-def legacy_member_invite_signup():
-    email = (
-        request.form.get('email', '').strip().lower()
-        or request.args.get('email', '').strip().lower()
-    )
-    token = request.form.get('token', '') or request.args.get('token', '')
- 
+   
