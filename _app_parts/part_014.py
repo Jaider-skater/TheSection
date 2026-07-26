@@ -1,4 +1,18 @@
-, token)
+   error = None
+
+    if not email or not token:
+        return render_template(
+            'legacy_invite_signup.html',
+            email='',
+            token='',
+            token_valid=False,
+            error='This invite link is incomplete. Use the link from your email.',
+            invite_days=INVITE_EXPIRY_DAYS,
+            member_discount_percent=int(member_discount * 100),
+            returning_guest_discount_percent=int(returning_guest_discount * 100),
+        )
+
+    token_valid = verify_member_invite_token(email, token)
     if request.method == 'POST':
         new_password = request.form.get('new_password', '')
         confirm_password = request.form.get('confirm_password', '')
@@ -35,14 +49,24 @@ def admin_login():
 
     if request.method == 'POST':
         key = (request.form.get('key') or '').strip()
-        if _admin_key_matches(key):
+        email = (request.form.get('email') or '').strip()
+        password = (request.form.get('password') or '').strip()
+
+        if key and _admin_key_matches(key):
             session['admin_authenticated'] = True
-            # Keep ?key= for bookmarkable links and download URLs that still expect it.
             sep = '&' if '?' in next_path else '?'
             return redirect(f'{next_path}{sep}key={key}')
+
+        if email and password and verify_scanner_credentials(email, password):
+            session['admin_authenticated'] = True
+            mark_scanner_session_authenticated()
+            if get_legacy_member(verify_login_email):
+                session['legacy_member_email'] = verify_login_email
+            return redirect(next_path)
+
         return render_template(
             'admin_login.html',
-            error='Invalid admin key. Try again.',
+            error='Invalid credentials. Use staff email/password (VERIFY_LOGIN_*) or admin key.',
             next_path=next_path,
         ), 401
 
@@ -138,25 +162,4 @@ def admin_mailing_list():
                 error = 'Subject and message body are required.'
             else:
                 recipients = resolve_broadcast_recipients(lists)
-                if not recipients:
-                    error = 'No recipients on the selected list(s).'
-                else:
-                    sent, failed = send_broadcast_email(subject, body, recipients)
-                    if sent:
-                        success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
-                        if failed:
-                            success += f' {len(failed)} failed.'
-                    elif failed:
-                        error = f'All {len(failed)} sends failed. Check mail settings.'
-                    else:
-                        error = 'Nothing was sent.'
-
-    invites = invite_list_for_admin()
-    ready_count = len(invites_ready_to_send())
-    blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
-    full_list = full_mailing_list_for_admin()
-    return render_template(
-        'mailing_list.html',
-        invites=invites,
-        ready_count=ready_count,
- 
+               
