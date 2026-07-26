@@ -1,4 +1,4 @@
-es)
+ites)
                 return True
     return False
 
@@ -205,4 +205,4 @@ def send_broadcast_email(subject, body, recipients):
                     sender=mail_from_address(),
                     recipients=[email],
                 )
-             
+           
