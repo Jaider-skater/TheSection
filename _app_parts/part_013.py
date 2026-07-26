@@ -1,4 +1,18 @@
-D_RESET_HOURS,
+            error = 'Password must be at least 8 characters.'
+        elif update_member_password(email, new_password):
+            session['legacy_member_email'] = email
+            return redirect(url_for('legacy_portal'))
+        else:
+            error = 'Could not update password. Try again or contact support.'
+
+    return render_template(
+        'legacy_reset_password.html',
+        email=email,
+        token=token,
+        token_valid=token_valid,
+        error=error,
+        success=None,
+        reset_hours=PASSWORD_RESET_HOURS,
     )
 
 
@@ -151,18 +165,4 @@ def legacy_member_invite_signup():
         or request.args.get('email', '').strip().lower()
     )
     token = request.form.get('token', '') or request.args.get('token', '')
-    error = None
-
-    if not email or not token:
-        return render_template(
-            'legacy_invite_signup.html',
-            email='',
-            token='',
-            token_valid=False,
-            error='This invite link is incomplete. Use the link from your email.',
-            invite_days=INVITE_EXPIRY_DAYS,
-            member_discount_percent=int(member_discount * 100),
-            returning_guest_discount_percent=int(returning_guest_discount * 100),
-        )
-
-    token_valid = verify_member_invite_token(email
+ 
