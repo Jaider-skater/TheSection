@@ -1,4 +1,20 @@
-    if verify_scanner_credentials(email, password):
+       return jsonify(totals)
+
+    return jsonify(get_admission_totals())
+
+
+@app.route('/verify/login', methods=['GET', 'POST'])
+def verify_login():
+    if request.method == 'POST':
+        if not verify_auth_configured():
+            return render_template(
+                'verify_login.html',
+                error='Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.',
+            ), 503
+
+        email = request.form.get('email') or ''
+        password = request.form.get('password') or ''
+        if verify_scanner_credentials(email, password):
             mark_scanner_session_authenticated()
             # Keep member portal in sync so Door Scanner stays open after portal login.
             if get_legacy_member(verify_login_email):
@@ -148,18 +164,3 @@ def reset_password():
         elif new_password != confirm_password:
             error = 'Passwords do not match.'
         elif len(new_password) < 8:
-            error = 'Password must be at least 8 characters.'
-        elif update_member_password(email, new_password):
-            session['legacy_member_email'] = email
-            return redirect(url_for('legacy_portal'))
-        else:
-            error = 'Could not update password. Try again or contact support.'
-
-    return render_template(
-        'legacy_reset_password.html',
-        email=email,
-        token=token,
-        token_valid=token_valid,
-        error=error,
-        success=None,
-        reset_hours=PASSWOR
