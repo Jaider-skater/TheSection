@@ -1,5 +1,51 @@
-return False
-    if not secure_equal(normalized_email, verify_login_email):
+ror,
+        next_path=next_path,
+    ), 401
+
+
+def verify_auth_configured():
+    return bool(staff_emails and verify_login_password)
+
+
+def is_staff_email(email):
+    normalized = (email or '').strip().lower()
+    if not normalized or not staff_emails:
+        return False
+    return any(secure_equal(normalized, allowed) for allowed in staff_emails)
+
+
+def is_scanner_admin_member():
+    if not staff_emails:
+        return False
+    member = get_logged_in_member()
+    if not member:
+        return False
+    member_email = (member.get('email') or '').strip().lower()
+    return is_staff_email(member_email)
+
+
+def verify_scanner_session_authenticated():
+    if session.get('verify_authenticated') is not True:
+        return False
+    logged_email = (session.get('verify_login_email') or '').strip().lower()
+    return is_staff_email(logged_email)
+
+
+def verify_authenticated():
+    if not verify_auth_configured():
+        return False
+    return is_scanner_admin_member() or verify_scanner_session_authenticated()
+
+
+def verify_scanner_credentials(email, password):
+    """Staff form: any VERIFY_LOGIN email + shared password, or that member's portal password."""
+    if not verify_auth_configured():
+        return False
+    normalized_email = (email or '').strip().lower()
+    password = (password or '').strip()
+    if not normalized_email or not password:
+        return False
+    if not is_staff_email(normalized_email):
         return False
     if secure_equal(password, verify_login_password):
         return True
@@ -7,9 +53,12 @@ return False
     return verify_legacy_login(normalized_email, password)
 
 
-def mark_scanner_session_authenticated():
+def mark_scanner_session_authenticated(email=None):
     session['verify_authenticated'] = True
-    session['verify_login_email'] = verify_login_email
+    chosen = (email or '').strip().lower()
+    if not is_staff_email(chosen):
+        chosen = verify_login_email or (staff_emails[0] if staff_emails else '')
+    session['verify_login_email'] = chosen
 
 
 def protect_scanner_response():
@@ -161,53 +210,4 @@ def build_wallet_pass(ticket_id, quantity):
     manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
     files['manifest.json'] = manifest_bytes
 
-    signature = sign_wallet_manifest(manifest_bytes)
-    if not signature:
-        return None
-
-    files['signature'] = signature
-
-    output = BytesIO()
-    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for name, data in files.items():
-            archive.writestr(name, data)
-    return output.getvalue()
-
-
-bootstrap_legacy_members()
-_bootstrap_email = os.getenv('LEGACY_BOOTSTRAP_EMAIL', '').strip().lower()
-if _bootstrap_email:
-    add_emails_to_full_mailing_list([_bootstrap_email], source='founding')
-log_storage_state()
-
-
-def extract_ticket_id_from_url(raw):
-    for marker in ('/verify/t/', '/t/'):
-        if marker in raw:
-            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
-            return normalize_ticket_id(ticket_id)
-    return None
-
-
-def load_scanner_settings():
-    if not ensure_data_dir(scanner_settings_file):
-        return {}
-    if not os.path.exists(scanner_settings_file):
-        return {}
-    try:
-        with open(scanner_settings_file, encoding='utf-8') as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError) as e:
-        print(f'Failed to load scanner settings ({scanner_settings_file}):', e)
-        return {}
-
-
-def save_scanner_settings(settings):
-    if not ensure_data_dir(scanner_settings_file):
-        return False
-    try:
-        with open(scanner_settings_file, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=2)
-        return True
-  
+    signature = sign_wallet_manifest(man
