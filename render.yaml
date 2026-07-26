@@ -25,7 +25,7 @@ services:
       - key: MAIL_PASSWORD
         sync: false
       - key: MAIL_DEFAULT_SENDER
-        value: hallieworkshop@gmail.com
+        value: thesectionevents@gmail.com
       - key: MEMBERS_FILE
         value: /opt/render/project/src/data/legacy_members.json
       - key: TICKETS_FILE
@@ -38,12 +38,13 @@ services:
         value: "14"
       - key: APP_TIMEZONE
         value: America/Los_Angeles
+      # Staff account: portal + scanner + admin (set password in dashboard)
       - key: LEGACY_BOOTSTRAP_EMAIL
-        value: hallieworkshop@gmail.com
+        value: thesectionevents@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD
         sync: false
       - key: VERIFY_LOGIN_EMAIL
-        sync: false
+        value: thesectionevents@gmail.com
       - key: VERIFY_LOGIN_PASSWORD
         sync: false
       # Stripe secret key only (sk_live_... or sk_test_...). Not pk_..., not SECRET_KEY.
