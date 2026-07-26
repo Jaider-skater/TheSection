@@ -1,4 +1,4 @@
-   msg.body = body
+     msg.body = body
                 msg.html = html_body
                 mail.send(msg)
                 sent.append(email)
@@ -191,4 +191,4 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
     bulk_savings_active = bulk_only_total < base_total_cents
     member_requested = apply_member_discount and rate > 0
     stacked_discount_applied = (
-        bulk_savings_active and member_requested and total_cents < bulk_only_total
+        bulk_savings_active and member_requested and total_cents < bulk_only_tot
