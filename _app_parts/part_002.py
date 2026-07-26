@@ -1,4 +1,4 @@
-)
+r()
     for member in load_members():
         if member.get('email', '').lower() == normalized:
             return member
@@ -214,4 +214,4 @@ def mark_member_invite_sent(email):
         for invite in invites:
             if invite.get('email', '').strip().lower() == normalized:
                 invite['sent_at'] = datetime.now(timezone.utc).isoformat()
-                save_invites(invit
+                save_invites(inv
