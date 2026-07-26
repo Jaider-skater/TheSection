@@ -1,4 +1,25 @@
-       blocked_count=blocked_count,
+ if not recipients:
+                    error = 'No recipients on the selected list(s).'
+                else:
+                    sent, failed = send_broadcast_email(subject, body, recipients)
+                    if sent:
+                        success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
+                        if failed:
+                            success += f' {len(failed)} failed.'
+                    elif failed:
+                        error = f'All {len(failed)} sends failed. Check mail settings.'
+                    else:
+                        error = 'Nothing was sent.'
+
+    invites = invite_list_for_admin()
+    ready_count = len(invites_ready_to_send())
+    blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
+    full_list = full_mailing_list_for_admin()
+    return render_template(
+        'mailing_list.html',
+        invites=invites,
+        ready_count=ready_count,
+        blocked_count=blocked_count,
         full_list=full_list,
         full_list_count=len(full_list),
         key=key,
