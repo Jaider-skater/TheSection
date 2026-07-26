@@ -1,4 +1,40 @@
-   error = None
+             **portal_context(
+                    success=success_msg,
+                    next_url=next_url,
+                    active_tab=active_tab,
+                ),
+            )
+
+        if action == 'logout':
+            session.pop('legacy_member_email', None)
+            return redirect(url_for('legacy_portal'))
+
+        if action == 'save_ticket' and member:
+            ticket_id = request.form.get('ticket_id', '')
+            record = get_ticket_record(ticket_id)
+            if record:
+                add_saved_ticket_for_member(member['email'], ticket_id)
+                refreshed = get_legacy_member(member['email'])
+                if refreshed and member_has_past_purchases(refreshed):
+                    ensure_member_discount_code(refreshed)
+            return redirect(url_for('legacy_portal'))
+
+        if action == 'remove_ticket' and member:
+            ticket_id = request.form.get('ticket_id', '')
+            remove_saved_ticket_for_member(member['email'], ticket_id)
+            return redirect(url_for('legacy_portal'))
+
+    return render_template('legacy_portal.html', **portal_context(next_url=next_url))
+
+
+@app.route('/legacy/join', methods=['GET', 'POST'])
+def legacy_member_invite_signup():
+    email = (
+        request.form.get('email', '').strip().lower()
+        or request.args.get('email', '').strip().lower()
+    )
+    token = request.form.get('token', '') or request.args.get('token', '')
+    error = None
 
     if not email or not token:
         return render_template(
@@ -59,9 +95,10 @@ def admin_login():
 
         if email and password and verify_scanner_credentials(email, password):
             session['admin_authenticated'] = True
-            mark_scanner_session_authenticated()
-            if get_legacy_member(verify_login_email):
-                session['legacy_member_email'] = verify_login_email
+            staff_email = email.strip().lower()
+            mark_scanner_session_authenticated(staff_email)
+            if get_legacy_member(staff_email):
+                session['legacy_member_email'] = staff_email
             return redirect(next_path)
 
         return render_template(
@@ -132,34 +169,4 @@ def admin_mailing_list():
                 if added:
                     parts.append(f'Added {len(added)} to full list.')
                 if skipped:
-                    parts.append(
-                        f'{len(skipped)} skipped (already on full list or exclusive list).'
-                    )
-                success = ' '.join(parts) or 'No new emails added to full list.'
-        elif action == 'remove_full_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_full_mailing_list(email):
-                success = f'Removed {email} from full list.'
-            else:
-                error = 'Could not remove that email from the full list.'
-        elif action == 'sync_full_list':
-            added, skipped = sync_members_into_full_mailing_list()
-            success = (
-                f'Synced members into full list: {len(added)} added, '
-                f'{len(skipped)} already present or exclusive.'
-            )
-        elif action == 'send_broadcast':
-            subject = (request.form.get('subject') or '').strip()
-            body = (request.form.get('body') or '').strip()
-            lists = set()
-            if request.form.get('list_exclusive'):
-                lists.add('exclusive')
-            if request.form.get('list_full'):
-                lists.add('full')
-            if not lists:
-                error = 'Select at least one mailing list to send to.'
-            elif not subject or not body:
-                error = 'Subject and message body are required.'
-            else:
-                recipients = resolve_broadcast_recipients(lists)
-               
+                    parts.
