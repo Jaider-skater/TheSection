@@ -1,4 +1,20 @@
-ge = 'Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.'
+return False
+    if not secure_equal(normalized_email, verify_login_email):
+        return False
+    if secure_equal(password, verify_login_password):
+        return True
+    # Same person often uses the member portal password; accept that too.
+    return verify_legacy_login(normalized_email, password)
+
+
+def mark_scanner_session_authenticated():
+    session['verify_authenticated'] = True
+    session['verify_login_email'] = verify_login_email
+
+
+def protect_scanner_response():
+    if not verify_auth_configured():
+        message = 'Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.'
         if request.method == 'POST' or request.is_json:
             return jsonify({'error': message}), 503
         return render_template('verify_login.html', error=message), 503
@@ -194,25 +210,4 @@ def save_scanner_settings(settings):
         with open(scanner_settings_file, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=2)
         return True
-    except OSError as e:
-        print(f'Failed to save scanner settings ({scanner_settings_file}):', e)
-        return False
-
-
-def parse_max_capacity(raw):
-    if raw is None or raw == '':
-        return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
-
-
-def get_max_capacity():
-    settings = load_scanner_settings()
-    return parse_max_capacity(settings.get('max_capacity'))
-
-
-def set_max_capacity(value):
-    normalized = parse_max_capacity(
+  
