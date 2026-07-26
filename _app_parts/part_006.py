@@ -1,4 +1,27 @@
-t (no period re-use).
+ ticket_type = ticket.get('ticket_type', 'general')
+                entry = admission_as or ('vip' if ticket_type == 'vip' else 'general')
+                if entry == 'general':
+                    entry = 'ga'
+                if entry not in ('vip', 'ga'):
+                    entry = 'ga'
+
+                # Already fully used as VIP, or GA ticket already used ever.
+                if ticket.get('vip_redeemed_at'):
+                    return False
+                if ticket_type != 'vip' and ticket.get('scanned_at'):
+                    return False
+                # Same counting period already admitted.
+                if ticket_counts_for_current_period(ticket.get('scanned_at')):
+                    return False
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+                ticket['scanned_at'] = now_iso
+                ticket['admission_as'] = entry
+                if entry == 'vip' or ticket_type != 'vip':
+                    # Full VIP redeem, or any GA ticket → permanent for that privilege.
+                    if entry == 'vip':
+                        ticket['vip_redeemed_at'] = now_iso
+                    # GA tickets stay void forever via scanned_at (no period re-use).
                 # VIP + admission_as ga: leave vip_redeemed_at unset for later VIP use.
                 save_tickets(tickets)
                 return True
@@ -191,43 +214,4 @@ def admin_login_required(next_path=None):
         error = 'Invalid credentials. Use your staff email/password or admin key.'
     return render_template(
         'admin_login.html',
-        error=error,
-        next_path=next_path,
-    ), 401
-
-
-def verify_auth_configured():
-    return bool(verify_login_email and verify_login_password)
-
-
-def is_scanner_admin_member():
-    if not verify_login_email:
-        return False
-    member = get_logged_in_member()
-    if not member:
-        return False
-    member_email = (member.get('email') or '').strip().lower()
-    return secure_equal(member_email, verify_login_email)
-
-
-def verify_scanner_session_authenticated():
-    if session.get('verify_authenticated') is not True:
-        return False
-    logged_email = (session.get('verify_login_email') or '').strip().lower()
-    return secure_equal(logged_email, verify_login_email)
-
-
-def verify_authenticated():
-    if not verify_auth_configured():
-        return False
-    return is_scanner_admin_member() or verify_scanner_session_authenticated()
-
-
-def verify_scanner_credentials(email, password):
-    """Staff form: VERIFY_LOGIN_* env, or the member-portal password for that same email."""
-    if not verify_auth_configured():
-        return False
-    normalized_email = (email or '').strip().lower()
-    password = (password or '').strip()
-    if not normalized_email or not password:
-        
+        error=er
