@@ -1,4 +1,37 @@
-     msg.body = body
+         email = (invite.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    if 'full' in lists:
+        for entry in load_full_mailing_list():
+            email = (entry.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    return sorted(emails)
+
+
+def send_broadcast_email(subject, body, recipients):
+    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
+    subject = (subject or '').strip()
+    body = (body or '').strip()
+    sent = []
+    failed = []
+    if not subject or not body or not recipients:
+        return sent, failed
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
+        + '</div>'
+    )
+    with app.app_context():
+        for email in recipients:
+            try:
+                msg = Message(
+                    subject,
+                    sender=mail_from_address(),
+                    recipients=[email],
+                )
+                msg.body = body
                 msg.html = html_body
                 mail.send(msg)
                 sent.append(email)
@@ -165,30 +198,4 @@ def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
     if rate <= 0:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
-    # Single-ticket returning-guest rate does not stack with bulk (qty is always 1).
-    if bulk_discount_applies(ticket_type, quantity):
-        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
-
-    return int(base_total * (1 - rate))
-
-
-def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
-    if quantity < 1:
-        quantity = 1
-    return calculate_total_cents(ticket_type, quantity, apply_member_discount) // quantity
-
-
-def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
-    quantity = max(1, int(quantity or 1))
-    base = TICKET_TYPES[ticket_type]['price_cents']
-    base_total_cents = base * quantity
-    bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
-    eligible_rate = active_member_discount_rate(quantity, require_active=False)
-    rate = eligible_rate if apply_member_discount else 0.0
-    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
-    unit_price = total_cents // quantity
-
-    bulk_savings_active = bulk_only_total < base_total_cents
-    member_requested = apply_member_discount and rate > 0
-    stacked_discount_applied = (
-        bulk_savings_active and member_requested and total_cents < bulk_only_tot
+    # Single-ticket returning-guest rate does not stack w
