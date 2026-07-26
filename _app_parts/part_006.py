@@ -1,4 +1,4 @@
-(no period re-use).
+t (no period re-use).
                 # VIP + admission_as ga: leave vip_redeemed_at unset for later VIP use.
                 save_tickets(tickets)
                 return True
@@ -155,8 +155,17 @@ def _admin_key_matches(provided):
         return key == expected
 
 
+def is_staff_user():
+    """Staff email (VERIFY_LOGIN_*) via member portal or scanner session."""
+    return is_scanner_admin_member() or verify_scanner_session_authenticated()
+
+
 def require_admin():
     if session.get('admin_authenticated') is True:
+        return True
+    # Staff email session can open ticket admin + mailing lists (no separate key needed).
+    if is_staff_user():
+        session['admin_authenticated'] = True
         return True
     key = request.args.get('key') or request.form.get('key') or ''
     if _admin_key_matches(key):
@@ -175,8 +184,11 @@ def admin_login_required(next_path=None):
         next_path = request.path or '/admin'
     if not next_path.startswith('/admin'):
         next_path = '/admin'
-    provided = (request.args.get('key') or request.form.get('key') or '').strip()
-    error = 'Invalid admin key. Try again.' if provided else None
+    provided_key = (request.args.get('key') or request.form.get('key') or '').strip()
+    provided_email = (request.args.get('email') or request.form.get('email') or '').strip()
+    error = None
+    if provided_key or provided_email:
+        error = 'Invalid credentials. Use your staff email/password or admin key.'
     return render_template(
         'admin_login.html',
         error=error,
@@ -218,20 +230,4 @@ def verify_scanner_credentials(email, password):
     normalized_email = (email or '').strip().lower()
     password = (password or '').strip()
     if not normalized_email or not password:
-        return False
-    if not secure_equal(normalized_email, verify_login_email):
-        return False
-    if secure_equal(password, verify_login_password):
-        return True
-    # Same person often uses the member portal password; accept that too.
-    return verify_legacy_login(normalized_email, password)
-
-
-def mark_scanner_session_authenticated():
-    session['verify_authenticated'] = True
-    session['verify_login_email'] = verify_login_email
-
-
-def protect_scanner_response():
-    if not verify_auth_configured():
-        messa
+        
