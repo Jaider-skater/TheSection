@@ -60,7 +60,7 @@ def verify_login():
                 error='Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.',
             ), 503
 
-    email = request.form.get('email') or ''
+        email = request.form.get('email') or ''
         password = request.form.get('password') or ''
         if verify_scanner_credentials(email, password):
             staff_email = (email or '').strip().lower()
