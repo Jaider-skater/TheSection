@@ -1,4 +1,37 @@
-r()
+nv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
+            ) or generate_discount_code(bootstrap_email)
+            while discount_code_taken(bootstrap_discount_code):
+                bootstrap_discount_code = generate_discount_code(bootstrap_email)
+            members.append({
+                'email': bootstrap_email,
+                'password_hash': hash_password(bootstrap_password),
+                'discount_code': bootstrap_discount_code,
+                'saved_tickets': [],
+                'joined_at': datetime.now(timezone.utc).isoformat(),
+            })
+            existing.add(bootstrap_email)
+            created += 1
+            print(f'Bootstrap member created after deploy: {bootstrap_email}')
+        if created:
+            save_members(members)
+
+
+def log_storage_state():
+    members = load_members()
+    print(
+        'Storage state:',
+        f'members_file={members_file}',
+        f'exists={os.path.exists(members_file)}',
+        f'member_count={len(members)}',
+        f'tickets_file={tickets_file}',
+        f'tickets_exists={os.path.exists(tickets_file)}',
+    )
+
+
+def get_legacy_member(email):
+    if not email:
+        return None
+    normalized = email.strip().lower()
     for member in load_members():
         if member.get('email', '').lower() == normalized:
             return member
@@ -181,37 +214,4 @@ def verify_member_invite_token(email, token):
         return False
     expires_raw = invite.get('invite_expires')
     if not expires_raw:
-        return False
-    try:
-        expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return False
-    if datetime.now(timezone.utc) > expires:
-        return False
-    return invite['invite_token'] == hash_reset_token(token)
-
-
-def mark_member_invite_claimed(email):
-    normalized = email.strip().lower()
-    with invites_lock:
-        invites = load_invites()
-        for invite in invites:
-            if invite.get('email', '').strip().lower() == normalized:
-                invite['claimed_at'] = datetime.now(timezone.utc).isoformat()
-                invite.pop('invite_token', None)
-                invite.pop('invite_expires', None)
-                save_invites(invites)
-                return True
-    return False
-
-
-def mark_member_invite_sent(email):
-    normalized = email.strip().lower()
-    with invites_lock:
-        invites = load_invites()
-        for invite in invites:
-            if invite.get('email', '').strip().lower() == normalized:
-                invite['sent_at'] = datetime.now(timezone.utc).isoformat()
-                save_invites(inv
+        return Fa
