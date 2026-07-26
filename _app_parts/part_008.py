@@ -1,4 +1,25 @@
-value)
+  except OSError as e:
+        print(f'Failed to save scanner settings ({scanner_settings_file}):', e)
+        return False
+
+
+def parse_max_capacity(raw):
+    if raw is None or raw == '':
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def get_max_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_capacity'))
+
+
+def set_max_capacity(value):
+    normalized = parse_max_capacity(value)
     with scanner_settings_lock:
         settings = load_scanner_settings()
         if normalized is None:
@@ -198,15 +219,4 @@ def mark_email_sent(session_id):
                 return
 
 
-def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    view_url = ticket_display_url(ticket_id)
-    type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
-    with app.app_context():
-        try:
-            msg = Message(
-                "Your The Section Tickets",
-                sender=app.config['MAIL_DEFAULT_SENDER'],
-                recipients=[customer_email],
-            )
-            access_line = f"Access: {access}\n" if access else ''
-            msg.body = (
+def send_ticket_email(cu
