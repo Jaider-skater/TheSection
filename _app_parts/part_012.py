@@ -1,4 +1,52 @@
-       return jsonify(totals)
+totals():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    return jsonify(get_admission_totals())
+
+
+@app.route('/api/admission-totals/reset', methods=['POST'])
+def reset_admission_totals():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    recorded = reset_admission_counts()
+    totals = get_admission_totals()
+    return jsonify({'recorded': recorded, **totals})
+
+
+@app.route('/api/admission-totals/reset-history', methods=['DELETE', 'POST'])
+def delete_admission_reset_history_entry():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    entry_id = (
+        data.get('id')
+        or data.get('entry_id')
+        or request.args.get('id')
+        or request.form.get('id')
+        or ''
+    )
+    if not delete_reset_history_entry(entry_id):
+        return jsonify({'error': 'History entry not found.'}), 404
+    return jsonify(get_admission_totals())
+
+
+@app.route('/api/scanner-settings', methods=['GET', 'POST'])
+def scanner_settings():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        if 'max_capacity' in data:
+            set_max_capacity(data.get('max_capacity'))
+        if 'max_vip_capacity' in data:
+            set_max_vip_capacity(data.get('max_vip_capacity'))
+        totals = get_admission_totals()
+        return jsonify(totals)
 
     return jsonify(get_admission_totals())
 
@@ -12,13 +60,14 @@ def verify_login():
                 error='Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.',
             ), 503
 
-        email = request.form.get('email') or ''
+    email = request.form.get('email') or ''
         password = request.form.get('password') or ''
         if verify_scanner_credentials(email, password):
-            mark_scanner_session_authenticated()
+            staff_email = (email or '').strip().lower()
+            mark_scanner_session_authenticated(staff_email)
             # Keep member portal in sync so Door Scanner stays open after portal login.
-            if get_legacy_member(verify_login_email):
-                session['legacy_member_email'] = verify_login_email
+            if get_legacy_member(staff_email):
+                session['legacy_member_email'] = staff_email
             next_url = (request.form.get('next') or '').strip()
             if not next_url or not next_url.startswith('/'):
                 next_url = url_for('verify_ticket')
@@ -26,7 +75,7 @@ def verify_login():
 
         return render_template(
             'verify_login.html',
-            error='Invalid email or password. Use VERIFY_LOGIN_EMAIL plus VERIFY_LOGIN_PASSWORD, or that member account password.',
+            error='Invalid email or password. Use a staff email (VERIFY_LOGIN_EMAIL / VERIFY_LOGIN_EMAILS) and password.',
             next_url=request.form.get('next', ''),
         )
 
@@ -47,7 +96,7 @@ def verify_logout():
     if not auto_leave:
         # Explicit "Sign out" on the scanner: also leave the staff member portal account.
         member_email = (session.get('legacy_member_email') or '').strip().lower()
-        if verify_login_email and member_email and secure_equal(member_email, verify_login_email):
+        if is_staff_email(member_email):
             session.pop('legacy_member_email', None)
     if request.is_json or auto_leave:
         return jsonify({'ok': True})
@@ -129,38 +178,4 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'saved_ticket_details': saved_ticket_details or [],
         'has_past_purchases': member_has_past_purchases(logged_in) if logged_in else False,
         'has_returning_guest_discount': member_has_returning_guest_discount(logged_in) if logged_in else False,
-        'discount_eligible': member_discount_eligible(logged_in) if logged_in else False,
-        'bundle_min': bundle_min,
-        'bundle_discount_percent': int(bundle_discount * 100),
-        'member_discount_percent': int(member_discount * 100),
-        'returning_guest_discount_percent': int(returning_guest_discount * 100),
-        'vip_bundle_min': vip_bundle_min,
-        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
-        'next_url': next_url,
-        'active_tab': active_tab,
-        'show_scanner_link': is_scanner_admin_member(),
-    }
-
-
-@app.route('/legacy/reset-password', methods=['GET', 'POST'])
-@app.route('/reset-password', methods=['GET', 'POST'])
-def reset_password():
-    email = (
-        request.form.get('email', '').strip().lower()
-        or request.args.get('email', '').strip().lower()
-    )
-    token = request.form.get('token', '') or request.args.get('token', '')
-    error = None
-
-    if not email or not token:
-        return redirect(url_for('legacy_portal'))
-
-    token_valid = verify_password_reset_token(email, token)
-    if request.method == 'POST':
-        new_password = request.form.get('new_password', '')
-        confirm_password = request.form.get('confirm_password', '')
-        if not token_valid:
-            error = 'This reset link is invalid or has expired. Request a new one from the member portal.'
-        elif new_password != confirm_password:
-            error = 'Passwords do not match.'
-        elif len(new_password) < 8:
+        'discount_eligible': member_discount_eligible(logg
