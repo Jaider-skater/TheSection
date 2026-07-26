@@ -1,4 +1,17 @@
-heckout_session(
+return redirect('/?open_tickets=1')
+
+
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
+    if not is_legacy_member_logged_in():
+        return jsonify({'error': 'Sign in to your member account before purchasing tickets.'}), 401
+
+    try:
+        data = request.get_json()
+        quantity = max(1, int(data.get('quantity', 1)))
+        ticket_type = data.get('ticket_type', 'general')
+        apply_member_discount = bool(data.get('apply_member_discount'))
+        checkout_session = build_checkout_session(
             quantity, ticket_type, apply_member_discount=apply_member_discount,
         )
         print("Session created successfully:", checkout_session.url)
@@ -173,20 +186,4 @@ def scanner_settings():
         if 'max_vip_capacity' in data:
             set_max_vip_capacity(data.get('max_vip_capacity'))
         totals = get_admission_totals()
-        return jsonify(totals)
-
-    return jsonify(get_admission_totals())
-
-
-@app.route('/verify/login', methods=['GET', 'POST'])
-def verify_login():
-    if request.method == 'POST':
-        if not verify_auth_configured():
-            return render_template(
-                'verify_login.html',
-                error='Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.',
-            ), 503
-
-        email = request.form.get('email') or ''
-        password = request.form.get('password') or ''
-    
+ 
