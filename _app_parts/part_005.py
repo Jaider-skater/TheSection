@@ -1,4 +1,4 @@
-
+al
     )
 
     member_only_total = (
@@ -172,4 +172,4 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
                     # Full VIP redeem, or any GA ticket → permanent for that privilege.
                     if entry == 'vip':
                         ticket['vip_redeemed_at'] = now_iso
-                    # GA tickets stay void forever via scanned_at 
+                    # GA tickets stay void forever via scanned_a
