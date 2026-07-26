@@ -1,4 +1,37 @@
-ites)
+lse
+    try:
+        expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    if datetime.now(timezone.utc) > expires:
+        return False
+    return invite['invite_token'] == hash_reset_token(token)
+
+
+def mark_member_invite_claimed(email):
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        for invite in invites:
+            if invite.get('email', '').strip().lower() == normalized:
+                invite['claimed_at'] = datetime.now(timezone.utc).isoformat()
+                invite.pop('invite_token', None)
+                invite.pop('invite_expires', None)
+                save_invites(invites)
+                return True
+    return False
+
+
+def mark_member_invite_sent(email):
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        for invite in invites:
+            if invite.get('email', '').strip().lower() == normalized:
+                invite['sent_at'] = datetime.now(timezone.utc).isoformat()
+                save_invites(invites)
                 return True
     return False
 
@@ -172,37 +205,4 @@ def resolve_broadcast_recipients(lists):
     emails = set()
     if 'exclusive' in lists:
         for invite in load_invites():
-            email = (invite.get('email') or '').strip().lower()
-            if email:
-                emails.add(email)
-    if 'full' in lists:
-        for entry in load_full_mailing_list():
-            email = (entry.get('email') or '').strip().lower()
-            if email:
-                emails.add(email)
-    return sorted(emails)
-
-
-def send_broadcast_email(subject, body, recipients):
-    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
-    subject = (subject or '').strip()
-    body = (body or '').strip()
-    sent = []
-    failed = []
-    if not subject or not body or not recipients:
-        return sent, failed
-    html_body = (
-        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
-        '<h2 style="margin:0 0 12px;">The Section</h2>'
-        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
-        + '</div>'
-    )
-    with app.app_context():
-        for email in recipients:
-            try:
-                msg = Message(
-                    subject,
-                    sender=mail_from_address(),
-                    recipients=[email],
-                )
-           
+   
