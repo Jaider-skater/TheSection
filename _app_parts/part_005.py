@@ -1,4 +1,30 @@
-al
+ith bulk (qty is always 1).
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
+
+    return int(base_total * (1 - rate))
+
+
+def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
+    if quantity < 1:
+        quantity = 1
+    return calculate_total_cents(ticket_type, quantity, apply_member_discount) // quantity
+
+
+def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
+    quantity = max(1, int(quantity or 1))
+    base = TICKET_TYPES[ticket_type]['price_cents']
+    base_total_cents = base * quantity
+    bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
+    eligible_rate = active_member_discount_rate(quantity, require_active=False)
+    rate = eligible_rate if apply_member_discount else 0.0
+    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
+    unit_price = total_cents // quantity
+
+    bulk_savings_active = bulk_only_total < base_total_cents
+    member_requested = apply_member_discount and rate > 0
+    stacked_discount_applied = (
+        bulk_savings_active and member_requested and total_cents < bulk_only_total
     )
 
     member_only_total = (
@@ -88,7 +114,7 @@ def remove_saved_ticket_for_member(email, ticket_id):
     with members_lock:
         members = load_members()
         for member in members:
-            if member.get('email', '').lower() == email.strip().lower():
+            if member.get('email', '').strip().lower() == email.strip().lower():
                 saved = member.get('saved_tickets', [])
                 if normalized_id in saved:
                     saved.remove(normalized_id)
@@ -149,27 +175,4 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
         tickets = load_tickets()
         for ticket in tickets:
             if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
-                ticket_type = ticket.get('ticket_type', 'general')
-                entry = admission_as or ('vip' if ticket_type == 'vip' else 'general')
-                if entry == 'general':
-                    entry = 'ga'
-                if entry not in ('vip', 'ga'):
-                    entry = 'ga'
-
-                # Already fully used as VIP, or GA ticket already used ever.
-                if ticket.get('vip_redeemed_at'):
-                    return False
-                if ticket_type != 'vip' and ticket.get('scanned_at'):
-                    return False
-                # Same counting period already admitted.
-                if ticket_counts_for_current_period(ticket.get('scanned_at')):
-                    return False
-
-                now_iso = datetime.now(timezone.utc).isoformat()
-                ticket['scanned_at'] = now_iso
-                ticket['admission_as'] = entry
-                if entry == 'vip' or ticket_type != 'vip':
-                    # Full VIP redeem, or any GA ticket → permanent for that privilege.
-                    if entry == 'vip':
-                        ticket['vip_redeemed_at'] = now_iso
-                    # GA tickets stay void forever via scanned_a
+               
