@@ -1,4 +1,16 @@
-'] = (os.getenv('MAIL_PASSWORD') or '').strip()
+RET_KEY=sk_live_... on Render '
+        '(not SECRET_KEY, and not the pk_live_ publishable key).'
+    )
+
+# Email Config (Gmail app password — set MAIL_* env vars on Render)
+DEFAULT_MAIL_USERNAME = 'thesectionevents@gmail.com'
+mail_username = (os.getenv('MAIL_USERNAME') or DEFAULT_MAIL_USERNAME).strip()
+mail_sender = (os.getenv('MAIL_DEFAULT_SENDER') or mail_username).strip() or mail_username
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', '587'))
+app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'true').lower() == 'true'
+app.config['MAIL_USERNAME'] = mail_username
+app.config['MAIL_PASSWORD'] = (os.getenv('MAIL_PASSWORD') or '').strip()
 app.config['MAIL_DEFAULT_SENDER'] = mail_sender
 app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
 mail = Mail(app)
@@ -157,56 +169,39 @@ def save_members(members):
         return False
 
 
+def bootstrap_staff_emails():
+    """Emails that get member-portal bootstrap accounts (comma-separated ok)."""
+    emails = parse_staff_emails(
+        os.getenv('LEGACY_BOOTSTRAP_EMAIL', ''),
+        os.getenv('LEGACY_BOOTSTRAP_EMAILS', ''),
+        os.getenv('VERIFY_LOGIN_EMAIL', ''),
+        os.getenv('VERIFY_LOGIN_EMAILS', ''),
+    )
+    return emails
+
+
 def bootstrap_legacy_members():
-    bootstrap_email = os.getenv('LEGACY_BOOTSTRAP_EMAIL', '').strip().lower()
     bootstrap_password = (
         os.getenv('LEGACY_BOOTSTRAP_PASSWORD', '').strip()
         or os.getenv('LEGACY_BOOTSTRAP_CODE', '').strip()
+        or verify_login_password
     )
-    if not bootstrap_email:
+    bootstrap_emails = bootstrap_staff_emails()
+    if not bootstrap_emails:
         return
     if not bootstrap_password:
         print(
-            'LEGACY_BOOTSTRAP_EMAIL is set but LEGACY_BOOTSTRAP_PASSWORD is missing; '
-            'member accounts will not auto-recreate after deploys.'
+            'Staff/bootstrap emails are set but LEGACY_BOOTSTRAP_PASSWORD '
+            '(or VERIFY_LOGIN_PASSWORD) is missing; member accounts will not auto-recreate.'
         )
         return
     with members_lock:
         members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == bootstrap_email:
+        existing = {m.get('email', '').lower() for m in members}
+        created = 0
+        for bootstrap_email in bootstrap_emails:
+            if bootstrap_email in existing:
                 print(f'Bootstrap member already present: {bootstrap_email}')
-                return
-        bootstrap_discount_code = normalize_discount_code(
-            os.getenv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
-        ) or generate_discount_code(bootstrap_email)
-        while discount_code_taken(bootstrap_discount_code):
-            bootstrap_discount_code = generate_discount_code(bootstrap_email)
-        members.append({
-            'email': bootstrap_email,
-            'password_hash': hash_password(bootstrap_password),
-            'discount_code': bootstrap_discount_code,
-            'saved_tickets': [],
-            'joined_at': datetime.now(timezone.utc).isoformat(),
-        })
-        save_members(members)
-        print(f'Bootstrap member created after deploy: {bootstrap_email}')
-    # Full-list subscribe runs after helpers are defined (see module init at bottom).
-
-
-def log_storage_state():
-    members = load_members()
-    print(
-        'Storage state:',
-        f'members_file={members_file}',
-        f'exists={os.path.exists(members_file)}',
-        f'member_count={len(members)}',
-        f'tickets_file={tickets_file}',
-        f'tickets_exists={os.path.exists(tickets_file)}',
-    )
-
-
-def get_legacy_member(email):
-    if not email:
-        return None
-    normalized = email.strip().lowe
+                continue
+            bootstrap_discount_code = normalize_discount_code(
+                os.gete
