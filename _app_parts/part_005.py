@@ -114,7 +114,7 @@ def remove_saved_ticket_for_member(email, ticket_id):
     with members_lock:
         members = load_members()
         for member in members:
-            if member.get('email', '').strip().lower() == email.strip().lower():
+            if member.get('email', '').lower() == email.strip().lower():
                 saved = member.get('saved_tickets', [])
                 if normalized_id in saved:
                     saved.remove(normalized_id)
