@@ -1,4 +1,73 @@
- Welcome rate only when returning guest buys exactly one ticket.
+    base_total = base * quantity
+    quantity = max(1, int(quantity or 1))
+
+    if not apply_member_discount:
+        return calculate_bulk_total_cents(ticket_type, quantity)
+
+    rate = active_member_discount_rate(quantity)
+    if rate <= 0:
+        return calculate_bulk_total_cents(ticket_type, quantity)
+
+    # Single-ticket returning-guest rate does not stack with bulk (qty is always 1).
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
+
+    return int(base_total * (1 - rate))
+
+
+def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
+    if quantity < 1:
+        quantity = 1
+    return calculate_total_cents(ticket_type, quantity, apply_member_discount) // quantity
+
+
+def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
+    quantity = max(1, int(quantity or 1))
+    base = TICKET_TYPES[ticket_type]['price_cents']
+    base_total_cents = base * quantity
+    bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
+    eligible_rate = active_member_discount_rate(quantity, require_active=False)
+    rate = eligible_rate if apply_member_discount else 0.0
+    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
+    unit_price = total_cents // quantity
+
+    bulk_savings_active = bulk_only_total < base_total_cents
+    member_requested = apply_member_discount and rate > 0
+    stacked_discount_applied = (
+        bulk_savings_active and member_requested and total_cents < bulk_only_total
+    )
+
+    member_only_total = (
+        int(base_total_cents * (1 - rate))
+        if member_requested
+        else None
+    )
+
+    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
+    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
+    member_discount_applied = (
+        member_requested
+        and not stacked_discount_applied
+        and not bulk_savings_active
+        and member_only_total is not None
+        and total_cents == member_only_total
+    )
+
+    combined_discount_percent = None
+    if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
+        combined_discount_percent = int(
+            (bulk_discount_rate(ticket_type) + rate) * 100
+        )
+
+    bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
+    bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
+    member = get_logged_in_member()
+    if member:
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+    is_returning = member_has_returning_guest_discount(member)
+    applied_pct = int(round(rate * 100)) if rate > 0 else 0
+    eligible_pct = int(round(eligible_rate * 100)) if eligible_rate > 0 else 0
+    # Welcome rate only when returning guest buys exactly one ticket.
     returning_single_ticket_rate = bool(is_returning and quantity == 1 and rate > 0)
 
     return {
@@ -116,75 +185,3 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
         tickets = load_tickets()
         for ticket in tickets:
             if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
-                ticket_type = ticket.get('ticket_type', 'general')
-                entry = admission_as or ('vip' if ticket_type == 'vip' else 'general')
-                if entry == 'general':
-                    entry = 'ga'
-                if entry not in ('vip', 'ga'):
-                    entry = 'ga'
-
-                # Already fully used as VIP, or GA ticket already used ever.
-                if ticket.get('vip_redeemed_at'):
-                    return False
-                if ticket_type != 'vip' and ticket.get('scanned_at'):
-                    return False
-                # Same counting period already admitted.
-                if ticket_counts_for_current_period(ticket.get('scanned_at')):
-                    return False
-
-                now_iso = datetime.now(timezone.utc).isoformat()
-                ticket['scanned_at'] = now_iso
-                ticket['admission_as'] = entry
-                if entry == 'vip' or ticket_type != 'vip':
-                    # Full VIP redeem, or any GA ticket → permanent for that privilege.
-                    if entry == 'vip':
-                        ticket['vip_redeemed_at'] = now_iso
-                    # GA tickets stay void forever via scanned_at (no period re-use).
-                # VIP + admission_as ga: leave vip_redeemed_at unset for later VIP use.
-                save_tickets(tickets)
-                return True
-    return False
-
-
-def parse_iso_datetime(raw):
-    if not raw:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        return None
-
-
-_display_tz = None
-
-
-def get_display_timezone():
-    global _display_tz
-    if _display_tz is None:
-        try:
-            _display_tz = ZoneInfo(APP_TIMEZONE)
-        except Exception:
-            _display_tz = ZoneInfo('America/Los_Angeles')
-    return _display_tz
-
-
-def display_timezone_label():
-    return datetime.now(get_display_timezone()).strftime('%Z')
-
-
-def format_display_datetime(iso_raw, date_only=False):
-    dt = parse_iso_datetime(iso_raw)
-    if not dt:
-        return '—'
-    local = dt.astimezone(get_display_timezone())
-    if date_only:
-        return local.strftime('%Y-%m-%d')
-    return local.strftime('%Y-%m-%d %H:%M')
-
-
-@app.template_filter('local_time')
-def local_time_filter(iso_raw):
-    return forma

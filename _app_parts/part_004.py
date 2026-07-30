@@ -1,4 +1,57 @@
-      return data if isinstance(data, list) else []
+            status = 'sent'
+        rows.append({
+            'email': email,
+            'added_at': invite.get('added_at'),
+            'sent_at': invite.get('sent_at'),
+            'claimed_at': invite.get('claimed_at'),
+            'status': status,
+        })
+    return rows
+
+
+def invites_ready_to_send():
+    ready = []
+    for row in invite_list_for_admin():
+        if row['status'] in ('pending', 'sent'):
+            ready.append(row['email'])
+    return ready
+
+
+def create_member_from_invite(email, password):
+    normalized = email.strip().lower()
+    if get_legacy_member(normalized):
+        return False, 'An account with that email already exists.'
+    discount_code = generate_discount_code(normalized)
+    while discount_code_taken(discount_code):
+        discount_code = generate_discount_code(normalized)
+    with members_lock:
+        members = load_members()
+        members.append({
+            'email': normalized,
+            'password_hash': hash_password(password),
+            'saved_tickets': [],
+            'discount_code': discount_code,
+            'returning_guest_discount': True,
+            'joined_at': datetime.now(timezone.utc).isoformat(),
+        })
+        save_members(members)
+    mark_member_invite_claimed(normalized)
+    # Exclusive list only — do not put returning-guest accounts on the full list.
+    return True, None
+
+
+# --- Full mailing list (signups + founding + manual; no exclusive 20% perk) ---
+
+
+def load_full_mailing_list():
+    if not ensure_data_dir(full_mailing_list_file):
+        return []
+    if not os.path.exists(full_mailing_list_file):
+        return []
+    try:
+        with open(full_mailing_list_file, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
     except (json.JSONDecodeError, OSError) as e:
         print(f'Failed to load full mailing list ({full_mailing_list_file}):', e)
         return []
@@ -132,71 +185,3 @@ def resolve_broadcast_recipients(lists):
             email = (invite.get('email') or '').strip().lower()
             if email:
                 emails.add(email)
-    if 'full' in lists:
-        for entry in load_full_mailing_list():
-            email = (entry.get('email') or '').strip().lower()
-            if email:
-                emails.add(email)
-    return sorted(emails)
-
-
-def send_broadcast_email(subject, body, recipients):
-    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
-    subject = (subject or '').strip()
-    body = (body or '').strip()
-    sent = []
-    failed = []
-    if not subject or not body or not recipients:
-        return sent, failed
-    html_body = (
-        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
-        '<h2 style="margin:0 0 12px;">The Section</h2>'
-        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
-        + '</div>'
-    )
-    with app.app_context():
-        for email in recipients:
-            try:
-                msg = Message(
-                    subject,
-                    sender=mail_from_address(),
-                    recipients=[email],
-                )
-                msg.body = body
-                msg.html = html_body
-                mail.send(msg)
-                sent.append(email)
-            except Exception as e:
-                print(f'Broadcast email failed for {email}:', e)
-                failed.append(email)
-    return sent, failed
-
-
-def clear_returning_guest_discount_if_purchased(email):
-    """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
-    return
-
-
-def member_has_past_purchases(member):
-    if not member:
-        return False
-    email = member.get('email', '').strip().lower()
-    if email:
-        for ticket in load_tickets():
-            if ticket.get('email', '').lower() == email:
-                return True
-    for ticket_id in member.get('saved_tickets', []):
-        if get_ticket_record(ticket_id):
-            return True
-    return False
-
-
-def member_has_returning_guest_discount(member):
-    return bool(member and member.get('returning_guest_discount'))
-
-
-def ensure_returning_guest_flag_for_exclusive_member(member):
-    """Exclusive-list emails keep the lifetime single-ticket perk even if they signed up without the invite link."""
-    if not member:
-        return member
-    if m

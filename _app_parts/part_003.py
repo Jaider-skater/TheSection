@@ -1,4 +1,48 @@
-:
+                'email': email,
+                'added_at': datetime.now(timezone.utc).isoformat(),
+                'sent_at': None,
+                'claimed_at': None,
+                'invite_token': None,
+                'invite_expires': None,
+            })
+            existing.add(email)
+            added.append(email)
+        save_invites(invites)
+    return added, skipped
+
+
+def remove_email_from_invite_list(email):
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        updated = [i for i in invites if i.get('email', '').strip().lower() != normalized]
+        if len(updated) == len(invites):
+            return False
+        save_invites(updated)
+        return True
+
+
+def clear_exclusive_member_features(email):
+    """Remove exclusive-list perks from a member account (keep login + tickets).
+
+    Clears returning_guest_discount. If they have no purchase history, also
+    clears discount_code so they no longer get member pricing.
+    """
+    normalized = (email or '').strip().lower()
+    if not normalized:
+        return False
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').strip().lower() != normalized:
+                continue
+            changed = False
+            if 'returning_guest_discount' in member:
+                member.pop('returning_guest_discount', None)
+                changed = True
+            # No past purchases + exclusive removed → lose discount eligibility.
+            has_purchases = False
+            for ticket in load_tickets():
                 if ticket.get('email', '').lower() == normalized:
                     has_purchases = True
                     break
@@ -141,57 +185,3 @@ def invite_list_for_admin():
         elif invite.get('claimed_at'):
             status = 'claimed'
         elif invite.get('sent_at'):
-            status = 'sent'
-        rows.append({
-            'email': email,
-            'added_at': invite.get('added_at'),
-            'sent_at': invite.get('sent_at'),
-            'claimed_at': invite.get('claimed_at'),
-            'status': status,
-        })
-    return rows
-
-
-def invites_ready_to_send():
-    ready = []
-    for row in invite_list_for_admin():
-        if row['status'] in ('pending', 'sent'):
-            ready.append(row['email'])
-    return ready
-
-
-def create_member_from_invite(email, password):
-    normalized = email.strip().lower()
-    if get_legacy_member(normalized):
-        return False, 'An account with that email already exists.'
-    discount_code = generate_discount_code(normalized)
-    while discount_code_taken(discount_code):
-        discount_code = generate_discount_code(normalized)
-    with members_lock:
-        members = load_members()
-        members.append({
-            'email': normalized,
-            'password_hash': hash_password(password),
-            'saved_tickets': [],
-            'discount_code': discount_code,
-            'returning_guest_discount': True,
-            'joined_at': datetime.now(timezone.utc).isoformat(),
-        })
-        save_members(members)
-    mark_member_invite_claimed(normalized)
-    # Exclusive list only — do not put returning-guest accounts on the full list.
-    return True, None
-
-
-# --- Full mailing list (signups + founding + manual; no exclusive 20% perk) ---
-
-
-def load_full_mailing_list():
-    if not ensure_data_dir(full_mailing_list_file):
-        return []
-    if not os.path.exists(full_mailing_list_file):
-        return []
-    try:
-        with open(full_mailing_list_file, encoding='utf-8') as f:
-            data = json.load(f)
-      

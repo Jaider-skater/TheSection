@@ -1,4 +1,104 @@
-etches stay authorized.
+        return True
+    # Staff email session can open ticket admin + mailing lists (no separate key needed).
+    if is_staff_user():
+        session['admin_authenticated'] = True
+        return True
+    key = request.args.get('key') or request.form.get('key') or ''
+    if _admin_key_matches(key):
+        session['admin_authenticated'] = True
+        return True
+    return False
+
+
+def admin_key_for_templates():
+    return (request.args.get('key') or request.form.get('key') or '').strip()
+
+
+def admin_login_required(next_path=None):
+    """Return admin login page when the request is not authorized."""
+    if next_path is None:
+        next_path = request.path or '/admin'
+    if not next_path.startswith('/admin'):
+        next_path = '/admin'
+    provided_key = (request.args.get('key') or request.form.get('key') or '').strip()
+    provided_email = (request.args.get('email') or request.form.get('email') or '').strip()
+    error = None
+    if provided_key or provided_email:
+        error = 'Invalid credentials. Use your staff email/password or admin key.'
+    return render_template(
+        'admin_login.html',
+        error=error,
+        next_path=next_path,
+    ), 401
+
+
+def verify_auth_configured():
+    return bool(staff_emails and verify_login_password)
+
+
+def is_staff_email(email):
+    normalized = (email or '').strip().lower()
+    if not normalized or not staff_emails:
+        return False
+    return any(secure_equal(normalized, allowed) for allowed in staff_emails)
+
+
+def is_scanner_admin_member():
+    if not staff_emails:
+        return False
+    member = get_logged_in_member()
+    if not member:
+        return False
+    member_email = (member.get('email') or '').strip().lower()
+    return is_staff_email(member_email)
+
+
+def verify_scanner_session_authenticated():
+    if session.get('verify_authenticated') is not True:
+        return False
+    logged_email = (session.get('verify_login_email') or '').strip().lower()
+    return is_staff_email(logged_email)
+
+
+def verify_authenticated():
+    if not verify_auth_configured():
+        return False
+    return is_scanner_admin_member() or verify_scanner_session_authenticated()
+
+
+def verify_scanner_credentials(email, password):
+    """Staff form: any VERIFY_LOGIN email + shared password, or that member's portal password."""
+    if not verify_auth_configured():
+        return False
+    normalized_email = (email or '').strip().lower()
+    password = (password or '').strip()
+    if not normalized_email or not password:
+        return False
+    if not is_staff_email(normalized_email):
+        return False
+    if secure_equal(password, verify_login_password):
+        return True
+    # Same person often uses the member portal password; accept that too.
+    return verify_legacy_login(normalized_email, password)
+
+
+def mark_scanner_session_authenticated(email=None):
+    session['verify_authenticated'] = True
+    chosen = (email or '').strip().lower()
+    if not is_staff_email(chosen):
+        chosen = verify_login_email or (staff_emails[0] if staff_emails else '')
+    session['verify_login_email'] = chosen
+
+
+def protect_scanner_response():
+    if not verify_auth_configured():
+        message = 'Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.'
+        if request.method == 'POST' or request.is_json:
+            return jsonify({'error': message}), 503
+        return render_template('verify_login.html', error=message), 503
+
+    if verify_authenticated():
+        # Member-portal staff access: pin a scanner flag so API fetches stay authorized.
         if is_scanner_admin_member() and not verify_scanner_session_authenticated():
             mark_scanner_session_authenticated()
         return None
@@ -85,143 +185,3 @@ def build_wallet_pass(ticket_id, quantity):
     pass_json = {
         'formatVersion': 1,
         'passTypeIdentifier': wallet_pass_type_id,
-        'teamIdentifier': wallet_team_id,
-        'organizationName': 'The Section',
-        'description': 'The Section Ticket',
-        'serialNumber': normalize_ticket_id(ticket_id),
-        'foregroundColor': 'rgb(255, 255, 255)',
-        'backgroundColor': 'rgb(24, 24, 27)',
-        'labelColor': 'rgb(161, 161, 170)',
-        'barcodes': [{
-            'format': 'PKBarcodeFormatQR',
-            'message': verify_url,
-            'messageEncoding': 'iso-8859-1',
-            'altText': ticket_id,
-        }],
-        'eventTicket': {
-            'primaryFields': [{
-                'key': 'event',
-                'label': 'EVENT',
-                'value': 'The Section',
-            }],
-            'secondaryFields': [
-                {
-                    'key': 'guests',
-                    'label': 'GUESTS',
-                    'value': guest_label,
-                },
-                {
-                    'key': 'ticket',
-                    'label': 'TICKET',
-                    'value': ticket_id,
-                },
-            ],
-            'backFields': [{
-                'key': 'verify',
-                'label': 'VERIFY',
-                'value': verify_url,
-            }],
-        },
-    }
-
-    icon_png = make_pass_icon_png()
-    files = {
-        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
-        'icon.png': icon_png,
-        'icon@2x.png': icon_png,
-        'logo.png': icon_png,
-        'logo@2x.png': icon_png,
-    }
-    manifest = {
-        name: hashlib.sha1(data).hexdigest()
-        for name, data in files.items()
-    }
-    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
-    files['manifest.json'] = manifest_bytes
-
-    signature = sign_wallet_manifest(manifest_bytes)
-    if not signature:
-        return None
-
-    files['signature'] = signature
-
-    output = BytesIO()
-    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for name, data in files.items():
-            archive.writestr(name, data)
-    return output.getvalue()
-
-
-bootstrap_legacy_members()
-_founding = bootstrap_staff_emails()
-if _founding:
-    add_emails_to_full_mailing_list(_founding, source='founding')
-log_storage_state()
-
-
-def extract_ticket_id_from_url(raw):
-    for marker in ('/verify/t/', '/t/'):
-        if marker in raw:
-            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
-            return normalize_ticket_id(ticket_id)
-    return None
-
-
-def load_scanner_settings():
-    if not ensure_data_dir(scanner_settings_file):
-        return {}
-    if not os.path.exists(scanner_settings_file):
-        return {}
-    try:
-        with open(scanner_settings_file, encoding='utf-8') as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError) as e:
-        print(f'Failed to load scanner settings ({scanner_settings_file}):', e)
-        return {}
-
-
-def save_scanner_settings(settings):
-    if not ensure_data_dir(scanner_settings_file):
-        return False
-    try:
-        with open(scanner_settings_file, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=2)
-        return True
-    except OSError as e:
-        print(f'Failed to save scanner settings ({scanner_settings_file}):', e)
-        return False
-
-
-def parse_max_capacity(raw):
-    if raw is None or raw == '':
-        return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
-
-
-def get_max_capacity():
-    settings = load_scanner_settings()
-    return parse_max_capacity(settings.get('max_capacity'))
-
-
-def set_max_capacity(value):
-    normalized = parse_max_capacity(value)
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        if normalized is None:
-            settings.pop('max_capacity', None)
-        else:
-            settings['max_capacity'] = normalized
-        save_scanner_settings(settings)
-    return normalized
-
-
-def get_max_vip_capacity():
-    settings = load_scanner_settings()
-    return parse_max_capacity(settings.get('max_vip_capacity'))
-
-

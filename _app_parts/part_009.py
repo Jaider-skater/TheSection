@@ -1,3 +1,143 @@
+        'teamIdentifier': wallet_team_id,
+        'organizationName': 'The Section',
+        'description': 'The Section Ticket',
+        'serialNumber': normalize_ticket_id(ticket_id),
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'backgroundColor': 'rgb(24, 24, 27)',
+        'labelColor': 'rgb(161, 161, 170)',
+        'barcodes': [{
+            'format': 'PKBarcodeFormatQR',
+            'message': verify_url,
+            'messageEncoding': 'iso-8859-1',
+            'altText': ticket_id,
+        }],
+        'eventTicket': {
+            'primaryFields': [{
+                'key': 'event',
+                'label': 'EVENT',
+                'value': 'The Section',
+            }],
+            'secondaryFields': [
+                {
+                    'key': 'guests',
+                    'label': 'GUESTS',
+                    'value': guest_label,
+                },
+                {
+                    'key': 'ticket',
+                    'label': 'TICKET',
+                    'value': ticket_id,
+                },
+            ],
+            'backFields': [{
+                'key': 'verify',
+                'label': 'VERIFY',
+                'value': verify_url,
+            }],
+        },
+    }
+
+    icon_png = make_pass_icon_png()
+    files = {
+        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
+        'icon.png': icon_png,
+        'icon@2x.png': icon_png,
+        'logo.png': icon_png,
+        'logo@2x.png': icon_png,
+    }
+    manifest = {
+        name: hashlib.sha1(data).hexdigest()
+        for name, data in files.items()
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
+    files['manifest.json'] = manifest_bytes
+
+    signature = sign_wallet_manifest(manifest_bytes)
+    if not signature:
+        return None
+
+    files['signature'] = signature
+
+    output = BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
+bootstrap_legacy_members()
+_founding = bootstrap_staff_emails()
+if _founding:
+    add_emails_to_full_mailing_list(_founding, source='founding')
+log_storage_state()
+
+
+def extract_ticket_id_from_url(raw):
+    for marker in ('/verify/t/', '/t/'):
+        if marker in raw:
+            ticket_id = raw.split(marker)[-1].split('?')[0].split('/')[0].strip()
+            return normalize_ticket_id(ticket_id)
+    return None
+
+
+def load_scanner_settings():
+    if not ensure_data_dir(scanner_settings_file):
+        return {}
+    if not os.path.exists(scanner_settings_file):
+        return {}
+    try:
+        with open(scanner_settings_file, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(f'Failed to load scanner settings ({scanner_settings_file}):', e)
+        return {}
+
+
+def save_scanner_settings(settings):
+    if not ensure_data_dir(scanner_settings_file):
+        return False
+    try:
+        with open(scanner_settings_file, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except OSError as e:
+        print(f'Failed to save scanner settings ({scanner_settings_file}):', e)
+        return False
+
+
+def parse_max_capacity(raw):
+    if raw is None or raw == '':
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def get_max_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_capacity'))
+
+
+def set_max_capacity(value):
+    normalized = parse_max_capacity(value)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized is None:
+            settings.pop('max_capacity', None)
+        else:
+            settings['max_capacity'] = normalized
+        save_scanner_settings(settings)
+    return normalized
+
+
+def get_max_vip_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_vip_capacity'))
+
+
 def set_max_vip_capacity(value):
     normalized = parse_max_capacity(value)
     with scanner_settings_lock:
@@ -45,161 +185,3 @@ def vip_capacity_remaining():
     max_vip = get_max_vip_capacity()
     if not max_vip:
         return None
-    counts = compute_admission_counts()
-    return max(0, max_vip - counts['vip'])
-
-
-def ticket_already_used(record):
-    """Whether this ticket cannot be scanned again right now."""
-    if not record:
-        return True
-    ticket_type = record.get('ticket_type', 'general')
-    # VIP fully redeemed as VIP → never again.
-    if record.get('vip_redeemed_at'):
-        return True
-    # Non-VIP: any prior scan voids forever.
-    if ticket_type != 'vip' and record.get('scanned_at'):
-        return True
-    # Any ticket already admitted in the current counting period.
-    if ticket_counts_for_current_period(record.get('scanned_at')):
-        return True
-    return False
-
-
-def get_admission_totals():
-    counts = compute_admission_counts()
-    max_capacity = get_max_capacity()
-    max_vip_capacity = get_max_vip_capacity()
-    capacity_reached = bool(max_capacity and counts['total'] >= max_capacity)
-    vip_capacity_reached = bool(max_vip_capacity and counts['vip'] >= max_vip_capacity)
-    spots_remaining = None
-    if max_capacity:
-        spots_remaining = max(0, max_capacity - counts['total'])
-    vip_spots_remaining = None
-    if max_vip_capacity:
-        vip_spots_remaining = max(0, max_vip_capacity - counts['vip'])
-    return {
-        **counts,
-        'max_capacity': max_capacity,
-        'capacity_reached': capacity_reached,
-        'spots_remaining': spots_remaining,
-        'max_vip_capacity': max_vip_capacity,
-        'vip_capacity_reached': vip_capacity_reached,
-        'vip_spots_remaining': vip_spots_remaining,
-        'reset_history': get_reset_history(),
-    }
-
-
-def check_ticket(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return {
-            'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0,
-            'ticket_type': None, 'access': None, 'is_vip': False,
-        }
-
-    record = get_ticket_record(normalized)
-    if not record:
-        return {
-            'status': 'invalid', 'ticket_id': normalized, 'quantity': 0,
-            'ticket_type': None, 'access': None, 'is_vip': False,
-        }
-
-    quantity = int(record.get('quantity') or 1)
-    display_id = record.get('ticket_id', normalized)
-    ticket_type = record.get('ticket_type', 'general')
-
-    if ticket_already_used(record):
-        meta = ticket_result_meta(record)
-        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    remaining = admission_capacity_remaining()
-    if remaining is not None and quantity > remaining:
-        meta = ticket_result_meta(record)
-        return {'status': 'sold_out', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    # Decide VIP vs GA entry for VIP tickets when VIP area is at capacity.
-    admission_as = 'vip' if ticket_type == 'vip' else 'ga'
-    vip_note = None
-    if ticket_type == 'vip':
-        vip_left = vip_capacity_remaining()
-        if vip_left is not None and quantity > vip_left:
-            admission_as = 'ga'
-            vip_note = 'VIP area full — admitted as GA. VIP still valid for another event.'
-
-    if not mark_ticket_scanned(normalized, admission_as=admission_as):
-        meta = ticket_result_meta(record)
-        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    # Reload for vip_redeemed / admission_as on response meta.
-    record = get_ticket_record(normalized) or record
-    meta = ticket_result_meta(record, admission_as=admission_as)
-    result = {
-        'status': 'accepted',
-        'ticket_id': display_id,
-        'quantity': quantity,
-        **meta,
-    }
-    if vip_note:
-        result['vip_overflow_note'] = vip_note
-    return result
-
-
-def parse_scanned_ticket(raw):
-    if not raw:
-        return None
-
-    raw = raw.strip()
-
-    ticket_id = extract_ticket_id_from_url(raw)
-    if ticket_id:
-        return ticket_id
-
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict) and data.get('ticket_id'):
-            return normalize_ticket_id(data['ticket_id'])
-    except json.JSONDecodeError:
-        pass
-
-    try:
-        data = ast.literal_eval(raw)
-        if isinstance(data, dict) and data.get('ticket_id'):
-            return normalize_ticket_id(data['ticket_id'])
-    except (ValueError, SyntaxError):
-        pass
-
-    return normalize_ticket_id(raw)
-
-
-def mark_email_sent(session_id):
-    with tickets_lock:
-        tickets = load_tickets()
-        for ticket in tickets:
-            if ticket.get('session_id') == session_id:
-                ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
-                save_tickets(tickets)
-                return
-
-
-def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    view_url = ticket_display_url(ticket_id)
-    type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
-    with app.app_context():
-        try:
-            msg = Message(
-                "Your The Section Tickets",
-                sender=app.config['MAIL_DEFAULT_SENDER'],
-                recipients=[customer_email],
-            )
-            access_line = f"Access: {access}\n" if access else ''
-            msg.body = (
-                f"You're in for The Section!\n\n"
-                f"Ticket type: {type_label}\n"
-                f"Ticket ID: {ticket_id}\n"
-                f"Guests: {quantity}\n"
-                f"{access_line}\n"
-                f"Show the attached QR code at the door.\n"
-                f"Or open this link on your phone to view your ticket:\n{view_url}\n"
-            )
-            msg.attach("ticket-qr.png", "imag

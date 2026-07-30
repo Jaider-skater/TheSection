@@ -1,4 +1,3 @@
-RET_KEY=sk_live_... on Render '
         '(not SECRET_KEY, and not the pk_live_ publishable key).'
     )
 
@@ -186,22 +185,3 @@ def bootstrap_legacy_members():
         or os.getenv('LEGACY_BOOTSTRAP_CODE', '').strip()
         or verify_login_password
     )
-    bootstrap_emails = bootstrap_staff_emails()
-    if not bootstrap_emails:
-        return
-    if not bootstrap_password:
-        print(
-            'Staff/bootstrap emails are set but LEGACY_BOOTSTRAP_PASSWORD '
-            '(or VERIFY_LOGIN_PASSWORD) is missing; member accounts will not auto-recreate.'
-        )
-        return
-    with members_lock:
-        members = load_members()
-        existing = {m.get('email', '').lower() for m in members}
-        created = 0
-        for bootstrap_email in bootstrap_emails:
-            if bootstrap_email in existing:
-                print(f'Bootstrap member already present: {bootstrap_email}')
-                continue
-            bootstrap_discount_code = normalize_discount_code(
-                os.gete

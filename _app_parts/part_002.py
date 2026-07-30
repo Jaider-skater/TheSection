@@ -1,4 +1,22 @@
-nv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
+    bootstrap_emails = bootstrap_staff_emails()
+    if not bootstrap_emails:
+        return
+    if not bootstrap_password:
+        print(
+            'Staff/bootstrap emails are set but LEGACY_BOOTSTRAP_PASSWORD '
+            '(or VERIFY_LOGIN_PASSWORD) is missing; member accounts will not auto-recreate.'
+        )
+        return
+    with members_lock:
+        members = load_members()
+        existing = {m.get('email', '').lower() for m in members}
+        created = 0
+        for bootstrap_email in bootstrap_emails:
+            if bootstrap_email in existing:
+                print(f'Bootstrap member already present: {bootstrap_email}')
+                continue
+            bootstrap_discount_code = normalize_discount_code(
+                os.getenv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
             ) or generate_discount_code(bootstrap_email)
             while discount_code_taken(bootstrap_discount_code):
                 bootstrap_discount_code = generate_discount_code(bootstrap_email)
@@ -167,48 +185,3 @@ def add_emails_to_invite_list(emails):
                 skipped.append(email)
                 continue
             invites.append({
-                'email': email,
-                'added_at': datetime.now(timezone.utc).isoformat(),
-                'sent_at': None,
-                'claimed_at': None,
-                'invite_token': None,
-                'invite_expires': None,
-            })
-            existing.add(email)
-            added.append(email)
-        save_invites(invites)
-    return added, skipped
-
-
-def remove_email_from_invite_list(email):
-    normalized = email.strip().lower()
-    with invites_lock:
-        invites = load_invites()
-        updated = [i for i in invites if i.get('email', '').strip().lower() != normalized]
-        if len(updated) == len(invites):
-            return False
-        save_invites(updated)
-        return True
-
-
-def clear_exclusive_member_features(email):
-    """Remove exclusive-list perks from a member account (keep login + tickets).
-
-    Clears returning_guest_discount. If they have no purchase history, also
-    clears discount_code so they no longer get member pricing.
-    """
-    normalized = (email or '').strip().lower()
-    if not normalized:
-        return False
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').strip().lower() != normalized:
-                continue
-            changed = False
-            if 'returning_guest_discount' in member:
-                member.pop('returning_guest_discount', None)
-                changed = True
-            # No past purchases + exclusive removed → lose discount eligibility.
-            has_purchases = False
-            for ticket in load_tickets()

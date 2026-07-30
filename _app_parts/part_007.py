@@ -1,4 +1,75 @@
-t_display_datetime(iso_raw)
+                ticket_type = ticket.get('ticket_type', 'general')
+                entry = admission_as or ('vip' if ticket_type == 'vip' else 'general')
+                if entry == 'general':
+                    entry = 'ga'
+                if entry not in ('vip', 'ga'):
+                    entry = 'ga'
+
+                # Already fully used as VIP, or GA ticket already used ever.
+                if ticket.get('vip_redeemed_at'):
+                    return False
+                if ticket_type != 'vip' and ticket.get('scanned_at'):
+                    return False
+                # Same counting period already admitted.
+                if ticket_counts_for_current_period(ticket.get('scanned_at')):
+                    return False
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+                ticket['scanned_at'] = now_iso
+                ticket['admission_as'] = entry
+                if entry == 'vip' or ticket_type != 'vip':
+                    # Full VIP redeem, or any GA ticket → permanent for that privilege.
+                    if entry == 'vip':
+                        ticket['vip_redeemed_at'] = now_iso
+                    # GA tickets stay void forever via scanned_at (no period re-use).
+                # VIP + admission_as ga: leave vip_redeemed_at unset for later VIP use.
+                save_tickets(tickets)
+                return True
+    return False
+
+
+def parse_iso_datetime(raw):
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+_display_tz = None
+
+
+def get_display_timezone():
+    global _display_tz
+    if _display_tz is None:
+        try:
+            _display_tz = ZoneInfo(APP_TIMEZONE)
+        except Exception:
+            _display_tz = ZoneInfo('America/Los_Angeles')
+    return _display_tz
+
+
+def display_timezone_label():
+    return datetime.now(get_display_timezone()).strftime('%Z')
+
+
+def format_display_datetime(iso_raw, date_only=False):
+    dt = parse_iso_datetime(iso_raw)
+    if not dt:
+        return '—'
+    local = dt.astimezone(get_display_timezone())
+    if date_only:
+        return local.strftime('%Y-%m-%d')
+    return local.strftime('%Y-%m-%d %H:%M')
+
+
+@app.template_filter('local_time')
+def local_time_filter(iso_raw):
+    return format_display_datetime(iso_raw)
 
 
 @app.template_filter('local_date')
@@ -114,104 +185,3 @@ def is_staff_user():
 
 def require_admin():
     if session.get('admin_authenticated') is True:
-        return True
-    # Staff email session can open ticket admin + mailing lists (no separate key needed).
-    if is_staff_user():
-        session['admin_authenticated'] = True
-        return True
-    key = request.args.get('key') or request.form.get('key') or ''
-    if _admin_key_matches(key):
-        session['admin_authenticated'] = True
-        return True
-    return False
-
-
-def admin_key_for_templates():
-    return (request.args.get('key') or request.form.get('key') or '').strip()
-
-
-def admin_login_required(next_path=None):
-    """Return admin login page when the request is not authorized."""
-    if next_path is None:
-        next_path = request.path or '/admin'
-    if not next_path.startswith('/admin'):
-        next_path = '/admin'
-    provided_key = (request.args.get('key') or request.form.get('key') or '').strip()
-    provided_email = (request.args.get('email') or request.form.get('email') or '').strip()
-    error = None
-    if provided_key or provided_email:
-        error = 'Invalid credentials. Use your staff email/password or admin key.'
-    return render_template(
-        'admin_login.html',
-        error=error,
-        next_path=next_path,
-    ), 401
-
-
-def verify_auth_configured():
-    return bool(staff_emails and verify_login_password)
-
-
-def is_staff_email(email):
-    normalized = (email or '').strip().lower()
-    if not normalized or not staff_emails:
-        return False
-    return any(secure_equal(normalized, allowed) for allowed in staff_emails)
-
-
-def is_scanner_admin_member():
-    if not staff_emails:
-        return False
-    member = get_logged_in_member()
-    if not member:
-        return False
-    member_email = (member.get('email') or '').strip().lower()
-    return is_staff_email(member_email)
-
-
-def verify_scanner_session_authenticated():
-    if session.get('verify_authenticated') is not True:
-        return False
-    logged_email = (session.get('verify_login_email') or '').strip().lower()
-    return is_staff_email(logged_email)
-
-
-def verify_authenticated():
-    if not verify_auth_configured():
-        return False
-    return is_scanner_admin_member() or verify_scanner_session_authenticated()
-
-
-def verify_scanner_credentials(email, password):
-    """Staff form: any VERIFY_LOGIN email + shared password, or that member's portal password."""
-    if not verify_auth_configured():
-        return False
-    normalized_email = (email or '').strip().lower()
-    password = (password or '').strip()
-    if not normalized_email or not password:
-        return False
-    if not is_staff_email(normalized_email):
-        return False
-    if secure_equal(password, verify_login_password):
-        return True
-    # Same person often uses the member portal password; accept that too.
-    return verify_legacy_login(normalized_email, password)
-
-
-def mark_scanner_session_authenticated(email=None):
-    session['verify_authenticated'] = True
-    chosen = (email or '').strip().lower()
-    if not is_staff_email(chosen):
-        chosen = verify_login_email or (staff_emails[0] if staff_emails else '')
-    session['verify_login_email'] = chosen
-
-
-def protect_scanner_response():
-    if not verify_auth_configured():
-        message = 'Scanner login is not configured. Set VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD.'
-        if request.method == 'POST' or request.is_json:
-            return jsonify({'error': message}), 503
-        return render_template('verify_login.html', error=message), 503
-
-    if verify_authenticated():
-        # Member-portal staff access: pin a scanner flag so API f

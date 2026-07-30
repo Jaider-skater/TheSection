@@ -184,4 +184,4 @@ elif stripe.api_key.startswith('sk_test_'):
     print(f'Stripe mode: TEST (sandbox) (from {_stripe_key_source})')
 else:
     print(
-        'WARNING: No Stripe secret key found. Set STRIPE_SEC
+        'WARNING: No Stripe secret key found. Set STRIPE_SECRET_KEY=sk_live_... on Render '

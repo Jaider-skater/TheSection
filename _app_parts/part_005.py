@@ -1,4 +1,71 @@
-ember.get('returning_guest_discount'):
+    if 'full' in lists:
+        for entry in load_full_mailing_list():
+            email = (entry.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    return sorted(emails)
+
+
+def send_broadcast_email(subject, body, recipients):
+    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
+    subject = (subject or '').strip()
+    body = (body or '').strip()
+    sent = []
+    failed = []
+    if not subject or not body or not recipients:
+        return sent, failed
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
+        + '</div>'
+    )
+    with app.app_context():
+        for email in recipients:
+            try:
+                msg = Message(
+                    subject,
+                    sender=mail_from_address(),
+                    recipients=[email],
+                )
+                msg.body = body
+                msg.html = html_body
+                mail.send(msg)
+                sent.append(email)
+            except Exception as e:
+                print(f'Broadcast email failed for {email}:', e)
+                failed.append(email)
+    return sent, failed
+
+
+def clear_returning_guest_discount_if_purchased(email):
+    """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
+    return
+
+
+def member_has_past_purchases(member):
+    if not member:
+        return False
+    email = member.get('email', '').strip().lower()
+    if email:
+        for ticket in load_tickets():
+            if ticket.get('email', '').lower() == email:
+                return True
+    for ticket_id in member.get('saved_tickets', []):
+        if get_ticket_record(ticket_id):
+            return True
+    return False
+
+
+def member_has_returning_guest_discount(member):
+    return bool(member and member.get('returning_guest_discount'))
+
+
+def ensure_returning_guest_flag_for_exclusive_member(member):
+    """Exclusive-list emails keep the lifetime single-ticket perk even if they signed up without the invite link."""
+    if not member:
+        return member
+    if member.get('returning_guest_discount'):
         return member
     email = (member.get('email') or '').strip().lower()
     if not email or not is_on_exclusive_invite_list(email):
@@ -118,73 +185,3 @@ def calculate_bulk_total_cents(ticket_type, quantity):
 
 def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
-    base_total = base * quantity
-    quantity = max(1, int(quantity or 1))
-
-    if not apply_member_discount:
-        return calculate_bulk_total_cents(ticket_type, quantity)
-
-    rate = active_member_discount_rate(quantity)
-    if rate <= 0:
-        return calculate_bulk_total_cents(ticket_type, quantity)
-
-    # Single-ticket returning-guest rate does not stack with bulk (qty is always 1).
-    if bulk_discount_applies(ticket_type, quantity):
-        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
-
-    return int(base_total * (1 - rate))
-
-
-def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
-    if quantity < 1:
-        quantity = 1
-    return calculate_total_cents(ticket_type, quantity, apply_member_discount) // quantity
-
-
-def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
-    quantity = max(1, int(quantity or 1))
-    base = TICKET_TYPES[ticket_type]['price_cents']
-    base_total_cents = base * quantity
-    bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
-    eligible_rate = active_member_discount_rate(quantity, require_active=False)
-    rate = eligible_rate if apply_member_discount else 0.0
-    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
-    unit_price = total_cents // quantity
-
-    bulk_savings_active = bulk_only_total < base_total_cents
-    member_requested = apply_member_discount and rate > 0
-    stacked_discount_applied = (
-        bulk_savings_active and member_requested and total_cents < bulk_only_total
-    )
-
-    member_only_total = (
-        int(base_total_cents * (1 - rate))
-        if member_requested
-        else None
-    )
-
-    bundle_discount_applied = bulk_savings_active and not stacked_discount_applied
-    vip_bundle_applied = bundle_discount_applied and ticket_type == 'vip'
-    member_discount_applied = (
-        member_requested
-        and not stacked_discount_applied
-        and not bulk_savings_active
-        and member_only_total is not None
-        and total_cents == member_only_total
-    )
-
-    combined_discount_percent = None
-    if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
-        combined_discount_percent = int(
-            (bulk_discount_rate(ticket_type) + rate) * 100
-        )
-
-    bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
-    bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
-    member = get_logged_in_member()
-    if member:
-        member = ensure_returning_guest_flag_for_exclusive_member(member)
-    is_returning = member_has_returning_guest_discount(member)
-    applied_pct = int(round(rate * 100)) if rate > 0 else 0
-    eligible_pct = int(round(eligible_rate * 100)) if eligible_rate > 0 else 0
-    #
