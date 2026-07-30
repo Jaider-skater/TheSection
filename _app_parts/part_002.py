@@ -191,27 +191,24 @@ def remove_email_from_invite_list(email):
         return True
 
 
-def set_member_invite_token(email):
-    token = secrets.token_urlsafe(32)
-    expires = datetime.now(timezone.utc) + timedelta(days=INVITE_EXPIRY_DAYS)
-    normalized = email.strip().lower()
-    with invites_lock:
-        invites = load_invites()
-        for invite in invites:
-            if invite.get('email', '').strip().lower() == normalized:
-                invite['invite_token'] = hash_reset_token(token)
-                invite['invite_expires'] = expires.isoformat()
-                save_invites(invites)
-                return token
-    return None
+def clear_exclusive_member_features(email):
+    """Remove exclusive-list perks from a member account (keep login + tickets).
 
-
-def verify_member_invite_token(email, token):
-    invite = get_member_invite(email)
-    if not invite or not token or not invite.get('invite_token'):
+    Clears returning_guest_discount. If they have no purchase history, also
+    clears discount_code so they no longer get member pricing.
+    """
+    normalized = (email or '').strip().lower()
+    if not normalized:
         return False
-    if invite.get('claimed_at'):
-        return False
-    expires_raw = invite.get('invite_expires')
-    if not expires_raw:
-        return Fa
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').strip().lower() != normalized:
+                continue
+            changed = False
+            if 'returning_guest_discount' in member:
+                member.pop('returning_guest_discount', None)
+                changed = True
+            # No past purchases + exclusive removed → lose discount eligibility.
+            has_purchases = False
+            for ticket in load_tickets()
