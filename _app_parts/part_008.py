@@ -1,4 +1,145 @@
-ifest_bytes)
+etches stay authorized.
+        if is_scanner_admin_member() and not verify_scanner_session_authenticated():
+            mark_scanner_session_authenticated()
+        return None
+
+    if request.method == 'POST' or request.is_json:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    next_url = request.full_path if request.query_string else request.path
+    if next_url.endswith('?'):
+        next_url = next_url[:-1]
+    return redirect(url_for('verify_login', next=next_url))
+
+
+def build_qr_png_bytes(ticket_id):
+    qr_payload = f"{base_url}/verify/t/{ticket_id}"
+    qr = qrcode.QRCode(version=1, box_size=12, border=4)
+    qr.add_data(qr_payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    return buffered.getvalue()
+
+
+def build_qr_image(ticket_id):
+    return base64.b64encode(build_qr_png_bytes(ticket_id)).decode()
+
+
+def ticket_display_url(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return None
+    return f"{base_url}/t/{normalized}"
+
+
+def make_pass_icon_png():
+    from PIL import Image, ImageDraw
+    img = Image.new('RGB', (87, 87), color=(24, 24, 27))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((20, 20, 66, 66), fill='white')
+    draw.rectangle((28, 28, 36, 36), fill='black')
+    draw.rectangle((50, 28, 58, 36), fill='black')
+    draw.rectangle((28, 50, 36, 58), fill='black')
+    draw.rectangle((50, 50, 58, 58), fill='black')
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def sign_wallet_manifest(manifest_bytes):
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = os.path.join(tmp, 'manifest.json')
+        signature_path = os.path.join(tmp, 'signature')
+        with open(manifest_path, 'wb') as f:
+            f.write(manifest_bytes)
+
+        result = subprocess.run(
+            [
+                'openssl', 'smime', '-binary', '-sign',
+                '-signer', wallet_cert_path,
+                '-inkey', wallet_key_path,
+                '-certfile', wallet_wwdr_path,
+                '-in', manifest_path,
+                '-out', signature_path,
+                '-outform', 'DER',
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            print('Wallet signing failed:', result.stderr.decode('utf-8', errors='ignore'))
+            return None
+
+        with open(signature_path, 'rb') as f:
+            return f.read()
+
+
+def build_wallet_pass(ticket_id, quantity):
+    if not wallet_enabled:
+        return None
+
+    verify_url = f"{base_url}/verify/t/{ticket_id}"
+    guest_label = '1 guest' if quantity == 1 else f'{quantity} guests'
+    pass_json = {
+        'formatVersion': 1,
+        'passTypeIdentifier': wallet_pass_type_id,
+        'teamIdentifier': wallet_team_id,
+        'organizationName': 'The Section',
+        'description': 'The Section Ticket',
+        'serialNumber': normalize_ticket_id(ticket_id),
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'backgroundColor': 'rgb(24, 24, 27)',
+        'labelColor': 'rgb(161, 161, 170)',
+        'barcodes': [{
+            'format': 'PKBarcodeFormatQR',
+            'message': verify_url,
+            'messageEncoding': 'iso-8859-1',
+            'altText': ticket_id,
+        }],
+        'eventTicket': {
+            'primaryFields': [{
+                'key': 'event',
+                'label': 'EVENT',
+                'value': 'The Section',
+            }],
+            'secondaryFields': [
+                {
+                    'key': 'guests',
+                    'label': 'GUESTS',
+                    'value': guest_label,
+                },
+                {
+                    'key': 'ticket',
+                    'label': 'TICKET',
+                    'value': ticket_id,
+                },
+            ],
+            'backFields': [{
+                'key': 'verify',
+                'label': 'VERIFY',
+                'value': verify_url,
+            }],
+        },
+    }
+
+    icon_png = make_pass_icon_png()
+    files = {
+        'pass.json': json.dumps(pass_json, indent=2).encode('utf-8'),
+        'icon.png': icon_png,
+        'icon@2x.png': icon_png,
+        'logo.png': icon_png,
+        'logo@2x.png': icon_png,
+    }
+    manifest = {
+        name: hashlib.sha1(data).hexdigest()
+        for name, data in files.items()
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode('utf-8')
+    files['manifest.json'] = manifest_bytes
+
+    signature = sign_wallet_manifest(manifest_bytes)
     if not signature:
         return None
 
@@ -84,135 +225,3 @@ def get_max_vip_capacity():
     return parse_max_capacity(settings.get('max_vip_capacity'))
 
 
-def set_max_vip_capacity(value):
-    normalized = parse_max_capacity(value)
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        if normalized is None:
-            settings.pop('max_vip_capacity', None)
-        else:
-            settings['max_vip_capacity'] = normalized
-        save_scanner_settings(settings)
-    return normalized
-
-
-def admission_entry_type(ticket):
-    """How this ticket counted for the door: vip or ga."""
-    admitted = ticket.get('admission_as')
-    if admitted in ('vip', 'ga'):
-        return admitted
-    return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
-
-
-def compute_admission_counts():
-    ga = 0
-    vip = 0
-    for ticket in load_tickets():
-        scanned_at = ticket.get('scanned_at')
-        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
-            continue
-        qty = int(ticket.get('quantity') or 1)
-        if admission_entry_type(ticket) == 'vip':
-            vip += qty
-        else:
-            ga += qty
-    return {'ga': ga, 'vip': vip, 'total': ga + vip}
-
-
-def admission_capacity_remaining():
-    max_capacity = get_max_capacity()
-    if not max_capacity:
-        return None
-    counts = compute_admission_counts()
-    return max(0, max_capacity - counts['total'])
-
-
-def vip_capacity_remaining():
-    max_vip = get_max_vip_capacity()
-    if not max_vip:
-        return None
-    counts = compute_admission_counts()
-    return max(0, max_vip - counts['vip'])
-
-
-def ticket_already_used(record):
-    """Whether this ticket cannot be scanned again right now."""
-    if not record:
-        return True
-    ticket_type = record.get('ticket_type', 'general')
-    # VIP fully redeemed as VIP → never again.
-    if record.get('vip_redeemed_at'):
-        return True
-    # Non-VIP: any prior scan voids forever.
-    if ticket_type != 'vip' and record.get('scanned_at'):
-        return True
-    # Any ticket already admitted in the current counting period.
-    if ticket_counts_for_current_period(record.get('scanned_at')):
-        return True
-    return False
-
-
-def get_admission_totals():
-    counts = compute_admission_counts()
-    max_capacity = get_max_capacity()
-    max_vip_capacity = get_max_vip_capacity()
-    capacity_reached = bool(max_capacity and counts['total'] >= max_capacity)
-    vip_capacity_reached = bool(max_vip_capacity and counts['vip'] >= max_vip_capacity)
-    spots_remaining = None
-    if max_capacity:
-        spots_remaining = max(0, max_capacity - counts['total'])
-    vip_spots_remaining = None
-    if max_vip_capacity:
-        vip_spots_remaining = max(0, max_vip_capacity - counts['vip'])
-    return {
-        **counts,
-        'max_capacity': max_capacity,
-        'capacity_reached': capacity_reached,
-        'spots_remaining': spots_remaining,
-        'max_vip_capacity': max_vip_capacity,
-        'vip_capacity_reached': vip_capacity_reached,
-        'vip_spots_remaining': vip_spots_remaining,
-        'reset_history': get_reset_history(),
-    }
-
-
-def check_ticket(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return {
-            'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0,
-            'ticket_type': None, 'access': None, 'is_vip': False,
-        }
-
-    record = get_ticket_record(normalized)
-    if not record:
-        return {
-            'status': 'invalid', 'ticket_id': normalized, 'quantity': 0,
-            'ticket_type': None, 'access': None, 'is_vip': False,
-        }
-
-    quantity = int(record.get('quantity') or 1)
-    display_id = record.get('ticket_id', normalized)
-    ticket_type = record.get('ticket_type', 'general')
-
-    if ticket_already_used(record):
-        meta = ticket_result_meta(record)
-        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    remaining = admission_capacity_remaining()
-    if remaining is not None and quantity > remaining:
-        meta = ticket_result_meta(record)
-        return {'status': 'sold_out', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    # Decide VIP vs GA entry for VIP tickets when VIP area is at capacity.
-    admission_as = 'vip' if ticket_type == 'vip' else 'ga'
-    vip_note = None
-    if ticket_type == 'vip':
-        vip_left = vip_capacity_remaining()
-        if vip_left is not None and quantity > vip_left:
-            admission_as = 'ga'
-            vip_note = 'VIP area full — admitted as GA. VIP still valid for another event.'
-
-    if not mark_ticket_scanned(normalized, admission_as=admission_as):
-        meta = ticket_result_meta(record)
-        return {'s
