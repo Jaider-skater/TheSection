@@ -1,4 +1,113 @@
-eturn stripe.checkout.Session.create(**checkout_kwargs)
+unt_eligible = False
+    if member:
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+        discount_eligible = member_discount_eligible(member)
+        if discount_eligible:
+            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
+            member = get_logged_in_member() or member
+    return jsonify({
+        'logged_in': bool(member),
+        'email': session.get('legacy_member_email'),
+        'discount_code': discount_code,
+        'member_discount_eligible': discount_eligible,
+        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
+        'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
+        'returning_guest_discount_percent': (
+            int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20
+        ),
+        'bundle_min': bundle_min,
+        'bundle_discount_percent': int(bundle_discount * 100),
+        'vip_bundle_min': vip_bundle_min,
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
+        'ticket_types': {
+            key: {
+                'name': meta['name'],
+                'price_cents': meta['price_cents'],
+                'access': meta.get('access'),
+            }
+            for key, meta in TICKET_TYPES.items()
+        },
+    })
+
+
+@app.route('/api/pricing')
+def pricing():
+    ticket_type = request.args.get('ticket_type', 'general')
+    quantity = max(1, int(request.args.get('quantity', 1)))
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    apply_member = resolve_member_discount_application(
+        request.args.get('apply_member_discount', '').lower() in ('1', 'true', 'yes')
+    )
+    return jsonify(pricing_breakdown(ticket_type, quantity, apply_member))
+
+
+def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    quantity = max(1, int(quantity))
+
+    legacy_member = is_legacy_member_logged_in()
+    apply_member = resolve_member_discount_application(apply_member_discount)
+    breakdown = pricing_breakdown(ticket_type, quantity, apply_member)
+    unit_price = breakdown['unit_price_cents']
+    ticket_meta = TICKET_TYPES[ticket_type]
+    description = ticket_meta['description']
+    if breakdown['stacked_discount_applied']:
+        member = get_logged_in_member()
+        code = member.get('discount_code') if member else None
+        combined = breakdown.get('combined_discount_percent')
+        if combined:
+            description += f' · {combined}% off (bulk + member)'
+        if code:
+            description += f' · member code {code}'
+    elif breakdown['member_discount_applied']:
+        member = get_logged_in_member()
+        code = member.get('discount_code') if member else None
+        applied_pct = breakdown.get('applied_member_discount_percent') or breakdown.get(
+            'member_discount_percent', 0
+        )
+        label = 'welcome' if breakdown.get('returning_single_ticket_rate') else 'member'
+        if code:
+            description += f' · {applied_pct}% {label} code {code}'
+        else:
+            description += f' · {applied_pct}% {label} discount'
+    elif breakdown['bundle_discount_applied']:
+        bulk_min = breakdown['bundle_min']
+        description += f' · {breakdown["bundle_discount_percent"]}% bulk discount ({bulk_min}+ tickets)'
+
+    member = get_logged_in_member()
+    member_email = (member.get('email') or '').strip().lower() if member else ''
+
+    print(f"Creating {ticket_type} session for {quantity} tickets @ {unit_price}c")
+
+    checkout_kwargs = {
+        'payment_method_types': ['card'],
+        'line_items': [{
+            'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                    'name': f"The Section - {ticket_meta['name']}",
+                    'description': description,
+                },
+                'unit_amount': unit_price,
+            },
+            'quantity': quantity,
+        }],
+        'mode': 'payment',
+        'metadata': {
+            'ticket_type': ticket_type,
+            'legacy_member': 'true' if legacy_member else 'false',
+            'legacy_discount': 'true' if breakdown['legacy_discount_applied'] else 'false',
+            'member_email': member_email,
+        },
+        'success_url': f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
+        'cancel_url': f"{base_url}/",
+    }
+    if member_email:
+        checkout_kwargs['customer_email'] = member_email
+
+    return stripe.checkout.Session.create(**checkout_kwargs)
 
 
 @app.route('/api/checkout-intent', methods=['GET', 'POST', 'DELETE'])
@@ -59,121 +168,4 @@ def create_checkout_session():
         return jsonify({'error': str(e)}), 500
 
 # Replace your current /success route with this cleaner version:
-@app.route('/success')
-def success():
-    session_id = request.args.get('session_id')
-    print("Success page called with session_id:", session_id)
-
-    if not session_id:
-        return render_template('success.html', error="Missing session ID")
-
-    try:
-        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
-
-        metadata = checkout_session.metadata or {}
-        stripe_email = None
-        if checkout_session.customer_details:
-            stripe_email = checkout_session.customer_details.email
-
-        existing_ticket = get_ticket_by_session(session_id)
-        if existing_ticket:
-            ticket_id = existing_ticket['ticket_id']
-            quantity = existing_ticket['quantity']
-            ticket_type = existing_ticket.get('ticket_type', 'general')
-            access = existing_ticket.get('access')
-            delivery_email = ticket_recipient_email(existing_ticket.get('email'), metadata)
-        else:
-            quantity = 1
-            ticket_id = uuid.uuid4().hex[:12].upper()
-            ticket_type = metadata.get('ticket_type', 'general')
-            if ticket_type not in TICKET_TYPES:
-                ticket_type = 'general'
-            legacy_discount = metadata.get('legacy_discount') == 'true'
-
-            if checkout_session.line_items and checkout_session.line_items.data:
-                quantity = checkout_session.line_items.data[0].quantity
-
-            delivery_email = ticket_recipient_email(stripe_email, metadata)
-
-            record_ticket(
-                session_id, ticket_id, delivery_email, quantity,
-                ticket_type=ticket_type, legacy_discount=legacy_discount,
-            )
-            access = TICKET_TYPES[ticket_type].get('access')
-
-            if delivery_email:
-                purchased_member = get_legacy_member(delivery_email)
-                if purchased_member:
-                    add_saved_ticket_for_member(delivery_email, ticket_id)
-                    clear_returning_guest_discount_if_purchased(delivery_email)
-                    if member_has_past_purchases(purchased_member):
-                        ensure_member_discount_code(purchased_member)
-
-        ticket_data = build_qr_image(ticket_id)
-
-        email_sent = deliver_ticket_email(
-            session_id, delivery_email, ticket_id, quantity, ticket_data, ticket_type, access
-        )
-
-        return render_template('success.html',
-                               email=delivery_email,
-                               email_sent=email_sent,
-                               ticket_data=ticket_data,
-                               ticket_id=ticket_id,
-                               quantity=quantity,
-                               ticket_type=ticket_type,
-                               access=access,
-                               wallet_enabled=wallet_enabled)
-
-    except Exception as e:
-        print("SUCCESS ROUTE CRASH:", str(e))
-        return render_template('success.html', error=str(e))
-
-@app.route('/wallet/<ticket_id>.pkpass')
-def download_wallet_pass(ticket_id):
-    if not wallet_enabled:
-        return (
-            'Apple Wallet is not configured yet. Screenshot your ticket or download the QR code instead.',
-            503,
-        )
-
-    record = get_ticket_record(ticket_id)
-    if not record:
-        return 'Ticket not found', 404
-
-    quantity = int(record.get('quantity') or 1)
-    pkpass = build_wallet_pass(record.get('ticket_id', ticket_id), quantity)
-    if not pkpass:
-        return 'Could not create Apple Wallet pass. Use screenshot or download instead.', 503
-
-    filename = f"thesection-{normalize_ticket_id(ticket_id)}.pkpass"
-    return Response(
-        pkpass,
-        mimetype='application/vnd.apple.pkpass',
-        headers={'Content-Disposition': f'attachment; filename={filename}'},
-    )
-
-
-@app.route('/t/<ticket_id>')
-def show_ticket(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return render_template('ticket_view.html', error='Invalid ticket'), 404
-    record = get_ticket_record(normalized)
-    if not record:
-        return render_template('ticket_view.html', error='Ticket not found'), 404
-    meta = ticket_result_meta(record)
-    return render_template(
-        'ticket_view.html',
-        ticket={
-            'ticket_id': record.get('ticket_id', normalized),
-            'quantity': int(record.get('quantity') or 1),
-            'scanned': bool(record.get('scanned_at')),
-            **meta,
-        },
-        ticket_data=build_qr_image(normalized),
-    )
-
-
-@app.route('/api/admission-totals')
-def admission_
+@a
