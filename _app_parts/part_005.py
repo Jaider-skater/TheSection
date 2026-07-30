@@ -1,4 +1,134 @@
-ith bulk (qty is always 1).
+ember.get('returning_guest_discount'):
+        return member
+    email = (member.get('email') or '').strip().lower()
+    if not email or not is_on_exclusive_invite_list(email):
+        return member
+    with members_lock:
+        members = load_members()
+        for stored in members:
+            if stored.get('email', '').strip().lower() == email:
+                stored['returning_guest_discount'] = True
+                if not stored.get('discount_code'):
+                    code = generate_discount_code(email)
+                    while discount_code_taken(code, exclude_email=email):
+                        code = generate_discount_code(email)
+                    stored['discount_code'] = code
+                save_members(members)
+                member = stored
+                break
+    return member
+
+
+def member_discount_eligible(member):
+    if not member:
+        return False
+    member = ensure_returning_guest_flag_for_exclusive_member(member)
+    return member_has_past_purchases(member) or member_has_returning_guest_discount(member)
+
+
+def member_discount_active():
+    if not is_legacy_member_logged_in():
+        return False
+    member = get_logged_in_member()
+    return member_discount_eligible(member)
+
+
+def resolve_member_discount_application(requested):
+    if not requested:
+        return False
+    return member_discount_active()
+
+
+def active_member_discount_rate(quantity=1, require_active=True):
+    """Percent rate (0–1) for the logged-in member at this quantity.
+
+    Exclusive-list members keep returning_guest_discount for life:
+    - quantity 1 → higher welcome rate (default 20%)
+    - quantity 2+ → standard member rate (default 10%) for group/friend buys
+
+    If require_active is False, returns the eligible rate even when the code is not applied.
+    """
+    member = get_logged_in_member()
+    if member:
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+    if require_active and not member_discount_active():
+        return 0.0
+    if not member or not member_discount_eligible(member):
+        return 0.0
+    quantity = max(1, int(quantity or 1))
+    if member_has_returning_guest_discount(member) and quantity == 1:
+        rate = returning_guest_discount if returning_guest_discount > 0 else member_discount
+        return rate if rate > 0 else 0.20
+    rate = member_discount if member_discount > 0 else 0.0
+    return rate if rate > 0 else 0.10
+
+
+def sync_member_tickets_from_email(member):
+    email = member.get('email', '').strip().lower()
+    if not email:
+        return
+    for ticket in load_tickets():
+        ticket_id = ticket.get('ticket_id')
+        if ticket.get('email', '').lower() == email and ticket_id:
+            add_saved_ticket_for_member(email, ticket_id)
+
+
+def is_legacy_member_logged_in():
+    email = session.get('legacy_member_email')
+    return bool(email and get_legacy_member(email))
+
+
+def get_logged_in_member():
+    email = session.get('legacy_member_email')
+    if not email:
+        return None
+    return get_legacy_member(email)
+
+
+def ticket_recipient_email(stripe_email=None, metadata=None):
+    logged_in_email = (session.get('legacy_member_email') or '').strip().lower()
+    if logged_in_email:
+        return logged_in_email
+    if metadata:
+        meta_email = (metadata.get('member_email') or '').strip().lower()
+        if meta_email:
+            return meta_email
+    normalized = (stripe_email or '').strip().lower()
+    return normalized or None
+
+
+def bulk_discount_rate(ticket_type):
+    if ticket_type == 'vip':
+        return vip_bulk_discount
+    return bundle_discount
+
+
+def bulk_discount_applies(ticket_type, quantity):
+    minimum = vip_bundle_min if ticket_type == 'vip' else bundle_min
+    return quantity >= minimum
+
+
+def calculate_bulk_total_cents(ticket_type, quantity):
+    base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
+    base_total = base * quantity
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type)))
+    return base_total
+
+
+def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
+    base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
+    base_total = base * quantity
+    quantity = max(1, int(quantity or 1))
+
+    if not apply_member_discount:
+        return calculate_bulk_total_cents(ticket_type, quantity)
+
+    rate = active_member_discount_rate(quantity)
+    if rate <= 0:
+        return calculate_bulk_total_cents(ticket_type, quantity)
+
+    # Single-ticket returning-guest rate does not stack with bulk (qty is always 1).
     if bulk_discount_applies(ticket_type, quantity):
         return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
 
@@ -57,122 +187,4 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
     is_returning = member_has_returning_guest_discount(member)
     applied_pct = int(round(rate * 100)) if rate > 0 else 0
     eligible_pct = int(round(eligible_rate * 100)) if eligible_rate > 0 else 0
-    # Welcome rate only when returning guest buys exactly one ticket.
-    returning_single_ticket_rate = bool(is_returning and quantity == 1 and rate > 0)
-
-    return {
-        'ticket_type': ticket_type,
-        'quantity': quantity,
-        'unit_price_cents': unit_price,
-        'total_cents': total_cents,
-        'base_total_cents': base_total_cents,
-        'base_unit_price_cents': base,
-        'vip_bundle_applied': vip_bundle_applied,
-        'bundle_discount_applied': bundle_discount_applied,
-        'member_discount_applied': member_discount_applied,
-        'stacked_discount_applied': stacked_discount_applied,
-        'combined_discount_percent': combined_discount_percent,
-        'legacy_discount_applied': total_cents < base_total_cents,
-        'bundle_min': bulk_min,
-        'bundle_discount_percent': bulk_percent,
-        # Standard ongoing member rate (multi-ticket).
-        'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
-        # Rate used when code is ON for this cart.
-        'applied_member_discount_percent': applied_pct,
-        # Rate that would apply if they tap the code (for UI copy).
-        'eligible_member_discount_percent': eligible_pct,
-        'returning_guest_discount': is_returning,
-        'returning_guest_discount_percent': (
-            int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20
-        ),
-        'returning_single_ticket_rate': returning_single_ticket_rate,
-        'vip_bundle_min': vip_bundle_min,
-        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
-    }
-
-
-def add_saved_ticket_for_member(email, ticket_id):
-    normalized_id = normalize_ticket_id(ticket_id)
-    if not normalized_id:
-        return False
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == email.strip().lower():
-                saved = member.setdefault('saved_tickets', [])
-                if normalized_id not in saved:
-                    saved.append(normalized_id)
-                    save_members(members)
-                return True
-    return False
-
-
-def remove_saved_ticket_for_member(email, ticket_id):
-    normalized_id = normalize_ticket_id(ticket_id)
-    if not normalized_id:
-        return False
-    with members_lock:
-        members = load_members()
-        for member in members:
-            if member.get('email', '').lower() == email.strip().lower():
-                saved = member.get('saved_tickets', [])
-                if normalized_id in saved:
-                    saved.remove(normalized_id)
-                    save_members(members)
-                return True
-    return False
-
-
-def ticket_result_meta(record, admission_as=None):
-    ticket_type = record.get('ticket_type', 'general')
-    access = record.get('access') or TICKET_TYPES.get(ticket_type, {}).get('access')
-    admitted = admission_as or record.get('admission_as')
-    # Door display: how they entered this scan (VIP ticket may enter as GA when VIP full).
-    is_vip_entry = (admitted or ticket_type) == 'vip'
-    return {
-        'ticket_type': ticket_type,
-        'access': access if is_vip_entry else None,
-        'is_vip': is_vip_entry,
-        'ticket_is_vip': ticket_type == 'vip',
-        'admission_as': admitted or ticket_type,
-        'vip_redeemed': bool(record.get('vip_redeemed_at')),
-        'vip_deferred': bool(
-            ticket_type == 'vip'
-            and admitted == 'ga'
-            and not record.get('vip_redeemed_at')
-        ),
-    }
-
-
-def normalize_ticket_id(ticket_id):
-    if not ticket_id:
-        return None
-    normalized = str(ticket_id).strip().upper().replace('-', '')
-    return normalized if normalized.isalnum() else None
-
-
-def get_ticket_record(ticket_id):
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return None
-    for ticket in load_tickets():
-        stored = normalize_ticket_id(ticket.get('ticket_id'))
-        if stored == normalized:
-            return ticket
-    return None
-
-
-def mark_ticket_scanned(ticket_id, admission_as=None):
-    """Record door entry. admission_as is 'vip' or 'ga'.
-
-    VIP tickets admitted as GA (VIP area full) do not set vip_redeemed_at so the
-    ticket can still be used as VIP at a later event after counts reset.
-    """
-    normalized = normalize_ticket_id(ticket_id)
-    if not normalized:
-        return False
-    with tickets_lock:
-        tickets = load_tickets()
-        for ticket in tickets:
-            if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
-               
+    #
