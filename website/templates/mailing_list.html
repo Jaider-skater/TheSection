@@ -28,36 +28,75 @@
         </div>
         {% endif %}
 
-        <div class="bg-zinc-900 rounded-3xl p-6 mb-8">
-            <h2 class="text-xl font-semibold mb-4">Search Emails</h2>
-            <input type="text" id="search" placeholder="Type to filter both lists..." 
-                   class="w-full bg-zinc-800 border border-zinc-700 rounded-2xl px-5 py-4 text-white focus:outline-none focus:border-white">
+        <!-- Search -->
+        <div class="mb-8">
+            <input type="text" id="search" placeholder="Search emails in both lists..." 
+                   class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-white focus:outline-none focus:border-white text-sm">
         </div>
 
-        <!-- Exclusive -->
-        <div class="mb-10">
-            <div onclick="toggle(this)" class="flex justify-between items-center bg-zinc-900 p-4 rounded-3xl cursor-pointer mb-4">
-                <h2 class="text-2xl font-bold">Exclusive List ({{ invites|length }})</h2>
-                <span class="text-2xl">▼</span>
+        <!-- Send Broadcast (full original functionality) -->
+        <div class="bg-zinc-900 border border-white/20 rounded-3xl p-6 mb-10">
+            <h2 class="text-lg font-semibold mb-1">Send email</h2>
+            <p class="text-zinc-400 text-sm mb-4">Choose which list(s) receive this message. Sends one email per address.</p>
+            <form method="POST" action="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}" class="space-y-4" id="broadcast-form">
+                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
+                <input type="hidden" name="action" value="send_broadcast">
+                <div class="flex gap-6 text-sm">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="list_exclusive" value="1" class="accent-white">
+                        <span>Exclusive list ({{ invites|length }})</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="list_full" value="1" class="accent-white">
+                        <span>Full list ({{ full_list_count }})</span>
+                    </label>
+                </div>
+                <div>
+                    <label for="subject" class="block text-sm text-zinc-400 mb-2">Subject</label>
+                    <input type="text" id="subject" name="subject" required class="w-full bg-zinc-950 border border-zinc-700 rounded-2xl px-5 py-3 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label for="body" class="block text-sm text-zinc-400 mb-2">Message</label>
+                    <textarea id="body" name="body" rows="6" required placeholder="Write your email…" class="w-full bg-zinc-950 border border-zinc-700 rounded-2xl px-5 py-3 text-white focus:outline-none focus:border-white text-sm"></textarea>
+                </div>
+                <button type="submit" class="px-8 py-3 bg-white text-black font-semibold rounded-2xl text-sm hover:bg-zinc-200 transition-colors">
+                    Send to selected list(s)
+                </button>
+            </form>
+        </div>
+
+        <!-- Exclusive List -->
+        <div class="mb-12">
+            <div onclick="toggle(this)" class="flex justify-between items-center bg-zinc-900 p-5 rounded-3xl cursor-pointer mb-4 border border-zinc-700 hover:border-white">
+                <h2 class="text-2xl font-bold flex items-center gap-3">
+                    <span class="text-xl">🔒</span> Exclusive List
+                    <span class="text-sm font-mono bg-zinc-800 px-3 py-1 rounded-full text-zinc-400">{{ invites|length }}</span>
+                </h2>
+                <span class="text-3xl transition-transform chevron">▼</span>
             </div>
-            <div class="content hidden">
+            <div class="content hidden space-y-3">
                 {% for invite in invites %}
-                <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 mb-3 email-row" data-email="{{ invite.email|lower }}">
+                <div class="email-row bg-zinc-900 border border-zinc-700 rounded-3xl p-5" data-email="{{ invite.email|lower }}">
                     <div class="flex justify-between items-center">
-                        <div>
-                            <div class="font-mono">{{ invite.email }}</div>
-                            <div class="text-xs text-zinc-500">{{ invite.status }}</div>
+                        <div class="font-mono text-sm">{{ invite.email }}</div>
+                        <div class="flex items-center gap-6 text-xs">
+                            <span class="px-3 py-1 rounded-full {% if invite.status == 'claimed' %}bg-emerald-900 text-emerald-400{% elif invite.status == 'account_exists' %}bg-amber-900 text-amber-400{% else %}bg-sky-900 text-sky-400{% endif %}">
+                                {{ invite.status|title }}
+                            </span>
+                            <span class="text-zinc-500">Added {{ invite.added_at | local_time }}</span>
                         </div>
                         <div class="flex gap-2">
-                            <form method="POST" style="display:inline;">
+                            <form method="POST" style="display: inline;">
+                                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                                 <input type="hidden" name="action" value="edit_email">
                                 <input type="hidden" name="email" value="{{ invite.email }}">
-                                <button type="submit" class="text-xs px-4 py-2 border border-zinc-600 rounded-xl">Edit</button>
+                                <button type="submit" class="text-xs px-6 py-2 border border-zinc-600 hover:bg-zinc-800 rounded-2xl">Edit</button>
                             </form>
-                            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete?')">
+                            <form method="POST" style="display: inline;" onsubmit="return confirm('Remove {{ invite.email }} from exclusive list and clear its member perks?')">
+                                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                                 <input type="hidden" name="action" value="remove_email">
                                 <input type="hidden" name="email" value="{{ invite.email }}">
-                                <button type="submit" class="text-xs px-4 py-2 text-red-400 border border-red-900 rounded-xl">Delete</button>
+                                <button type="submit" class="text-xs px-6 py-2 text-red-400 hover:bg-red-950 border border-red-900 rounded-2xl">Delete</button>
                             </form>
                         </div>
                     </div>
@@ -66,30 +105,38 @@
             </div>
         </div>
 
-        <!-- Full -->
+        <!-- Full List -->
         <div>
-            <div onclick="toggle(this)" class="flex justify-between items-center bg-zinc-900 p-4 rounded-3xl cursor-pointer mb-4">
-                <h2 class="text-2xl font-bold">Full List ({{ full_list_count }})</h2>
-                <span class="text-2xl">▼</span>
+            <div onclick="toggle(this)" class="flex justify-between items-center bg-zinc-900 p-5 rounded-3xl cursor-pointer mb-4 border border-zinc-700 hover:border-white">
+                <h2 class="text-2xl font-bold flex items-center gap-3">
+                    <span class="text-xl">📬</span> Full List
+                    <span class="text-sm font-mono bg-zinc-800 px-3 py-1 rounded-full text-zinc-400">{{ full_list_count }}</span>
+                </h2>
+                <span class="text-3xl transition-transform chevron">▼</span>
             </div>
-            <div class="content hidden">
+            <div class="content hidden space-y-3">
                 {% for row in full_list %}
-                <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 mb-3 email-row" data-email="{{ row.email|lower }}">
+                <div class="email-row bg-zinc-900 border border-zinc-700 rounded-3xl p-5" data-email="{{ row.email|lower }}">
                     <div class="flex justify-between items-center">
-                        <div>
-                            <div class="font-mono">{{ row.email }}</div>
-                            <div class="text-xs text-zinc-500">{{ row.source }}</div>
+                        <div class="font-mono text-sm">{{ row.email }}</div>
+                        <div class="flex items-center gap-6 text-xs">
+                            <span class="px-3 py-1 rounded-full bg-zinc-800 text-zinc-400">{{ row.source }}</span>
+                            <span class="{% if row.has_account %}text-emerald-400{% else %}text-zinc-500{% endif %}">
+                                {{ row.has_account ? 'Has account' : 'No account' }}
+                            </span>
                         </div>
                         <div class="flex gap-2">
-                            <form method="POST" style="display:inline;">
+                            <form method="POST" style="display: inline;">
+                                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                                 <input type="hidden" name="action" value="edit_full_email">
                                 <input type="hidden" name="email" value="{{ row.email }}">
-                                <button type="submit" class="text-xs px-4 py-2 border border-zinc-600 rounded-xl">Edit</button>
+                                <button type="submit" class="text-xs px-6 py-2 border border-zinc-600 hover:bg-zinc-800 rounded-2xl">Edit</button>
                             </form>
-                            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete?')">
+                            <form method="POST" style="display: inline;" onsubmit="return confirm('Remove {{ row.email }} from full list?')">
+                                {% if key %}<input type="hidden" name="key" value="{{ key }}">{% endif %}
                                 <input type="hidden" name="action" value="remove_full_email">
                                 <input type="hidden" name="email" value="{{ row.email }}">
-                                <button type="submit" class="text-xs px-4 py-2 text-red-400 border border-red-900 rounded-xl">Delete</button>
+                                <button type="submit" class="text-xs px-6 py-2 text-red-400 hover:bg-red-950 border border-red-900 rounded-2xl">Delete</button>
                             </form>
                         </div>
                     </div>
@@ -103,16 +150,24 @@
         function toggle(el) {
             const content = el.nextElementSibling;
             content.classList.toggle('hidden');
-            const arrow = el.querySelector('span:last-child');
-            arrow.textContent = content.classList.contains('hidden') ? '▼' : '▲';
+            const chevron = el.querySelector('.chevron');
+            chevron.textContent = content.classList.contains('hidden') ? '▼' : '▲';
         }
 
         document.getElementById('search').addEventListener('input', function(e) {
-            const term = e.target.value.toLowerCase();
+            const term = e.target.value.toLowerCase().trim();
             document.querySelectorAll('.email-row').forEach(row => {
-                const email = row.getAttribute('data-email') || '';
-                row.style.display = email.includes(term) ? '' : 'none';
+                const email = (row.getAttribute('data-email') || '').toLowerCase();
+                row.style.display = (!term || email.includes(term)) ? '' : 'none';
             });
+        });
+
+        // Allow pressing / to focus search
+        document.addEventListener('keydown', function(e) {
+            if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                document.getElementById('search').focus();
+            }
         });
     </script>
 </body>
