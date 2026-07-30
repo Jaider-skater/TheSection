@@ -1,4 +1,122 @@
- ticket_type = ticket.get('ticket_type', 'general')
+ Welcome rate only when returning guest buys exactly one ticket.
+    returning_single_ticket_rate = bool(is_returning and quantity == 1 and rate > 0)
+
+    return {
+        'ticket_type': ticket_type,
+        'quantity': quantity,
+        'unit_price_cents': unit_price,
+        'total_cents': total_cents,
+        'base_total_cents': base_total_cents,
+        'base_unit_price_cents': base,
+        'vip_bundle_applied': vip_bundle_applied,
+        'bundle_discount_applied': bundle_discount_applied,
+        'member_discount_applied': member_discount_applied,
+        'stacked_discount_applied': stacked_discount_applied,
+        'combined_discount_percent': combined_discount_percent,
+        'legacy_discount_applied': total_cents < base_total_cents,
+        'bundle_min': bulk_min,
+        'bundle_discount_percent': bulk_percent,
+        # Standard ongoing member rate (multi-ticket).
+        'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
+        # Rate used when code is ON for this cart.
+        'applied_member_discount_percent': applied_pct,
+        # Rate that would apply if they tap the code (for UI copy).
+        'eligible_member_discount_percent': eligible_pct,
+        'returning_guest_discount': is_returning,
+        'returning_guest_discount_percent': (
+            int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20
+        ),
+        'returning_single_ticket_rate': returning_single_ticket_rate,
+        'vip_bundle_min': vip_bundle_min,
+        'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
+    }
+
+
+def add_saved_ticket_for_member(email, ticket_id):
+    normalized_id = normalize_ticket_id(ticket_id)
+    if not normalized_id:
+        return False
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').lower() == email.strip().lower():
+                saved = member.setdefault('saved_tickets', [])
+                if normalized_id not in saved:
+                    saved.append(normalized_id)
+                    save_members(members)
+                return True
+    return False
+
+
+def remove_saved_ticket_for_member(email, ticket_id):
+    normalized_id = normalize_ticket_id(ticket_id)
+    if not normalized_id:
+        return False
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').lower() == email.strip().lower():
+                saved = member.get('saved_tickets', [])
+                if normalized_id in saved:
+                    saved.remove(normalized_id)
+                    save_members(members)
+                return True
+    return False
+
+
+def ticket_result_meta(record, admission_as=None):
+    ticket_type = record.get('ticket_type', 'general')
+    access = record.get('access') or TICKET_TYPES.get(ticket_type, {}).get('access')
+    admitted = admission_as or record.get('admission_as')
+    # Door display: how they entered this scan (VIP ticket may enter as GA when VIP full).
+    is_vip_entry = (admitted or ticket_type) == 'vip'
+    return {
+        'ticket_type': ticket_type,
+        'access': access if is_vip_entry else None,
+        'is_vip': is_vip_entry,
+        'ticket_is_vip': ticket_type == 'vip',
+        'admission_as': admitted or ticket_type,
+        'vip_redeemed': bool(record.get('vip_redeemed_at')),
+        'vip_deferred': bool(
+            ticket_type == 'vip'
+            and admitted == 'ga'
+            and not record.get('vip_redeemed_at')
+        ),
+    }
+
+
+def normalize_ticket_id(ticket_id):
+    if not ticket_id:
+        return None
+    normalized = str(ticket_id).strip().upper().replace('-', '')
+    return normalized if normalized.isalnum() else None
+
+
+def get_ticket_record(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return None
+    for ticket in load_tickets():
+        stored = normalize_ticket_id(ticket.get('ticket_id'))
+        if stored == normalized:
+            return ticket
+    return None
+
+
+def mark_ticket_scanned(ticket_id, admission_as=None):
+    """Record door entry. admission_as is 'vip' or 'ga'.
+
+    VIP tickets admitted as GA (VIP area full) do not set vip_redeemed_at so the
+    ticket can still be used as VIP at a later event after counts reset.
+    """
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return False
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
+                ticket_type = ticket.get('ticket_type', 'general')
                 entry = admission_as or ('vip' if ticket_type == 'vip' else 'general')
                 if entry == 'general':
                     entry = 'ga'
@@ -69,149 +187,4 @@ def format_display_datetime(iso_raw, date_only=False):
 
 @app.template_filter('local_time')
 def local_time_filter(iso_raw):
-    return format_display_datetime(iso_raw)
-
-
-@app.template_filter('local_date')
-def local_date_filter(iso_raw):
-    return format_display_datetime(iso_raw, date_only=True)
-
-
-def get_counting_epoch():
-    settings = load_scanner_settings()
-    return parse_iso_datetime(settings.get('counting_epoch'))
-
-
-def get_reset_history():
-    settings = load_scanner_settings()
-    history = settings.get('reset_history', [])
-    if not isinstance(history, list):
-        return []
-    # Ensure each entry has a stable id for delete buttons.
-    changed = False
-    for entry in history:
-        if isinstance(entry, dict) and not entry.get('id'):
-            entry['id'] = entry.get('reset_at') or secrets.token_hex(8)
-            changed = True
-    if changed:
-        with scanner_settings_lock:
-            settings = load_scanner_settings()
-            settings['reset_history'] = history
-            save_scanner_settings(settings)
-    return history
-
-
-def delete_reset_history_entry(entry_id):
-    """Remove one reset history row by id (or legacy reset_at string)."""
-    target = (entry_id or '').strip()
-    if not target:
-        return False
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        history = settings.get('reset_history', [])
-        if not isinstance(history, list):
-            return False
-        updated = []
-        removed = False
-        for entry in history:
-            if not isinstance(entry, dict):
-                continue
-            eid = str(entry.get('id') or entry.get('reset_at') or '')
-            if not removed and eid == target:
-                removed = True
-                continue
-            updated.append(entry)
-        if not removed:
-            return False
-        settings['reset_history'] = updated
-        save_scanner_settings(settings)
-        return True
-
-
-def ticket_counts_for_current_period(scanned_at):
-    scanned = parse_iso_datetime(scanned_at)
-    if not scanned:
-        return False
-    counting_epoch = get_counting_epoch()
-    if counting_epoch is None:
-        return True
-    return scanned >= counting_epoch
-
-
-def reset_admission_counts():
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    counts = compute_admission_counts()
-
-    with scanner_settings_lock:
-        settings = load_scanner_settings()
-        history = settings.get('reset_history', [])
-        if not isinstance(history, list):
-            history = []
-        history.append({
-            'id': secrets.token_hex(8),
-            'reset_at': now_iso,
-            'ga': counts['ga'],
-            'vip': counts['vip'],
-            'total': counts['total'],
-        })
-        settings['reset_history'] = history
-        settings['counting_epoch'] = now_iso
-        save_scanner_settings(settings)
-
-    return {
-        'reset_at': now_iso,
-        'ga': counts['ga'],
-        'vip': counts['vip'],
-        'total': counts['total'],
-    }
-
-
-def _admin_key_matches(provided):
-    key = (provided or '').strip()
-    expected = (admin_key or '').strip()
-    if not key or not expected:
-        return False
-    try:
-        return secrets.compare_digest(key, expected)
-    except (TypeError, ValueError):
-        return key == expected
-
-
-def is_staff_user():
-    """Staff email (VERIFY_LOGIN_*) via member portal or scanner session."""
-    return is_scanner_admin_member() or verify_scanner_session_authenticated()
-
-
-def require_admin():
-    if session.get('admin_authenticated') is True:
-        return True
-    # Staff email session can open ticket admin + mailing lists (no separate key needed).
-    if is_staff_user():
-        session['admin_authenticated'] = True
-        return True
-    key = request.args.get('key') or request.form.get('key') or ''
-    if _admin_key_matches(key):
-        session['admin_authenticated'] = True
-        return True
-    return False
-
-
-def admin_key_for_templates():
-    return (request.args.get('key') or request.form.get('key') or '').strip()
-
-
-def admin_login_required(next_path=None):
-    """Return admin login page when the request is not authorized."""
-    if next_path is None:
-        next_path = request.path or '/admin'
-    if not next_path.startswith('/admin'):
-        next_path = '/admin'
-    provided_key = (request.args.get('key') or request.form.get('key') or '').strip()
-    provided_email = (request.args.get('email') or request.form.get('email') or '').strip()
-    error = None
-    if provided_key or provided_email:
-        error = 'Invalid credentials. Use your staff email/password or admin key.'
-    return render_template(
-        'admin_login.html',
-        error=er
+    return forma
