@@ -1,4 +1,98 @@
-lse
+:
+                if ticket.get('email', '').lower() == normalized:
+                    has_purchases = True
+                    break
+            if not has_purchases:
+                for ticket_id in member.get('saved_tickets') or []:
+                    if get_ticket_record(ticket_id):
+                        has_purchases = True
+                        break
+            if not has_purchases and member.get('discount_code'):
+                member.pop('discount_code', None)
+                changed = True
+            if changed:
+                save_members(members)
+            return changed
+    return False
+
+
+def grant_exclusive_member_features(email):
+    """If a member account exists for this email, attach exclusive lifetime perk."""
+    normalized = (email or '').strip().lower()
+    if not normalized:
+        return False
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').strip().lower() != normalized:
+                continue
+            member['returning_guest_discount'] = True
+            if not member.get('discount_code'):
+                code = generate_discount_code(normalized)
+                while discount_code_taken(code, exclude_email=normalized):
+                    code = generate_discount_code(normalized)
+                member['discount_code'] = code
+            save_members(members)
+            return True
+    return False
+
+
+def update_email_on_invite_list(old_email, new_email):
+    """Rename an exclusive-list address. Returns (ok, error_message)."""
+    old = (old_email or '').strip().lower()
+    new = (new_email or '').strip().lower()
+    if not old or not new or '@' not in new:
+        return False, 'Enter a valid new email address.'
+    if old == new:
+        return True, None
+    with invites_lock:
+        invites = load_invites()
+        target = None
+        for invite in invites:
+            email = invite.get('email', '').strip().lower()
+            if email == new:
+                return False, f'{new} is already on the exclusive list.'
+            if email == old:
+                target = invite
+        if not target:
+            return False, 'That exclusive-list email was not found.'
+        target['email'] = new
+        # Force a fresh invite link if address changed before claim.
+        if not target.get('claimed_at'):
+            target['invite_token'] = None
+            target['invite_expires'] = None
+            target['sent_at'] = None
+        save_invites(invites)
+    # Old address loses exclusive perks; new address gains them if they have an account.
+    clear_exclusive_member_features(old)
+    grant_exclusive_member_features(new)
+    return True, None
+
+
+def set_member_invite_token(email):
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(days=INVITE_EXPIRY_DAYS)
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        for invite in invites:
+            if invite.get('email', '').strip().lower() == normalized:
+                invite['invite_token'] = hash_reset_token(token)
+                invite['invite_expires'] = expires.isoformat()
+                save_invites(invites)
+                return token
+    return None
+
+
+def verify_member_invite_token(email, token):
+    invite = get_member_invite(email)
+    if not invite or not token or not invite.get('invite_token'):
+        return False
+    if invite.get('claimed_at'):
+        return False
+    expires_raw = invite.get('invite_expires')
+    if not expires_raw:
+        return False
     try:
         expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
         if expires.tzinfo is None:
@@ -100,109 +194,4 @@ def load_full_mailing_list():
     try:
         with open(full_mailing_list_file, encoding='utf-8') as f:
             data = json.load(f)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError) as e:
-        print(f'Failed to load full mailing list ({full_mailing_list_file}):', e)
-        return []
-
-
-def save_full_mailing_list(entries):
-    if not ensure_data_dir(full_mailing_list_file):
-        return False
-    try:
-        with open(full_mailing_list_file, 'w', encoding='utf-8') as f:
-            json.dump(entries, f, indent=2)
-        return True
-    except OSError as e:
-        print(f'Failed to save full mailing list ({full_mailing_list_file}):', e)
-        return False
-
-
-def is_on_exclusive_invite_list(email):
-    return get_member_invite(email) is not None
-
-
-def add_emails_to_full_mailing_list(emails, source='manual'):
-    """Add emails to the general list. Skips exclusive invite-list addresses."""
-    added = []
-    skipped = []
-    with full_list_lock:
-        entries = load_full_mailing_list()
-        existing = {e.get('email', '').strip().lower() for e in entries}
-        for email in emails:
-            normalized = (email or '').strip().lower()
-            if not normalized or '@' not in normalized:
-                continue
-            if is_on_exclusive_invite_list(normalized):
-                skipped.append(normalized)
-                continue
-            if normalized in existing:
-                skipped.append(normalized)
-                continue
-            entries.append({
-                'email': normalized,
-                'added_at': datetime.now(timezone.utc).isoformat(),
-                'source': source,
-            })
-            existing.add(normalized)
-            added.append(normalized)
-        save_full_mailing_list(entries)
-    return added, skipped
-
-
-def remove_email_from_full_mailing_list(email):
-    normalized = email.strip().lower()
-    with full_list_lock:
-        entries = load_full_mailing_list()
-        updated = [e for e in entries if e.get('email', '').strip().lower() != normalized]
-        if len(updated) == len(entries):
-            return False
-        save_full_mailing_list(updated)
-        return True
-
-
-def full_mailing_list_for_admin():
-    rows = []
-    for entry in sorted(load_full_mailing_list(), key=lambda e: e.get('added_at', ''), reverse=True):
-        email = entry.get('email', '').strip().lower()
-        member = get_legacy_member(email)
-        rows.append({
-            'email': email,
-            'added_at': entry.get('added_at'),
-            'source': entry.get('source') or 'manual',
-            'has_account': bool(member),
-        })
-    return rows
-
-
-def sync_members_into_full_mailing_list():
-    """Pull non-exclusive members (including founding) into the full list."""
-    emails = []
-    for member in load_members():
-        email = (member.get('email') or '').strip().lower()
-        if not email:
-            continue
-        if member.get('returning_guest_discount'):
-            continue
-        if is_on_exclusive_invite_list(email):
-            continue
-        emails.append(email)
-    return add_emails_to_full_mailing_list(emails, source='member')
-
-
-def subscribe_signup_to_full_list(email):
-    """Public self-signup → full list only if not on exclusive invite list."""
-    normalized = (email or '').strip().lower()
-    if not normalized:
-        return
-    if is_on_exclusive_invite_list(normalized):
-        return
-    add_emails_to_full_mailing_list([normalized], source='signup')
-
-
-def resolve_broadcast_recipients(lists):
-    """lists is a set like {'exclusive', 'full'}."""
-    emails = set()
-    if 'exclusive' in lists:
-        for invite in load_invites():
-   
+      
