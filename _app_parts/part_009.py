@@ -1,4 +1,135 @@
-tatus': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+def set_max_vip_capacity(value):
+    normalized = parse_max_capacity(value)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized is None:
+            settings.pop('max_vip_capacity', None)
+        else:
+            settings['max_vip_capacity'] = normalized
+        save_scanner_settings(settings)
+    return normalized
+
+
+def admission_entry_type(ticket):
+    """How this ticket counted for the door: vip or ga."""
+    admitted = ticket.get('admission_as')
+    if admitted in ('vip', 'ga'):
+        return admitted
+    return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
+
+
+def compute_admission_counts():
+    ga = 0
+    vip = 0
+    for ticket in load_tickets():
+        scanned_at = ticket.get('scanned_at')
+        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
+            continue
+        qty = int(ticket.get('quantity') or 1)
+        if admission_entry_type(ticket) == 'vip':
+            vip += qty
+        else:
+            ga += qty
+    return {'ga': ga, 'vip': vip, 'total': ga + vip}
+
+
+def admission_capacity_remaining():
+    max_capacity = get_max_capacity()
+    if not max_capacity:
+        return None
+    counts = compute_admission_counts()
+    return max(0, max_capacity - counts['total'])
+
+
+def vip_capacity_remaining():
+    max_vip = get_max_vip_capacity()
+    if not max_vip:
+        return None
+    counts = compute_admission_counts()
+    return max(0, max_vip - counts['vip'])
+
+
+def ticket_already_used(record):
+    """Whether this ticket cannot be scanned again right now."""
+    if not record:
+        return True
+    ticket_type = record.get('ticket_type', 'general')
+    # VIP fully redeemed as VIP → never again.
+    if record.get('vip_redeemed_at'):
+        return True
+    # Non-VIP: any prior scan voids forever.
+    if ticket_type != 'vip' and record.get('scanned_at'):
+        return True
+    # Any ticket already admitted in the current counting period.
+    if ticket_counts_for_current_period(record.get('scanned_at')):
+        return True
+    return False
+
+
+def get_admission_totals():
+    counts = compute_admission_counts()
+    max_capacity = get_max_capacity()
+    max_vip_capacity = get_max_vip_capacity()
+    capacity_reached = bool(max_capacity and counts['total'] >= max_capacity)
+    vip_capacity_reached = bool(max_vip_capacity and counts['vip'] >= max_vip_capacity)
+    spots_remaining = None
+    if max_capacity:
+        spots_remaining = max(0, max_capacity - counts['total'])
+    vip_spots_remaining = None
+    if max_vip_capacity:
+        vip_spots_remaining = max(0, max_vip_capacity - counts['vip'])
+    return {
+        **counts,
+        'max_capacity': max_capacity,
+        'capacity_reached': capacity_reached,
+        'spots_remaining': spots_remaining,
+        'max_vip_capacity': max_vip_capacity,
+        'vip_capacity_reached': vip_capacity_reached,
+        'vip_spots_remaining': vip_spots_remaining,
+        'reset_history': get_reset_history(),
+    }
+
+
+def check_ticket(ticket_id):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        return {
+            'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0,
+            'ticket_type': None, 'access': None, 'is_vip': False,
+        }
+
+    record = get_ticket_record(normalized)
+    if not record:
+        return {
+            'status': 'invalid', 'ticket_id': normalized, 'quantity': 0,
+            'ticket_type': None, 'access': None, 'is_vip': False,
+        }
+
+    quantity = int(record.get('quantity') or 1)
+    display_id = record.get('ticket_id', normalized)
+    ticket_type = record.get('ticket_type', 'general')
+
+    if ticket_already_used(record):
+        meta = ticket_result_meta(record)
+        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    remaining = admission_capacity_remaining()
+    if remaining is not None and quantity > remaining:
+        meta = ticket_result_meta(record)
+        return {'status': 'sold_out', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    # Decide VIP vs GA entry for VIP tickets when VIP area is at capacity.
+    admission_as = 'vip' if ticket_type == 'vip' else 'ga'
+    vip_note = None
+    if ticket_type == 'vip':
+        vip_left = vip_capacity_remaining()
+        if vip_left is not None and quantity > vip_left:
+            admission_as = 'ga'
+            vip_note = 'VIP area full — admitted as GA. VIP still valid for another event.'
+
+    if not mark_ticket_scanned(normalized, admission_as=admission_as):
+        meta = ticket_result_meta(record)
+        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
     # Reload for vip_redeemed / admission_as on response meta.
     record = get_ticket_record(normalized) or record
@@ -71,118 +202,4 @@ def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_t
                 f"Show the attached QR code at the door.\n"
                 f"Or open this link on your phone to view your ticket:\n{view_url}\n"
             )
-            msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
-            mail.send(msg)
-            print(f"Ticket email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
-    if not customer_email:
-        return False
-
-    record = get_ticket_by_session(session_id)
-    if record and record.get('email_sent_at'):
-        return True
-
-    if record:
-        ticket_type = record.get('ticket_type', ticket_type)
-        access = record.get('access', access)
-
-    result = {'sent': False}
-
-    def _send():
-        result['sent'] = send_ticket_email(
-            customer_email, ticket_id, quantity, ticket_data, ticket_type, access
-        )
-        if result['sent']:
-            mark_email_sent(session_id)
-
-    thread = threading.Thread(target=_send, daemon=False)
-    thread.start()
-    thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
-    return result['sent']
-
-
-def build_password_reset_url(email, token, reset_url=None):
-    if reset_url:
-        return reset_url
-    query = urlencode({'email': email, 'token': token})
-    return f"{get_public_base_url()}/reset-password?{query}"
-
-
-def mail_from_address():
-    sender = app.config['MAIL_DEFAULT_SENDER']
-    return ('The Section', sender) if sender else sender
-
-
-def send_password_reset_email(customer_email, token, reset_url=None):
-    reset_url = build_password_reset_url(customer_email, token, reset_url)
-    hours_label = f'{PASSWORD_RESET_HOURS} hour{"s" if PASSWORD_RESET_HOURS != 1 else ""}'
-    plain_body = (
-        'You requested a password reset for your The Section member account.\n\n'
-        f'Open this link to choose a new password (expires in {hours_label}):\n'
-        f'{reset_url}\n\n'
-        'If you did not request this, you can ignore this email.\n'
-    )
-    html_body = (
-        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
-        '<h2 style="margin:0 0 12px;">The Section</h2>'
-        '<p>You requested a password reset for your member account.</p>'
-        f'<p><a href="{reset_url}" style="display:inline-block;padding:12px 18px;'
-        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
-        'Choose a new password</a></p>'
-        f'<p style="color:#555;font-size:14px;">This link expires in {hours_label}.</p>'
-        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
-        f'<span style="word-break:break-all;">{reset_url}</span></p>'
-        '<p style="color:#555;font-size:14px;">If you did not request this, you can ignore this email.</p>'
-        '</div>'
-    )
-    with app.app_context():
-        try:
-            msg = Message(
-                'The Section — member password link',
-                sender=mail_from_address(),
-                recipients=[customer_email],
-            )
-            msg.body = plain_body
-            msg.html = html_body
-            mail.send(msg)
-            print(f"Password reset email sent to {customer_email}")
-            return True
-        except Exception as e:
-            print(f"Password reset email failed for {customer_email}:", str(e))
-            return False
-
-
-def deliver_password_reset_email(customer_email, token, reset_url=None):
-    sent = send_password_reset_email(customer_email, token, reset_url)
-    if not sent:
-        print(f"Password reset email not confirmed for {customer_email}")
-    return sent
-
-
-def build_member_invite_url(email, token):
-    query = urlencode({'email': email, 'token': token})
-    return f"{get_public_base_url()}/legacy/join?{query}"
-
-
-def send_member_invite_email(customer_email, token, invite_url=None):
-    invite_url = invite_url or build_member_invite_url(customer_email, token)
-    days_label = f'{INVITE_EXPIRY_DAYS} day{"s" if INVITE_EXPIRY_DAYS != 1 else ""}'
-    welcome_pct = int(returning_guest_discount * 100)
-    member_pct = int(member_discount * 100)
-    plain_body = (
-        "You've been to The Section before — welcome back!\n\n"
-        f'Create your member account for {welcome_pct}% off any single ticket for life '
-        f'(or {member_pct}% when you buy more than one):\n'
-        f'{invite_url}\n\n'
-        f'This link expires in {days_label}.\n'
-    )
-    html_body = (
-        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
-        '<h2 style="margin:0 0 12px;">The Section</h2>'
-      
+            msg.attach("ticket-qr.png", "imag
