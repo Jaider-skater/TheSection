@@ -22,6 +22,17 @@ function csrfHeaders(extra = {}) {
     return headers;
 }
 
+function apiFetch(url, options = {}) {
+    // Always send same-origin cookies so login survives Stripe Checkout + Back.
+    return fetch(url, {
+        credentials: 'same-origin',
+        ...options,
+        headers: {
+            ...(options.headers || {}),
+        },
+    });
+}
+
 function formatDollars(cents) {
     return '$' + (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
 }
@@ -56,8 +67,14 @@ function formatBulkPricingLabel() {
 
 async function loadMemberStatus() {
     try {
-        const response = await fetch('/api/member-status');
+        const response = await apiFetch('/api/member-status');
         memberStatus = await response.json();
+        // Prefer CSRF token from response header if Flask rotated it.
+        const headerToken = response.headers.get('X-CSRF-Token');
+        if (headerToken) {
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) meta.content = headerToken;
+        }
         updateMemberBanner();
         updateTypePriceLabels();
     } catch (err) {
@@ -211,7 +228,7 @@ async function refreshPricing() {
         if (memberDiscountApplied) {
             url += '&apply_member_discount=1';
         }
-        const response = await fetch(url);
+        const response = await apiFetch(url);
         pricing = await response.json();
         updateModalQuantity();
         updateDiscountCodeButton();
@@ -342,7 +359,7 @@ function changeQuantity(change) {
 
 async function redirectToLoginForCheckout() {
     try {
-        await fetch('/api/checkout-intent', {
+        await apiFetch('/api/checkout-intent', {
             method: 'POST',
             headers: csrfHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
@@ -364,7 +381,7 @@ async function createCheckoutSession() {
     }
 
     try {
-        const response = await fetch('/create-checkout-session', {
+        const response = await apiFetch('/create-checkout-session', {
             method: 'POST',
             headers: csrfHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
@@ -464,4 +481,17 @@ loadMemberStatus().then(() => {
     updateTypeButtons();
     refreshPricing();
     maybeOpenTicketsFromUrl();
+});
+
+// Returning from Stripe Checkout via Back often restores a cached page.
+// Re-check login so the UI matches the session cookie.
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted || (window.performance && performance.getEntriesByType &&
+        performance.getEntriesByType('navigation')[0]?.type === 'back_forward')) {
+        loadMemberStatus().then(() => {
+            updateTypeButtons();
+            refreshPricing();
+            updateDiscountCodeButton();
+        });
+    }
 });

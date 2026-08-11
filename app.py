@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 import stripe
 import qrcode
@@ -27,6 +28,8 @@ from urllib.parse import urlencode
 app = Flask(__name__,
             template_folder='website/templates',
             static_folder='website/static')
+# Trust Render/proxy HTTPS headers so secure cookies work correctly.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 PRODUCTION_BASE_URL = 'https://thesection.onrender.com'
 MAX_TICKET_QUANTITY = int(os.getenv('MAX_TICKET_QUANTITY', '20'))
@@ -139,9 +142,13 @@ returning_guest_discount = parse_discount_value(
 app.secret_key = require_env_secret('SECRET_KEY', min_length=24, allow_dev_generate=True)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
+    # Lax keeps the cookie on return from Stripe Checkout (top-level navigation / back).
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=IS_PRODUCTION,
-    PERMANENT_SESSION_LIFETIME=timedelta(days=14),
+    # Permanent cookies so login survives leaving to Stripe and hitting Back.
+    PERMANENT_SESSION_LIFETIME=timedelta(days=31),
+    SESSION_REFRESH_EACH_REQUEST=True,
+    SESSION_COOKIE_NAME='thesection_session',
 )
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
@@ -228,7 +235,7 @@ def secure_equals(a, b):
 
 
 def regenerate_session():
-    """Mitigate session fixation by rotating the session cookie contents."""
+    """Mitigate session fixation by clearing prior session data on login/logout."""
     preserved = {}
     for key in ('csrf_token',):
         if key in session:
@@ -236,7 +243,27 @@ def regenerate_session():
     session.clear()
     session.update(preserved)
     session.permanent = True
+    session.modified = True
     ensure_csrf_token()
+
+
+def touch_auth_session():
+    """Keep auth cookies permanent so Stripe Checkout + Back does not drop login."""
+    if (
+        session.get('legacy_member_email')
+        or session.get('admin_authenticated')
+        or session.get('verify_authenticated')
+        or session.get('checkout_intent')
+    ):
+        session.permanent = True
+        session.modified = True
+
+
+def mark_member_session(email):
+    """Set member login on the current permanent session."""
+    mark_member_session(email)
+    session.permanent = True
+    session.modified = True
 
 
 def ensure_csrf_token():
@@ -342,6 +369,7 @@ def _locked_json_write(path, data):
 @app.before_request
 def security_before_request():
     ensure_csrf_token()
+    touch_auth_session()
     # CSRF for state-changing requests (except Stripe webhook)
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
         if request.path in ('/stripe/webhook',):
@@ -2418,6 +2446,7 @@ def checkout_intent():
             'ticket_type': ticket_type,
             'apply_member_discount': bool(data.get('apply_member_discount')),
         }
+        touch_auth_session()
         return jsonify({'ok': True})
     if request.method == 'DELETE':
         session.pop('checkout_intent', None)
@@ -2456,6 +2485,10 @@ def create_checkout_session():
         quantity = clamp_quantity(data.get('quantity', 1))
         ticket_type = data.get('ticket_type', 'general')
         apply_member_discount = bool(data.get('apply_member_discount'))
+        # Re-stamp permanent session so login survives Stripe + browser Back.
+        member = get_logged_in_member()
+        if member:
+            mark_member_session(member.get('email'))
         checkout_session = build_checkout_session(
             quantity, ticket_type, apply_member_discount=apply_member_discount,
         )
@@ -2690,7 +2723,7 @@ def verify_login():
             regenerate_session()
             mark_scanner_session_authenticated(email)
             if get_legacy_member((email or '').strip().lower()):
-                session['legacy_member_email'] = (email or '').strip().lower()
+                mark_member_session(email)
             session['admin_authenticated'] = True
             next_url = safe_next_url(request.form.get('next'), url_for('verify_ticket'))
             return redirect(next_url)
@@ -2844,7 +2877,7 @@ def reset_password():
             error = 'Password must be at least 8 characters.'
         elif update_member_password(email, new_password):
             regenerate_session()
-            session['legacy_member_email'] = email
+            mark_member_session(email)
             return redirect(url_for('legacy_portal'))
         else:
             error = 'Could not update password. Try again or contact support.'
@@ -2900,7 +2933,7 @@ def legacy_portal():
                     save_members(members)
                 subscribe_signup_to_full_list(email)
                 regenerate_session()
-                session['legacy_member_email'] = email
+                mark_member_session(email)
                 if next_url:
                     return redirect(next_url)
                 return redirect(url_for('legacy_portal'))
@@ -2923,7 +2956,7 @@ def legacy_portal():
             password = request.form.get('password', '')
             if verify_legacy_login(email, password):
                 regenerate_session()
-                session['legacy_member_email'] = email
+                mark_member_session(email)
                 member = get_legacy_member(email)
                 if member:
                     ensure_returning_guest_flag_for_exclusive_member(member)
@@ -3059,7 +3092,7 @@ def admin_login():
             session['admin_authenticated'] = True
             mark_scanner_session_authenticated(email)
             if get_legacy_member(email):
-                session['legacy_member_email'] = email
+                mark_member_session(email)
             return redirect(url_for('admin_dashboard'))
 
         error = 'Invalid credentials. Use staff email/password or admin key.'
@@ -3318,7 +3351,7 @@ def legacy_member_invite_signup():
                 ok, create_error = create_member_from_invite(email, new_password)
                 if ok:
                     regenerate_session()
-                    session['legacy_member_email'] = email
+                    mark_member_session(email)
                     return redirect(url_for('legacy_portal'))
                 error = create_error or 'Could not create account.'
     return render_template(
