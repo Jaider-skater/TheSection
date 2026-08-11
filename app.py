@@ -261,7 +261,7 @@ def touch_auth_session():
 
 def mark_member_session(email):
     """Set member login on the current permanent session."""
-    mark_member_session(email)
+    session['legacy_member_email'] = (email or '').strip().lower()
     session.permanent = True
     session.modified = True
 
