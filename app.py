@@ -2982,7 +2982,14 @@ def legacy_portal():
 
         if action == 'logout':
             session.pop('legacy_member_email', None)
+            session.pop('admin_authenticated', None)
+            session.pop('verify_authenticated', None)
+            session.pop('verify_login_email', None)
             regenerate_session()
+            # Prefer returning home when logout started from the site menu.
+            next_url = safe_next_url(request.form.get('next') or request.args.get('next'), '')
+            if next_url:
+                return redirect(next_url)
             return redirect(url_for('legacy_portal'))
 
         if action == 'save_ticket' and member:

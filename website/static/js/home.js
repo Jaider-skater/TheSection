@@ -118,12 +118,14 @@ function toggleMemberDiscount() {
 function updateMemberBanner() {
     const signedInBanner = document.getElementById('member-banner');
     const signInPrompt = document.getElementById('sign-in-prompt');
+    const menuLogout = document.getElementById('menu-logout-form');
 
     const discountLine = document.getElementById('member-discount-line');
     const discountBtn = document.getElementById('member-discount-code-btn');
     if (memberStatus.logged_in) {
         if (signedInBanner) signedInBanner.classList.remove('hidden');
         if (signInPrompt) signInPrompt.classList.add('hidden');
+        if (menuLogout) menuLogout.classList.remove('hidden');
         if (discountLine) {
             const bulkLabel = formatBulkPricingLabel();
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
@@ -139,6 +141,7 @@ function updateMemberBanner() {
     } else {
         if (signedInBanner) signedInBanner.classList.add('hidden');
         if (signInPrompt) signInPrompt.classList.remove('hidden');
+        if (menuLogout) menuLogout.classList.add('hidden');
         memberDiscountApplied = false;
     }
 }

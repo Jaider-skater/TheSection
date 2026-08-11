@@ -39,6 +39,15 @@
                     <a href="/admin" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Ticket Admin</a>
                     <a href="/admin/mailing-list" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Mailing Lists</a>
                     {% endif %}
+                    <form id="menu-logout-form" method="POST" action="{{ url_for('legacy_portal') }}" class="hidden border-t border-zinc-800 mt-1 pt-1">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="logout">
+                        <input type="hidden" name="next" value="/">
+                        <button type="submit"
+                                class="w-full text-left block px-4 py-3 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors">
+                            Sign out
+                        </button>
+                    </form>
                 </div>
             </div>
         </div>
