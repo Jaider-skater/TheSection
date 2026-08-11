@@ -872,8 +872,49 @@ def admin_authenticated():
     return session.get('admin_authenticated') is True
 
 
+def is_staff_email(email):
+    """Staff emails come from VERIFY_LOGIN_EMAIL (comma-separated)."""
+    normalized = (email or '').strip().lower()
+    if not normalized or not verify_login_emails:
+        return False
+    return any(secure_equals(normalized, allowed) for allowed in verify_login_emails)
+
+
+def is_scanner_admin_member():
+    """True when a staff email is signed into the member portal."""
+    member = get_logged_in_member()
+    if not member:
+        return False
+    return is_staff_email(member.get('email'))
+
+
+def verify_scanner_session_authenticated():
+    if session.get('verify_authenticated') is not True:
+        return False
+    return is_staff_email(session.get('verify_login_email'))
+
+
+def is_staff_user():
+    """Staff via member portal login or dedicated scanner/admin session."""
+    return is_scanner_admin_member() or verify_scanner_session_authenticated()
+
+
+def mark_scanner_session_authenticated(email=None):
+    session['verify_authenticated'] = True
+    chosen = (email or '').strip().lower()
+    if not is_staff_email(chosen):
+        chosen = next(iter(sorted(verify_login_emails)), '')
+    session['verify_login_email'] = chosen
+
+
 def require_admin():
-    return admin_authenticated()
+    """Admin dashboard access: explicit admin session, or staff member/scanner session."""
+    if admin_authenticated():
+        return True
+    if is_staff_user():
+        session['admin_authenticated'] = True
+        return True
+    return False
 
 
 def grant_session_ticket_access(ticket_id):
@@ -1006,16 +1047,26 @@ def verify_auth_configured():
 
 
 def verify_authenticated():
-    return verify_auth_configured() and session.get('verify_authenticated') is True
+    if not verify_auth_configured():
+        return False
+    # Staff member portal login counts as scanner-authorized.
+    return is_scanner_admin_member() or verify_scanner_session_authenticated()
 
 
 def verify_scanner_credentials(email, password):
+    """Staff form: VERIFY_LOGIN email + shared password, or that member's portal password."""
     if not verify_auth_configured():
         return False
     candidate = (email or '').strip().lower()
-    email_ok = any(secure_equals(candidate, allowed) for allowed in verify_login_emails)
-    password_ok = secure_equals(password or '', verify_login_password)
-    return email_ok and password_ok
+    password = (password or '').strip()
+    if not candidate or not password:
+        return False
+    if not is_staff_email(candidate):
+        return False
+    if secure_equals(password, verify_login_password):
+        return True
+    # Same person often uses the member portal password.
+    return verify_legacy_login(candidate, password)
 
 
 def protect_scanner_response():
@@ -1026,6 +1077,8 @@ def protect_scanner_response():
         return render_template('verify_login.html', error=message), 503
 
     if verify_authenticated():
+        if is_scanner_admin_member() and not verify_scanner_session_authenticated():
+            mark_scanner_session_authenticated()
         return None
 
     if request.method == 'POST' or request.is_json:
@@ -1829,7 +1882,10 @@ def verify_login():
         password = request.form.get('password') or ''
         if verify_scanner_credentials(email, password):
             regenerate_session()
-            session['verify_authenticated'] = True
+            mark_scanner_session_authenticated(email)
+            if get_legacy_member((email or '').strip().lower()):
+                session['legacy_member_email'] = (email or '').strip().lower()
+            session['admin_authenticated'] = True
             next_url = safe_next_url(request.form.get('next'), url_for('verify_ticket'))
             return redirect(next_url)
 
@@ -1930,6 +1986,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
         'next_url': next_url,
         'active_tab': active_tab,
+        'show_scanner_link': is_scanner_admin_member(),
     }
 
 
@@ -2048,6 +2105,9 @@ def legacy_portal():
             if verify_legacy_login(email, password):
                 regenerate_session()
                 session['legacy_member_email'] = email
+                if is_staff_email(email):
+                    session['admin_authenticated'] = True
+                    mark_scanner_session_authenticated(email)
                 if next_url:
                     return redirect(next_url)
                 return redirect(url_for('legacy_portal'))
@@ -2147,20 +2207,33 @@ def legacy_portal():
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
-    if admin_authenticated():
+    if require_admin():
         return redirect(url_for('admin_dashboard'))
 
     error = None
     if request.method == 'POST':
         if not rate_limit_allow('admin_login', 8, 300):
             return render_template('admin_login.html', error='Too many attempts. Please wait.'), 429
-        password = request.form.get('password') or ''
-        ok = secure_equals(password, admin_key)
-        if ok:
+        key = (request.form.get('key') or request.form.get('password') or '').strip()
+        email = (request.form.get('email') or '').strip().lower()
+        password = (request.form.get('password') or '').strip()
+
+        # Admin key alone (password field used for key when email blank)
+        if key and secure_equals(key, admin_key):
             regenerate_session()
             session['admin_authenticated'] = True
             return redirect(url_for('admin_dashboard'))
-        error = 'Invalid password'
+
+        # Staff email + shared scanner password or member portal password
+        if email and password and verify_scanner_credentials(email, password):
+            regenerate_session()
+            session['admin_authenticated'] = True
+            mark_scanner_session_authenticated(email)
+            if get_legacy_member(email):
+                session['legacy_member_email'] = email
+            return redirect(url_for('admin_dashboard'))
+
+        error = 'Invalid credentials. Use staff email/password or admin key.'
 
     return render_template('admin_login.html', error=error)
 
