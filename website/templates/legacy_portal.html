@@ -170,27 +170,6 @@
             </div>
         </div>
 
-        {% if show_scanner_link %}
-        <div class="mb-8 bg-zinc-900 border border-emerald-500/30 rounded-2xl p-6">
-            <p class="text-white font-medium mb-1">Staff tools</p>
-            <p class="text-zinc-400 text-sm mb-4">Ticket sales, door scanner, and mailing lists.</p>
-            <div class="flex flex-col sm:flex-row flex-wrap gap-3">
-                <a href="/admin"
-                   class="inline-flex items-center justify-center px-5 py-2.5 border border-white text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
-                    Ticket Admin
-                </a>
-                <a href="/verify"
-                   class="inline-flex items-center justify-center px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
-                    Door Scanner
-                </a>
-                <a href="/admin/mailing-list"
-                   class="inline-flex items-center justify-center px-5 py-2.5 border border-amber-400/60 text-amber-100 font-semibold rounded-xl text-sm hover:bg-amber-400 hover:text-black transition-colors">
-                    Mailing Lists
-                </a>
-            </div>
-        </div>
-        {% endif %}
-
         <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
             {% if has_past_purchases %}
             <p class="text-white font-medium mb-1">Your discount code</p>

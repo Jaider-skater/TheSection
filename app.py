@@ -1378,13 +1378,19 @@ def remove_saved_ticket_for_member(email, ticket_id):
     return False
 
 
-def ticket_result_meta(record):
+def ticket_result_meta(record, admission_as=None):
     ticket_type = record.get('ticket_type', 'general')
+    admitted = admission_as or record.get('admission_as')
+    # Door display: how they entered this scan (VIP ticket may enter as GA when VIP full).
+    is_vip_entry = (admitted or ticket_type) == 'vip'
     access = record.get('access') or TICKET_TYPES.get(ticket_type, {}).get('access')
     return {
         'ticket_type': ticket_type,
-        'access': access,
-        'is_vip': ticket_type == 'vip',
+        'access': access if is_vip_entry else None,
+        'is_vip': is_vip_entry,
+        'admission_as': admitted or ('vip' if ticket_type == 'vip' else 'ga'),
+        'ticket_is_vip': ticket_type == 'vip',
+        'vip_overflow_note': None,
     }
 
 
@@ -1406,7 +1412,12 @@ def get_ticket_record(ticket_id):
     return None
 
 
-def mark_ticket_scanned(ticket_id):
+def mark_ticket_scanned(ticket_id, admission_as=None):
+    """Record door entry. admission_as is 'vip' or 'ga'.
+
+    VIP tickets admitted as GA (VIP area full) do not set vip_redeemed_at so the
+    ticket can still be treated as VIP after counts reset if you re-issue policy.
+    """
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
         return False
@@ -1416,7 +1427,15 @@ def mark_ticket_scanned(ticket_id):
             if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
                 if ticket.get('scanned_at'):
                     return False
-                ticket['scanned_at'] = datetime.now(timezone.utc).isoformat()
+                ticket_type = ticket.get('ticket_type', 'general')
+                entry = admission_as or ('vip' if ticket_type == 'vip' else 'ga')
+                if entry not in ('vip', 'ga'):
+                    entry = 'ga'
+                now_iso = datetime.now(timezone.utc).isoformat()
+                ticket['scanned_at'] = now_iso
+                ticket['admission_as'] = entry
+                if entry == 'vip':
+                    ticket['vip_redeemed_at'] = now_iso
                 save_tickets(tickets)
                 return True
     return False
@@ -1857,6 +1876,31 @@ def set_max_capacity(value):
     return normalized
 
 
+def get_max_vip_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_vip_capacity'))
+
+
+def set_max_vip_capacity(value):
+    normalized = parse_max_capacity(value)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized is None:
+            settings.pop('max_vip_capacity', None)
+        else:
+            settings['max_vip_capacity'] = normalized
+        save_scanner_settings(settings)
+    return normalized
+
+
+def admission_entry_type(ticket):
+    """How this ticket counted for the door: vip or ga."""
+    admitted = ticket.get('admission_as')
+    if admitted in ('vip', 'ga'):
+        return admitted
+    return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
+
+
 def compute_admission_counts():
     ga = 0
     vip = 0
@@ -1864,7 +1908,7 @@ def compute_admission_counts():
         if not ticket.get('scanned_at'):
             continue
         qty = int(ticket.get('quantity') or 1)
-        if ticket.get('ticket_type') == 'vip':
+        if admission_entry_type(ticket) == 'vip':
             vip += qty
         else:
             ga += qty
@@ -1879,32 +1923,55 @@ def admission_capacity_remaining():
     return max(0, max_capacity - counts['total'])
 
 
+def vip_capacity_remaining():
+    max_vip = get_max_vip_capacity()
+    if not max_vip:
+        return None
+    counts = compute_admission_counts()
+    return max(0, max_vip - counts['vip'])
+
+
 def get_admission_totals():
     counts = compute_admission_counts()
     max_capacity = get_max_capacity()
+    max_vip_capacity = get_max_vip_capacity()
     capacity_reached = bool(max_capacity and counts['total'] >= max_capacity)
+    vip_capacity_reached = bool(max_vip_capacity and counts['vip'] >= max_vip_capacity)
     spots_remaining = None
     if max_capacity:
         spots_remaining = max(0, max_capacity - counts['total'])
+    vip_spots_remaining = None
+    if max_vip_capacity:
+        vip_spots_remaining = max(0, max_vip_capacity - counts['vip'])
     return {
         **counts,
         'max_capacity': max_capacity,
         'capacity_reached': capacity_reached,
         'spots_remaining': spots_remaining,
+        'max_vip_capacity': max_vip_capacity,
+        'vip_capacity_reached': vip_capacity_reached,
+        'vip_spots_remaining': vip_spots_remaining,
     }
 
 
 def check_ticket(ticket_id):
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
-        return {'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0, 'ticket_type': None, 'access': None, 'is_vip': False}
+        return {
+            'status': 'invalid', 'ticket_id': ticket_id or None, 'quantity': 0,
+            'ticket_type': None, 'access': None, 'is_vip': False,
+        }
 
     record = get_ticket_record(normalized)
     if not record:
-        return {'status': 'invalid', 'ticket_id': normalized, 'quantity': 0, 'ticket_type': None, 'access': None, 'is_vip': False}
+        return {
+            'status': 'invalid', 'ticket_id': normalized, 'quantity': 0,
+            'ticket_type': None, 'access': None, 'is_vip': False,
+        }
 
     quantity = int(record.get('quantity') or 1)
     display_id = record.get('ticket_id', normalized)
+    ticket_type = record.get('ticket_type', 'general')
     meta = ticket_result_meta(record)
 
     if record.get('scanned_at'):
@@ -1914,10 +1981,29 @@ def check_ticket(ticket_id):
     if remaining is not None and quantity > remaining:
         return {'status': 'sold_out', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
-    if not mark_ticket_scanned(normalized):
+    # VIP tickets: if VIP area is full, still admit but as GA (like before).
+    admission_as = 'vip' if ticket_type == 'vip' else 'ga'
+    vip_note = None
+    if ticket_type == 'vip':
+        vip_left = vip_capacity_remaining()
+        if vip_left is not None and quantity > vip_left:
+            admission_as = 'ga'
+            vip_note = 'VIP area full — admitted as GA.'
+
+    if not mark_ticket_scanned(normalized, admission_as=admission_as):
         return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
-    return {'status': 'accepted', 'ticket_id': display_id, 'quantity': quantity, **meta}
+    record = get_ticket_record(normalized) or record
+    meta = ticket_result_meta(record, admission_as=admission_as)
+    result = {
+        'status': 'accepted',
+        'ticket_id': display_id,
+        'quantity': quantity,
+        **meta,
+    }
+    if vip_note:
+        result['vip_overflow_note'] = vip_note
+    return result
 
 
 def parse_scanned_ticket(raw):
@@ -2554,11 +2640,24 @@ def scanner_settings():
 
     if request.method == 'POST':
         data = request.get_json() or {}
-        max_capacity = set_max_capacity(data.get('max_capacity'))
+        max_capacity = get_max_capacity()
+        max_vip_capacity = get_max_vip_capacity()
+        if 'max_capacity' in data:
+            max_capacity = set_max_capacity(data.get('max_capacity'))
+        if 'max_vip_capacity' in data:
+            max_vip_capacity = set_max_vip_capacity(data.get('max_vip_capacity'))
         totals = get_admission_totals()
-        return jsonify({'max_capacity': max_capacity, **totals})
+        return jsonify({
+            'max_capacity': max_capacity,
+            'max_vip_capacity': max_vip_capacity,
+            **totals,
+        })
 
-    return jsonify({'max_capacity': get_max_capacity(), **get_admission_totals()})
+    return jsonify({
+        'max_capacity': get_max_capacity(),
+        'max_vip_capacity': get_max_vip_capacity(),
+        **get_admission_totals(),
+    })
 
 
 @app.route('/verify/login', methods=['GET', 'POST'])
@@ -2639,7 +2738,10 @@ def verify_ticket():
             qty = result['quantity']
             guest_word = 'guest' if qty == 1 else 'guests'
             type_label = 'VIP' if result.get('is_vip') else 'GA'
-            return f"✅ {type_label} — {qty} {guest_word} admitted"
+            msg = f"✅ {type_label} — {qty} {guest_word} admitted"
+            if result.get('vip_overflow_note'):
+                msg += f" ({result['vip_overflow_note']})"
+            return msg
         if result['status'] == 'used':
             qty = result['quantity']
             guest_word = 'guest' if qty == 1 else 'guests'

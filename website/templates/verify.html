@@ -22,6 +22,7 @@
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-purple-400 font-semibold">VIP</p>
                 <p id="total-vip" class="text-3xl font-black tabular-nums">{{ admission_totals.vip }}</p>
+                <p id="vip-capacity-progress" class="hidden text-[10px] text-zinc-500 mt-1 tabular-nums"></p>
             </div>
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">Total</p>
@@ -34,22 +35,42 @@
              class="hidden mb-3 rounded-2xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
             Max capacity reached — congrats on selling this place out!
         </div>
+        <div id="vip-capacity-banner"
+             class="hidden mb-3 rounded-2xl border border-purple-400/40 bg-purple-400/10 px-4 py-3 text-sm text-purple-200">
+            VIP area full — new VIP scans admit as GA.
+        </div>
 
-        <div class="mb-4 flex items-center justify-center gap-2 text-xs flex-wrap">
-            <label for="max-capacity-input" class="text-zinc-500">Max capacity</label>
-            <input type="number"
-                   id="max-capacity-input"
-                   min="1"
-                   step="1"
-                   placeholder="No limit"
-                   value="{{ admission_totals.max_capacity or '' }}"
-                   class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
-            <button type="button"
-                    onclick="saveMaxCapacity()"
-                    class="text-zinc-400 hover:text-white transition-colors">
-                Save
-            </button>
-            <span class="text-zinc-700">|</span>
+        <div class="mb-4 flex flex-col items-center gap-2 text-xs">
+            <div class="flex items-center justify-center gap-2 flex-wrap">
+                <label for="max-capacity-input" class="text-zinc-500">Max capacity</label>
+                <input type="number"
+                       id="max-capacity-input"
+                       min="1"
+                       step="1"
+                       placeholder="No limit"
+                       value="{{ admission_totals.max_capacity or '' }}"
+                       class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
+                <button type="button"
+                        onclick="saveMaxCapacity()"
+                        class="text-zinc-400 hover:text-white transition-colors">
+                    Save
+                </button>
+            </div>
+            <div class="flex items-center justify-center gap-2 flex-wrap">
+                <label for="max-vip-capacity-input" class="text-zinc-500">VIP cap</label>
+                <input type="number"
+                       id="max-vip-capacity-input"
+                       min="1"
+                       step="1"
+                       placeholder="No limit"
+                       value="{{ admission_totals.max_vip_capacity or '' }}"
+                       class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
+                <button type="button"
+                        onclick="saveMaxVipCapacity()"
+                        class="text-zinc-400 hover:text-white transition-colors">
+                    Save
+                </button>
+            </div>
             <button type="button"
                     onclick="resetAdmissionTotals()"
                     class="text-zinc-500 hover:text-red-400 transition-colors">
@@ -101,11 +122,17 @@
         document.getElementById('total-all').textContent = totals.total;
 
         const progressEl = document.getElementById('capacity-progress');
+        const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
+        const vipBannerEl = document.getElementById('vip-capacity-banner');
         const maxInput = document.getElementById('max-capacity-input');
+        const maxVipInput = document.getElementById('max-vip-capacity-input');
 
-        if (maxInput && document.activeElement !== maxInput && totals.max_capacity) {
-            maxInput.value = totals.max_capacity;
+        if (maxInput && document.activeElement !== maxInput) {
+            maxInput.value = totals.max_capacity || '';
+        }
+        if (maxVipInput && document.activeElement !== maxVipInput) {
+            maxVipInput.value = totals.max_vip_capacity || '';
         }
 
         if (progressEl) {
@@ -116,12 +143,27 @@
                 progressEl.classList.add('hidden');
             }
         }
+        if (vipProgressEl) {
+            if (totals.max_vip_capacity) {
+                vipProgressEl.textContent = `${totals.vip} / ${totals.max_vip_capacity}`;
+                vipProgressEl.classList.remove('hidden');
+            } else {
+                vipProgressEl.classList.add('hidden');
+            }
+        }
 
         if (bannerEl) {
             if (totals.capacity_reached) {
                 bannerEl.classList.remove('hidden');
             } else {
                 bannerEl.classList.add('hidden');
+            }
+        }
+        if (vipBannerEl) {
+            if (totals.vip_capacity_reached) {
+                vipBannerEl.classList.remove('hidden');
+            } else {
+                vipBannerEl.classList.add('hidden');
             }
         }
     }
@@ -145,16 +187,7 @@
         }
     }
 
-    async function saveMaxCapacity() {
-        const input = document.getElementById('max-capacity-input');
-        const raw = (input.value || '').trim();
-        const payload = { max_capacity: raw === '' ? null : Number(raw) };
-
-        if (payload.max_capacity !== null && (!Number.isFinite(payload.max_capacity) || payload.max_capacity < 1)) {
-            alert('Enter a whole number of 1 or higher, or leave blank for no limit.');
-            return;
-        }
-
+    async function saveScannerSetting(payload, errorLabel) {
         try {
             const response = await fetch('/api/scanner-settings', {
                 method: 'POST',
@@ -163,21 +196,44 @@
             });
             if (response.status === 401) {
                 redirectToScannerLogin();
-                return;
+                return null;
             }
             if (!response.ok) {
-                alert('Failed to save max capacity. Please try again.');
-                return;
+                alert(`Failed to save ${errorLabel}. Please try again.`);
+                return null;
             }
             const totals = await response.json();
             updateAdmissionTotals(totals);
-            if (!totals.max_capacity) {
-                input.value = '';
-            }
+            return totals;
         } catch (err) {
-            console.warn('Failed to save max capacity', err);
-            alert('Failed to save max capacity. Check your connection and try again.');
+            console.warn(`Failed to save ${errorLabel}`, err);
+            alert(`Failed to save ${errorLabel}. Check your connection and try again.`);
+            return null;
         }
+    }
+
+    async function saveMaxCapacity() {
+        const input = document.getElementById('max-capacity-input');
+        const raw = (input.value || '').trim();
+        const value = raw === '' ? null : Number(raw);
+        if (value !== null && (!Number.isFinite(value) || value < 1)) {
+            alert('Enter a whole number of 1 or higher, or leave blank for no limit.');
+            return;
+        }
+        const totals = await saveScannerSetting({ max_capacity: value }, 'max capacity');
+        if (totals && !totals.max_capacity) input.value = '';
+    }
+
+    async function saveMaxVipCapacity() {
+        const input = document.getElementById('max-vip-capacity-input');
+        const raw = (input.value || '').trim();
+        const value = raw === '' ? null : Number(raw);
+        if (value !== null && (!Number.isFinite(value) || value < 1)) {
+            alert('Enter a whole number of 1 or higher for VIP cap, or leave blank for no limit.');
+            return;
+        }
+        const totals = await saveScannerSetting({ max_vip_capacity: value }, 'VIP cap');
+        if (totals && !totals.max_vip_capacity) input.value = '';
     }
 
     async function resetAdmissionTotals() {
@@ -249,10 +305,14 @@
                 const soldOutNote = result.admission_totals && result.admission_totals.capacity_reached
                     ? '<div class="text-amber-300 text-sm mt-4">Max capacity reached — congrats on selling this place out!</div>'
                     : '';
+                const vipNote = result.vip_overflow_note
+                    ? `<div class="text-purple-300 text-sm mt-4">${result.vip_overflow_note}</div>`
+                    : '';
                 resultEl.innerHTML = `
                     <div class="text-white text-2xl font-bold mb-1">✅ You're In!</div>
                     <div class="text-6xl font-black leading-none mb-2 ${typeColor}">${typeLabel}</div>
                     <div class="text-3xl font-bold text-white">${result.quantity} ${guestWord}</div>
+                    ${vipNote}
                     ${soldOutNote}
                 `;
             } else if (result.status === 'sold_out') {
@@ -356,7 +416,9 @@
             vip: {{ admission_totals.vip }},
             total: {{ admission_totals.total }},
             max_capacity: {{ admission_totals.max_capacity if admission_totals.max_capacity else 'null' }},
+            max_vip_capacity: {{ admission_totals.max_vip_capacity if admission_totals.max_vip_capacity else 'null' }},
             capacity_reached: {{ 'true' if admission_totals.capacity_reached else 'false' }},
+            vip_capacity_reached: {{ 'true' if admission_totals.vip_capacity_reached else 'false' }},
         });
         refreshAdmissionTotals();
         if (shouldAutostartScanner()) {
