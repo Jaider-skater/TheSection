@@ -23,6 +23,14 @@
                    class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
                     Download JSON
                 </a>
+                <a href="/admin/mailing-list"
+                   class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-black font-semibold rounded-xl text-sm">
+                    Mailing Lists
+                </a>
+                <a href="/"
+                   class="px-4 py-2 border border-zinc-700 text-zinc-300 hover:text-white rounded-xl text-sm">
+                    Home
+                </a>
                 <form method="POST" action="{{ url_for('admin_logout') }}" class="inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="px-4 py-2 border border-zinc-700 text-zinc-300 hover:text-white rounded-xl text-sm">

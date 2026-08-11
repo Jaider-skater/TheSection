@@ -18,6 +18,10 @@ import tempfile
 import time
 import fcntl
 from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # type: ignore
 from urllib.parse import urlencode
 
 app = Flask(__name__,
@@ -95,6 +99,16 @@ scanner_settings_file = os.getenv(
     'SCANNER_SETTINGS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'scanner_settings.json'),
 )
+invites_file = os.getenv(
+    'INVITES_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'member_invites.json'),
+)
+full_mailing_list_file = os.getenv(
+    'FULL_MAILING_LIST_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'full_mailing_list.json'),
+)
+INVITE_EXPIRY_DAYS = int(os.getenv('INVITE_EXPIRY_DAYS', '14'))
+APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'America/Los_Angeles')
 stripe_webhook_secret = (os.getenv('STRIPE_WEBHOOK_SECRET') or '').strip()
 
 
@@ -118,6 +132,10 @@ vip_bulk_discount = parse_discount_value(
     0.10,
 )
 member_discount = parse_discount_value(os.getenv('MEMBER_DISCOUNT', '0.10'))
+returning_guest_discount = parse_discount_value(
+    os.getenv('RETURNING_GUEST_DISCOUNT', '0.20'),
+    0.20,
+)
 app.secret_key = require_env_secret('SECRET_KEY', min_length=24, allow_dev_generate=True)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
@@ -128,6 +146,8 @@ app.config.update(
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
 scanner_settings_lock = threading.Lock()
+invites_lock = threading.Lock()
+full_list_lock = threading.Lock()
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
 
@@ -621,6 +641,459 @@ def update_member_password(email, new_password):
     return False
 
 
+def load_invites():
+    if not ensure_data_dir(invites_file):
+        return []
+    data = _locked_json_read(invites_file, [])
+    return data if isinstance(data, list) else []
+
+
+def save_invites(invites):
+    if not ensure_data_dir(invites_file):
+        return False
+    return _locked_json_write(invites_file, invites)
+
+
+def normalize_email_list(raw):
+    if not raw:
+        return []
+    normalized = []
+    seen = set()
+    for chunk in raw.replace(',', '\n').replace(';', '\n').split('\n'):
+        email = chunk.strip().lower()
+        if not email or '@' not in email:
+            continue
+        if email in seen:
+            continue
+        seen.add(email)
+        normalized.append(email)
+    return normalized
+
+
+def get_member_invite(email):
+    normalized = (email or '').strip().lower()
+    if not normalized:
+        return None
+    for invite in load_invites():
+        if invite.get('email', '').strip().lower() == normalized:
+            return invite
+    return None
+
+
+def add_emails_to_invite_list(emails):
+    added = []
+    skipped = []
+    with invites_lock:
+        invites = load_invites()
+        existing = {i.get('email', '').strip().lower() for i in invites}
+        for email in emails:
+            if email in existing:
+                skipped.append(email)
+                continue
+            invites.append({
+                'email': email,
+                'added_at': datetime.now(timezone.utc).isoformat(),
+                'sent_at': None,
+                'claimed_at': None,
+                'invite_token': None,
+                'invite_expires': None,
+            })
+            existing.add(email)
+            added.append(email)
+        save_invites(invites)
+    return added, skipped
+
+
+def remove_email_from_invite_list(email):
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        updated = [i for i in invites if i.get('email', '').strip().lower() != normalized]
+        if len(updated) == len(invites):
+            return False
+        save_invites(updated)
+        return True
+
+
+def clear_exclusive_member_features(email):
+    """Remove exclusive-list perks from a member account (keep login + tickets).
+
+    Clears returning_guest_discount. If they have no purchase history, also
+    clears discount_code so they no longer get member pricing.
+    """
+    normalized = (email or '').strip().lower()
+    if not normalized:
+        return False
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').strip().lower() != normalized:
+                continue
+            changed = False
+            if 'returning_guest_discount' in member:
+                member.pop('returning_guest_discount', None)
+                changed = True
+            # No past purchases + exclusive removed → lose discount eligibility.
+            has_purchases = False
+            for ticket in load_tickets():
+                if ticket.get('email', '').lower() == normalized:
+                    has_purchases = True
+                    break
+            if not has_purchases:
+                for ticket_id in member.get('saved_tickets') or []:
+                    if get_ticket_record(ticket_id):
+                        has_purchases = True
+                        break
+            if not has_purchases and member.get('discount_code'):
+                member.pop('discount_code', None)
+                changed = True
+            if changed:
+                save_members(members)
+            return changed
+    return False
+
+
+def grant_exclusive_member_features(email):
+    """If a member account exists for this email, attach exclusive lifetime perk."""
+    normalized = (email or '').strip().lower()
+    if not normalized:
+        return False
+    with members_lock:
+        members = load_members()
+        for member in members:
+            if member.get('email', '').strip().lower() != normalized:
+                continue
+            member['returning_guest_discount'] = True
+            if not member.get('discount_code'):
+                code = generate_discount_code(normalized)
+                while discount_code_taken(code, exclude_email=normalized):
+                    code = generate_discount_code(normalized)
+                member['discount_code'] = code
+            save_members(members)
+            return True
+    return False
+
+
+def update_email_on_invite_list(old_email, new_email):
+    """Rename an exclusive-list address. Returns (ok, error_message)."""
+    old = (old_email or '').strip().lower()
+    new = (new_email or '').strip().lower()
+    if not old or not new or '@' not in new:
+        return False, 'Enter a valid new email address.'
+    if old == new:
+        return True, None
+    with invites_lock:
+        invites = load_invites()
+        target = None
+        for invite in invites:
+            email = invite.get('email', '').strip().lower()
+            if email == new:
+                return False, f'{new} is already on the exclusive list.'
+            if email == old:
+                target = invite
+        if not target:
+            return False, 'That exclusive-list email was not found.'
+        target['email'] = new
+        # Force a fresh invite link if address changed before claim.
+        if not target.get('claimed_at'):
+            target['invite_token'] = None
+            target['invite_expires'] = None
+            target['sent_at'] = None
+        save_invites(invites)
+    # Old address loses exclusive perks; new address gains them if they have an account.
+    clear_exclusive_member_features(old)
+    grant_exclusive_member_features(new)
+    return True, None
+
+
+def set_member_invite_token(email):
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(days=INVITE_EXPIRY_DAYS)
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        for invite in invites:
+            if invite.get('email', '').strip().lower() == normalized:
+                invite['invite_token'] = hash_reset_token(token)
+                invite['invite_expires'] = expires.isoformat()
+                save_invites(invites)
+                return token
+    return None
+
+
+def verify_member_invite_token(email, token):
+    invite = get_member_invite(email)
+    if not invite or not token or not invite.get('invite_token'):
+        return False
+    if invite.get('claimed_at'):
+        return False
+    expires_raw = invite.get('invite_expires')
+    if not expires_raw:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_raw.replace('Z', '+00:00'))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    if datetime.now(timezone.utc) > expires:
+        return False
+    return secure_equals(invite.get('invite_token'), hash_reset_token(token))
+
+
+def mark_member_invite_claimed(email):
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        for invite in invites:
+            if invite.get('email', '').strip().lower() == normalized:
+                invite['claimed_at'] = datetime.now(timezone.utc).isoformat()
+                invite.pop('invite_token', None)
+                invite.pop('invite_expires', None)
+                save_invites(invites)
+                return True
+    return False
+
+
+def mark_member_invite_sent(email):
+    normalized = email.strip().lower()
+    with invites_lock:
+        invites = load_invites()
+        for invite in invites:
+            if invite.get('email', '').strip().lower() == normalized:
+                invite['sent_at'] = datetime.now(timezone.utc).isoformat()
+                save_invites(invites)
+                return True
+    return False
+
+
+def invite_list_for_admin():
+    rows = []
+    for invite in sorted(load_invites(), key=lambda i: i.get('added_at', ''), reverse=True):
+        email = invite.get('email', '').strip().lower()
+        member = get_legacy_member(email)
+        status = 'pending'
+        if member:
+            status = 'account_exists'
+        elif invite.get('claimed_at'):
+            status = 'claimed'
+        elif invite.get('sent_at'):
+            status = 'sent'
+        rows.append({
+            'email': email,
+            'added_at': invite.get('added_at'),
+            'sent_at': invite.get('sent_at'),
+            'claimed_at': invite.get('claimed_at'),
+            'status': status,
+        })
+    return rows
+
+
+def invites_ready_to_send():
+    ready = []
+    for row in invite_list_for_admin():
+        if row['status'] in ('pending', 'sent'):
+            ready.append(row['email'])
+    return ready
+
+
+def create_member_from_invite(email, password):
+    normalized = email.strip().lower()
+    if get_legacy_member(normalized):
+        return False, 'An account with that email already exists.'
+    discount_code = generate_discount_code(normalized)
+    while discount_code_taken(discount_code):
+        discount_code = generate_discount_code(normalized)
+    with members_lock:
+        members = load_members()
+        members.append({
+            'email': normalized,
+            'password_hash': hash_password(password),
+            'saved_tickets': [],
+            'discount_code': discount_code,
+            'returning_guest_discount': True,
+            'joined_at': datetime.now(timezone.utc).isoformat(),
+        })
+        save_members(members)
+    mark_member_invite_claimed(normalized)
+    # Exclusive list only — do not put returning-guest accounts on the full list.
+    return True, None
+
+
+# --- Full mailing list (signups + founding + manual; no exclusive 20% perk) ---
+
+
+def load_full_mailing_list():
+    if not ensure_data_dir(full_mailing_list_file):
+        return []
+    data = _locked_json_read(full_mailing_list_file, [])
+    return data if isinstance(data, list) else []
+
+
+def save_full_mailing_list(entries):
+    if not ensure_data_dir(full_mailing_list_file):
+        return False
+    return _locked_json_write(full_mailing_list_file, entries)
+
+
+def is_on_exclusive_invite_list(email):
+    return get_member_invite(email) is not None
+
+
+def add_emails_to_full_mailing_list(emails, source='manual'):
+    """Add emails to the general list. Skips exclusive invite-list addresses."""
+    added = []
+    skipped = []
+    with full_list_lock:
+        entries = load_full_mailing_list()
+        existing = {e.get('email', '').strip().lower() for e in entries}
+        for email in emails:
+            normalized = (email or '').strip().lower()
+            if not normalized or '@' not in normalized:
+                continue
+            if is_on_exclusive_invite_list(normalized):
+                skipped.append(normalized)
+                continue
+            if normalized in existing:
+                skipped.append(normalized)
+                continue
+            entries.append({
+                'email': normalized,
+                'added_at': datetime.now(timezone.utc).isoformat(),
+                'source': source,
+            })
+            existing.add(normalized)
+            added.append(normalized)
+        save_full_mailing_list(entries)
+    return added, skipped
+
+
+def remove_email_from_full_mailing_list(email):
+    normalized = email.strip().lower()
+    with full_list_lock:
+        entries = load_full_mailing_list()
+        updated = [e for e in entries if e.get('email', '').strip().lower() != normalized]
+        if len(updated) == len(entries):
+            return False
+        save_full_mailing_list(updated)
+        return True
+
+
+def update_email_on_full_mailing_list(old_email, new_email):
+    """Rename a full-list address. Returns (ok, error_message)."""
+    old = (old_email or '').strip().lower()
+    new = (new_email or '').strip().lower()
+    if not old or not new or '@' not in new:
+        return False, 'Enter a valid new email address.'
+    if old == new:
+        return True, None
+    if is_on_exclusive_invite_list(new):
+        return False, f'{new} is on the exclusive list and cannot be added here.'
+    with full_list_lock:
+        entries = load_full_mailing_list()
+        target = None
+        for entry in entries:
+            email = entry.get('email', '').strip().lower()
+            if email == new:
+                return False, f'{new} is already on the full list.'
+            if email == old:
+                target = entry
+        if not target:
+            return False, 'That full-list email was not found.'
+        target['email'] = new
+        save_full_mailing_list(entries)
+    return True, None
+
+
+def full_mailing_list_for_admin():
+    rows = []
+    for entry in sorted(load_full_mailing_list(), key=lambda e: e.get('added_at', ''), reverse=True):
+        email = entry.get('email', '').strip().lower()
+        member = get_legacy_member(email)
+        rows.append({
+            'email': email,
+            'added_at': entry.get('added_at'),
+            'source': entry.get('source') or 'manual',
+            'has_account': bool(member),
+        })
+    return rows
+
+
+def sync_members_into_full_mailing_list():
+    """Pull non-exclusive members (including founding) into the full list."""
+    emails = []
+    for member in load_members():
+        email = (member.get('email') or '').strip().lower()
+        if not email:
+            continue
+        if member.get('returning_guest_discount'):
+            continue
+        if is_on_exclusive_invite_list(email):
+            continue
+        emails.append(email)
+    return add_emails_to_full_mailing_list(emails, source='member')
+
+
+def subscribe_signup_to_full_list(email):
+    """Public self-signup → full list only if not on exclusive invite list."""
+    normalized = (email or '').strip().lower()
+    if not normalized:
+        return
+    if is_on_exclusive_invite_list(normalized):
+        return
+    add_emails_to_full_mailing_list([normalized], source='signup')
+
+
+def resolve_broadcast_recipients(lists):
+    """lists is a set like {'exclusive', 'full'}."""
+    emails = set()
+    if 'exclusive' in lists:
+        for invite in load_invites():
+            email = (invite.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    if 'full' in lists:
+        for entry in load_full_mailing_list():
+            email = (entry.get('email') or '').strip().lower()
+            if email:
+                emails.add(email)
+    return sorted(emails)
+
+
+def send_broadcast_email(subject, body, recipients):
+    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
+    subject = (subject or '').strip()
+    body = (body or '').strip()
+    sent = []
+    failed = []
+    if not subject or not body or not recipients:
+        return sent, failed
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
+        + '</div>'
+    )
+    with app.app_context():
+        for email in recipients:
+            try:
+                msg = Message(
+                    subject,
+                    sender=mail_from_address(),
+                    recipients=[email],
+                )
+                msg.body = body
+                msg.html = html_body
+                mail.send(msg)
+                sent.append(email)
+            except Exception as e:
+                print(f'Broadcast email failed for {email}:', e)
+                failed.append(email)
+    return sent, failed
+
+
+
+
 def member_has_past_purchases(member):
     if not member:
         return False
@@ -635,11 +1108,105 @@ def member_has_past_purchases(member):
     return False
 
 
+
+def clear_returning_guest_discount_if_purchased(email):
+    """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
+    return
+
+
+def member_has_past_purchases(member):
+    if not member:
+        return False
+    email = member.get('email', '').strip().lower()
+    if email:
+        for ticket in load_tickets():
+            if ticket.get('email', '').lower() == email:
+                return True
+    for ticket_id in member.get('saved_tickets', []):
+        if get_ticket_record(ticket_id):
+            return True
+    return False
+
+
+def member_has_returning_guest_discount(member):
+    return bool(member and member.get('returning_guest_discount'))
+
+
+def ensure_returning_guest_flag_for_exclusive_member(member):
+    """Exclusive-list emails keep the lifetime single-ticket perk even if they signed up without the invite link."""
+    if not member:
+        return member
+    if member.get('returning_guest_discount'):
+        return member
+    email = (member.get('email') or '').strip().lower()
+    if not email or not is_on_exclusive_invite_list(email):
+        return member
+    with members_lock:
+        members = load_members()
+        for stored in members:
+            if stored.get('email', '').strip().lower() == email:
+                stored['returning_guest_discount'] = True
+                if not stored.get('discount_code'):
+                    code = generate_discount_code(email)
+                    while discount_code_taken(code, exclude_email=email):
+                        code = generate_discount_code(email)
+                    stored['discount_code'] = code
+                save_members(members)
+                member = stored
+                break
+    return member
+
+
+def member_discount_eligible(member):
+    if not member:
+        return False
+    member = ensure_returning_guest_flag_for_exclusive_member(member)
+    return member_has_past_purchases(member) or member_has_returning_guest_discount(member)
+
+
 def member_discount_active():
     if not is_legacy_member_logged_in():
         return False
     member = get_logged_in_member()
-    return bool(member and member_has_past_purchases(member))
+    return member_discount_eligible(member)
+
+
+def resolve_member_discount_application(requested):
+    if not requested:
+        return False
+    return member_discount_active()
+
+
+def active_member_discount_rate(quantity=1, require_active=True):
+    """Percent rate (0–1) for the logged-in member at this quantity.
+
+    Exclusive-list members keep returning_guest_discount for life:
+    - quantity 1 → higher welcome rate (default 20%)
+    - quantity 2+ → standard member rate (default 10%) for group/friend buys
+
+    If require_active is False, returns the eligible rate even when the code is not applied.
+    """
+    member = get_logged_in_member()
+    if member:
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+    if require_active and not member_discount_active():
+        return 0.0
+    if not member or not member_discount_eligible(member):
+        return 0.0
+    quantity = max(1, int(quantity or 1))
+    if member_has_returning_guest_discount(member) and quantity == 1:
+        rate = returning_guest_discount if returning_guest_discount > 0 else member_discount
+        return rate if rate > 0 else 0.20
+    rate = member_discount if member_discount > 0 else 0.0
+    return rate if rate > 0 else 0.10
+
+
+
+def member_discount_active():
+    if not is_legacy_member_logged_in():
+        return False
+    member = get_logged_in_member()
+    return member_discount_eligible(member)
 
 
 def resolve_member_discount_application(requested):
@@ -1236,6 +1803,9 @@ def build_wallet_pass(ticket_id, quantity):
 
 
 bootstrap_legacy_members()
+_founding = [e for e in verify_login_emails]
+if _founding:
+    add_emails_to_full_mailing_list(_founding, source='founding')
 log_storage_state()
 
 
@@ -1501,9 +2071,133 @@ def deliver_password_reset_email(customer_email, token, reset_url=None):
     return sent
 
 
+
+def parse_iso_datetime(raw):
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+_display_tz = None
+
+
+def get_display_timezone():
+    global _display_tz
+    if _display_tz is None:
+        try:
+            _display_tz = ZoneInfo(APP_TIMEZONE)
+        except Exception:
+            _display_tz = ZoneInfo('America/Los_Angeles')
+    return _display_tz
+
+
+def display_timezone_label():
+    return datetime.now(get_display_timezone()).strftime('%Z')
+
+
+def format_display_datetime(iso_raw, date_only=False):
+    dt = parse_iso_datetime(iso_raw)
+    if not dt:
+        return '—'
+    local = dt.astimezone(get_display_timezone())
+    if date_only:
+        return local.strftime('%Y-%m-%d')
+    return local.strftime('%Y-%m-%d %H:%M')
+
+
+@app.template_filter('local_time')
+def local_time_filter(iso_raw):
+    return format_display_datetime(iso_raw)
+
+
+@app.template_filter('local_date')
+def local_date_filter(iso_raw):
+    return format_display_datetime(iso_raw, date_only=True)
+
+
+def build_member_invite_url(email, token):
+    query = urlencode({'email': email, 'token': token})
+    return f"{get_public_base_url()}/legacy/join?{query}"
+
+
+def send_member_invite_email(customer_email, token, invite_url=None):
+    invite_url = invite_url or build_member_invite_url(customer_email, token)
+    days_label = f'{INVITE_EXPIRY_DAYS} day{"s" if INVITE_EXPIRY_DAYS != 1 else ""}'
+    welcome_pct = int(returning_guest_discount * 100)
+    member_pct = int(member_discount * 100)
+    plain_body = (
+        "You've been to The Section before — welcome back!\n\n"
+        f'Create your member account for {welcome_pct}% off any single ticket for life '
+        f'(or {member_pct}% when you buy more than one):\n'
+        f'{invite_url}\n\n'
+        f'This link expires in {days_label}.\n'
+    )
+    html_body = (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        '<p>You\'ve been to The Section before — welcome back!</p>'
+        f'<p>Create your member account to save tickets and get '
+        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
+        f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
+        f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
+        'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
+        'Set up your account</a></p>'
+        f'<p style="color:#555;font-size:14px;">This link expires in {days_label}.</p>'
+        f'<p style="color:#555;font-size:14px;">If the button does not work, copy and paste this URL:<br>'
+        f'<span style="word-break:break-all;">{invite_url}</span></p>'
+        '</div>'
+    )
+    with app.app_context():
+        try:
+            msg = Message(
+                'The Section — welcome back (member invite)',
+                sender=mail_from_address(),
+                recipients=[customer_email],
+            )
+            msg.body = plain_body
+            msg.html = html_body
+            mail.send(msg)
+            print(f"Member invite email sent to {customer_email}")
+            return True
+        except Exception as e:
+            print(f"Member invite email failed for {customer_email}:", str(e))
+            return False
+
+
+def deliver_member_invite_email(customer_email, token, invite_url=None):
+    return send_member_invite_email(customer_email, token, invite_url=invite_url)
+
+
+def send_pending_member_invites():
+    sent = []
+    failed = []
+    skipped = []
+    for email in invites_ready_to_send():
+        if get_legacy_member(email):
+            skipped.append(email)
+            continue
+        token = set_member_invite_token(email)
+        if not token:
+            failed.append(email)
+            continue
+        invite_url = build_member_invite_url(email, token)
+        if deliver_member_invite_email(email, token, invite_url=invite_url):
+            mark_member_invite_sent(email)
+            sent.append(email)
+        else:
+            failed.append(email)
+    return {'sent': sent, 'failed': failed, 'skipped': skipped}
+
+
 @app.route('/')
 def home():
-    return render_template('home.html')
+    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
 
 
 @app.route('/api/member-status')
@@ -1512,14 +2206,18 @@ def member_status():
     discount_code = None
     discount_eligible = False
     if member:
-        discount_eligible = member_has_past_purchases(member)
-        discount_code = member.get('discount_code') or ensure_member_discount_code(member)
+        member = ensure_returning_guest_flag_for_exclusive_member(member)
+        discount_eligible = member_discount_eligible(member)
+        if discount_eligible:
+            discount_code = member.get('discount_code') or ensure_member_discount_code(member)
     return jsonify({
         'logged_in': bool(member),
         'email': session.get('legacy_member_email'),
         'discount_code': discount_code,
         'member_discount_eligible': discount_eligible,
-        'member_discount_percent': int(member_discount * 100),
+        'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
+        'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
+        'returning_guest_discount_percent': int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20,
         'bundle_min': bundle_min,
         'bundle_discount_percent': int(bundle_discount * 100),
         'vip_bundle_min': vip_bundle_min,
@@ -2080,6 +2778,7 @@ def legacy_portal():
                         'joined_at': datetime.now(timezone.utc).isoformat(),
                     })
                     save_members(members)
+                subscribe_signup_to_full_list(email)
                 regenerate_session()
                 session['legacy_member_email'] = email
                 if next_url:
@@ -2309,6 +3008,198 @@ def download_tickets_json():
         json.dumps(safe_tickets, indent=2),
         mimetype='application/json',
         headers={'Content-Disposition': 'attachment; filename=thesection-tickets.json'},
+    )
+
+
+
+@app.route('/admin/mailing-list', methods=['GET', 'POST'])
+def admin_mailing_list():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+
+    error = None
+    success = None
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        if action == 'add_emails':
+            emails = normalize_email_list(request.form.get('emails', ''))
+            if not emails:
+                error = 'Add at least one valid email address.'
+            else:
+                added, skipped = add_emails_to_invite_list(emails)
+                parts = []
+                if added:
+                    parts.append(f'Added {len(added)} exclusive email{"s" if len(added) != 1 else ""}.')
+                if skipped:
+                    parts.append(f'{len(skipped)} already on exclusive list.')
+                success = ' '.join(parts) or 'No new emails added.'
+        elif action == 'remove_email':
+            email = (request.form.get('email') or '').strip().lower()
+            if email and remove_email_from_invite_list(email):
+                clear_exclusive_member_features(email)
+                success = (
+                    f'Removed {email} from exclusive list and cleared exclusive member perks '
+                    f'(account/tickets kept if they exist).'
+                )
+            else:
+                error = 'Could not remove that email.'
+        elif action == 'edit_email':
+            old_email = (request.form.get('email') or '').strip().lower()
+            new_email = (request.form.get('new_email') or '').strip().lower()
+            ok, err = update_email_on_invite_list(old_email, new_email)
+            if ok:
+                success = (
+                    f'Updated exclusive email {old_email} → {new_email}.'
+                    if old_email != new_email else 'No change.'
+                )
+            else:
+                error = err or 'Could not update that email.'
+        elif action == 'send_invites':
+            result = send_pending_member_invites()
+            sent_count = len(result['sent'])
+            failed_count = len(result['failed'])
+            if sent_count:
+                success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
+                if failed_count:
+                    success += f' {failed_count} failed to send.'
+            elif failed_count:
+                error = f'Could not send invites ({failed_count} failed). Check mail settings.'
+            else:
+                success = 'No pending invites to send.'
+        elif action == 'add_full_emails':
+            emails = normalize_email_list(request.form.get('emails', ''))
+            if not emails:
+                error = 'Add at least one valid email address for the full list.'
+            else:
+                added, skipped = add_emails_to_full_mailing_list(emails, source='manual')
+                parts = []
+                if added:
+                    parts.append(f'Added {len(added)} to full list.')
+                if skipped:
+                    parts.append(
+                        f'{len(skipped)} skipped (already on full list or exclusive list).'
+                    )
+                success = ' '.join(parts) or 'No new emails added to full list.'
+        elif action == 'remove_full_email':
+            email = (request.form.get('email') or '').strip().lower()
+            if email and remove_email_from_full_mailing_list(email):
+                success = f'Removed {email} from full list.'
+            else:
+                error = 'Could not remove that email from the full list.'
+        elif action == 'edit_full_email':
+            old_email = (request.form.get('email') or '').strip().lower()
+            new_email = (request.form.get('new_email') or '').strip().lower()
+            ok, err = update_email_on_full_mailing_list(old_email, new_email)
+            if ok:
+                success = (
+                    f'Updated full-list email to {new_email}.'
+                    if old_email != new_email else 'No change.'
+                )
+            else:
+                error = err or 'Could not update that email.'
+        elif action == 'sync_full_list':
+            added, skipped = sync_members_into_full_mailing_list()
+            success = (
+                f'Synced members into full list: {len(added)} added, '
+                f'{len(skipped)} already present or exclusive.'
+            )
+        elif action == 'send_broadcast':
+            subject = (request.form.get('subject') or '').strip()
+            body = (request.form.get('body') or '').strip()
+            lists = set()
+            if request.form.get('list_exclusive'):
+                lists.add('exclusive')
+            if request.form.get('list_full'):
+                lists.add('full')
+            if not lists:
+                error = 'Select at least one mailing list to send to.'
+            elif not subject or not body:
+                error = 'Subject and message body are required.'
+            else:
+                recipients = resolve_broadcast_recipients(lists)
+                if not recipients:
+                    error = 'No recipients on the selected list(s).'
+                else:
+                    sent, failed = send_broadcast_email(subject, body, recipients)
+                    if sent:
+                        success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
+                        if failed:
+                            success += f' {len(failed)} failed.'
+                    elif failed:
+                        error = f'All {len(failed)} sends failed. Check mail settings.'
+                    else:
+                        error = 'Nothing was sent.'
+
+    invites = invite_list_for_admin()
+    ready_count = len(invites_ready_to_send())
+    blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
+    full_list = full_mailing_list_for_admin()
+    return render_template(
+        'mailing_list.html',
+        invites=invites,
+        ready_count=ready_count,
+        blocked_count=blocked_count,
+        full_list=full_list,
+        full_list_count=len(full_list),
+        key='',
+        error=error,
+        success=success,
+        member_discount_percent=int(member_discount * 100),
+        returning_guest_discount_percent=int(returning_guest_discount * 100),
+        invite_days=INVITE_EXPIRY_DAYS,
+        timezone_label=display_timezone_label(),
+    )
+
+
+@app.route('/legacy/join', methods=['GET', 'POST'])
+def legacy_member_invite_signup():
+    email = (
+        request.form.get('email', '').strip().lower()
+        or request.args.get('email', '').strip().lower()
+    )
+    token = request.form.get('token', '') or request.args.get('token', '')
+    error = None
+    if not email or not token:
+        return render_template(
+            'legacy_invite_signup.html',
+            email=email,
+            token=token,
+            token_valid=False,
+            error='This invite link is incomplete. Use the link from your email.',
+            invite_days=INVITE_EXPIRY_DAYS,
+            member_discount_percent=int(member_discount * 100),
+            returning_guest_discount_percent=int(returning_guest_discount * 100),
+        )
+    token_valid = verify_member_invite_token(email, token)
+    if request.method == 'POST':
+        if not rate_limit_allow('invite_signup', 10, 300):
+            error = 'Too many attempts. Please wait a few minutes.'
+        else:
+            new_password = request.form.get('new_password', '')
+            confirm_password = request.form.get('confirm_password', '')
+            if not token_valid:
+                error = 'This invite link is invalid or has expired.'
+            elif new_password != confirm_password:
+                error = 'Passwords do not match.'
+            elif len(new_password) < 8:
+                error = 'Password must be at least 8 characters.'
+            else:
+                ok, create_error = create_member_from_invite(email, new_password)
+                if ok:
+                    regenerate_session()
+                    session['legacy_member_email'] = email
+                    return redirect(url_for('legacy_portal'))
+                error = create_error or 'Could not create account.'
+    return render_template(
+        'legacy_invite_signup.html',
+        email=email,
+        token=token,
+        token_valid=token_valid,
+        error=error,
+        invite_days=INVITE_EXPIRY_DAYS,
+        member_discount_percent=int(member_discount * 100),
+        returning_guest_discount_percent=int(returning_guest_discount * 100),
     )
 
 
