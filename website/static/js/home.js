@@ -65,12 +65,26 @@ async function loadMemberStatus() {
     }
 }
 
+function activeMemberPercent() {
+    if (pricing && pricing.member_discount_percent) {
+        return pricing.member_discount_percent;
+    }
+    if (memberStatus.returning_guest_discount && quantity === 1) {
+        return memberStatus.returning_guest_discount_percent || 20;
+    }
+    return memberStatus.member_discount_percent || 10;
+}
+
 function memberCodeHintText() {
-    const memberPct = memberStatus.member_discount_percent;
+    const memberPct = activeMemberPercent();
     const bulkPct = bulkPctForType();
+    const isExclusiveSingle = memberStatus.returning_guest_discount && quantity === 1;
     if (!memberDiscountApplied) {
         if (pricing && pricing.bundle_discount_applied) {
             return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
+        }
+        if (isExclusiveSingle) {
+            return `Tap to add ${memberPct}% off this single ticket (lifetime exclusive perk)`;
         }
         return `Tap to add ${memberPct}% member discount`;
     }
@@ -79,6 +93,9 @@ function memberCodeHintText() {
         return `${totalPct}% off (${bulkPct}% bulk + ${memberPct}% member)`;
     }
     if (pricing && pricing.member_discount_applied) {
+        if (pricing.returning_guest_single_ticket_rate || isExclusiveSingle) {
+            return `${memberPct}% exclusive single-ticket rate applied`;
+        }
         return `${memberPct}% member discount applied`;
     }
     return `${memberPct}% member discount applied`;
@@ -129,7 +146,13 @@ function updateMemberBanner() {
         if (discountLine) {
             const bulkLabel = formatBulkPricingLabel();
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                discountLine.textContent = `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
+                if (memberStatus.returning_guest_discount) {
+                    const welcome = memberStatus.returning_guest_discount_percent || 20;
+                    const multi = memberStatus.member_discount_percent || 10;
+                    discountLine.textContent = `${welcome}% off one ticket for life — or ${multi}% when you buy 2+. Bulk (${bulkLabel}) can stack on multi-ticket orders. Tap your code below to apply.`;
+                } else {
+                    discountLine.textContent = `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
+                }
             } else {
                 discountLine.textContent = `Bulk pricing: ${bulkLabel}. Member discount unlocks after your first purchase.`;
             }
@@ -250,7 +273,7 @@ function updateModalQuantity() {
         }
 
         const bulkPct = bulkPctForType();
-        const memberPct = pricing.member_discount_percent;
+        const memberPct = pricing.member_discount_percent || activeMemberPercent();
         const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
         const bulkOnlyUnit = Math.round(pricing.base_unit_price_cents * (1 - bulkPct / 100));
         const bulkOnlyLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(bulkOnlyUnit)} each`;
@@ -279,7 +302,11 @@ function updateModalQuantity() {
         } else if (pricing.member_discount_applied) {
             memberVisible = true;
             memberStyle = 'applied';
-            memberText = `${memberPct}% member discount — ${priceLine}`;
+            if (pricing.returning_guest_single_ticket_rate) {
+                memberText = `${memberPct}% exclusive single-ticket rate — ${priceLine}`;
+            } else {
+                memberText = `${memberPct}% member discount — ${priceLine}`;
+            }
         } else if (
             memberStatus.logged_in
             && memberStatus.member_discount_eligible
@@ -289,6 +316,8 @@ function updateModalQuantity() {
             memberVisible = true;
             if (pricing.bundle_discount_applied) {
                 memberText = `Tap ${memberStatus.discount_code} above to add ${memberPct}% more (→ ${bulkPct + memberPct}% total)`;
+            } else if (memberStatus.returning_guest_discount && quantity === 1) {
+                memberText = `Tap ${memberStatus.discount_code} for ${memberPct}% off this single ticket (lifetime exclusive)`;
             } else {
                 memberText = `Tap ${memberStatus.discount_code} above to apply ${memberPct}% off`;
             }

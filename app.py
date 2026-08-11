@@ -1202,18 +1202,6 @@ def active_member_discount_rate(quantity=1, require_active=True):
 
 
 
-def member_discount_active():
-    if not is_legacy_member_logged_in():
-        return False
-    member = get_logged_in_member()
-    return member_discount_eligible(member)
-
-
-def resolve_member_discount_application(requested):
-    if not requested:
-        return False
-    return member_discount_active()
-
 
 def sync_member_tickets_from_email(member):
     email = member.get('email', '').strip().lower()
@@ -1269,16 +1257,27 @@ def calculate_bulk_total_cents(ticket_type, quantity):
 
 
 def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
+    """Price with optional member/exclusive discount.
+
+    Exclusive (returning-guest) members: 20% off a single ticket for life.
+    Two or more tickets use the normal member rate (default 10%), and can stack with bulk.
+    """
+    quantity = max(1, int(quantity or 1))
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
     base_total = base * quantity
 
-    if not apply_member_discount or member_discount <= 0:
+    if not apply_member_discount:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
-    if bulk_discount_applies(ticket_type, quantity):
-        return int(base_total * (1 - bulk_discount_rate(ticket_type) - member_discount))
+    rate = active_member_discount_rate(quantity)
+    if rate <= 0:
+        return calculate_bulk_total_cents(ticket_type, quantity)
 
-    return int(base_total * (1 - member_discount))
+    # Single-ticket exclusive rate does not use bulk (qty is 1).
+    if bulk_discount_applies(ticket_type, quantity):
+        return int(base_total * (1 - bulk_discount_rate(ticket_type) - rate))
+
+    return int(base_total * (1 - rate))
 
 
 def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
@@ -1288,20 +1287,23 @@ def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
 
 
 def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
+    quantity = max(1, int(quantity or 1))
     base = TICKET_TYPES[ticket_type]['price_cents']
     base_total_cents = base * quantity
     bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
+    eligible_rate = active_member_discount_rate(quantity, require_active=False)
+    rate = eligible_rate if apply_member_discount else 0.0
     total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
     unit_price = total_cents // quantity
 
     bulk_savings_active = bulk_only_total < base_total_cents
-    member_requested = apply_member_discount and member_discount > 0
+    member_requested = apply_member_discount and rate > 0
     stacked_discount_applied = (
         bulk_savings_active and member_requested and total_cents < bulk_only_total
     )
 
     member_only_total = (
-        int(base_total_cents * (1 - member_discount))
+        int(base_total_cents * (1 - rate))
         if member_requested
         else None
     )
@@ -1318,9 +1320,14 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
 
     combined_discount_percent = None
     if stacked_discount_applied and bulk_discount_applies(ticket_type, quantity):
-        combined_discount_percent = int(
-            (bulk_discount_rate(ticket_type) + member_discount) * 100
-        )
+        combined_discount_percent = int((bulk_discount_rate(ticket_type) + rate) * 100)
+
+    member = get_logged_in_member()
+    is_returning = bool(member and member_has_returning_guest_discount(member))
+    # Percent shown for the code at this quantity (20% single exclusive, else 10%).
+    display_member_percent = int(round(rate * 100)) if rate > 0 else int(member_discount * 100)
+    if not apply_member_discount and eligible_rate > 0:
+        display_member_percent = int(round(eligible_rate * 100))
 
     bulk_min = vip_bundle_min if ticket_type == 'vip' else bundle_min
     bulk_percent = int(bulk_discount_rate(ticket_type) * 100)
@@ -1340,7 +1347,9 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
         'legacy_discount_applied': total_cents < base_total_cents,
         'bundle_min': bulk_min,
         'bundle_discount_percent': bulk_percent,
-        'member_discount_percent': int(member_discount * 100),
+        'member_discount_percent': display_member_percent,
+        'returning_guest_discount': is_returning,
+        'returning_guest_single_ticket_rate': is_returning and quantity == 1 and rate >= 0.20,
         'vip_bundle_min': vip_bundle_min,
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
     }
@@ -2773,15 +2782,24 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
                     'scanned': bool(record.get('scanned_at')),
                     'view_url': ticket_display_url(ticket_id, ensure_ticket_view_token(record)),
                 })
+    if logged_in:
+        logged_in = ensure_returning_guest_flag_for_exclusive_member(logged_in) or logged_in
+        # refresh after possible flag write
+        logged_in = get_logged_in_member() or logged_in
+    discount_eligible = member_discount_eligible(logged_in) if logged_in else False
+    has_returning = member_has_returning_guest_discount(logged_in) if logged_in else False
     return {
         'error': error,
         'success': success,
         'member': logged_in,
         'saved_ticket_details': saved_ticket_details or [],
         'has_past_purchases': member_has_past_purchases(logged_in) if logged_in else False,
+        'has_returning_guest_discount': has_returning,
+        'discount_eligible': discount_eligible,
         'bundle_min': bundle_min,
         'bundle_discount_percent': int(bundle_discount * 100),
         'member_discount_percent': int(member_discount * 100),
+        'returning_guest_discount_percent': int(returning_guest_discount * 100),
         'vip_bundle_min': vip_bundle_min,
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
         'next_url': next_url,
@@ -2906,6 +2924,9 @@ def legacy_portal():
             if verify_legacy_login(email, password):
                 regenerate_session()
                 session['legacy_member_email'] = email
+                member = get_legacy_member(email)
+                if member:
+                    ensure_returning_guest_flag_for_exclusive_member(member)
                 if is_staff_email(email):
                     session['admin_authenticated'] = True
                     mark_scanner_session_authenticated(email)
