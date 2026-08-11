@@ -9,15 +9,11 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
     <div class="max-w-lg mx-auto text-center">
-        <div class="flex items-center justify-between mb-3 text-sm">
-            <a href="/"
-               class="px-3 py-1.5 rounded-lg border border-zinc-600 text-zinc-200 hover:border-white hover:text-white transition-colors">
-                ← Home
-            </a>
-            <form method="POST" action="/verify/logout">
-                <button type="submit" class="text-zinc-500 hover:text-white transition-colors text-xs">Sign out</button>
-            </form>
-        </div>
+        <form method="POST" action="/verify/logout" class="text-right mb-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="text-xs text-zinc-500 hover:text-white transition-colors">Sign out</button>
+        </form>
+        <meta name="csrf-token" content="{{ csrf_token }}">
         <div id="admission-totals" class="grid grid-cols-3 gap-2 mb-2">
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold">GA</p>
@@ -26,7 +22,6 @@
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-purple-400 font-semibold">VIP</p>
                 <p id="total-vip" class="text-3xl font-black tabular-nums">{{ admission_totals.vip }}</p>
-                <p id="vip-capacity-progress" class="hidden text-[10px] text-zinc-500 mt-1 tabular-nums"></p>
             </div>
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">Total</p>
@@ -39,52 +34,27 @@
              class="hidden mb-3 rounded-2xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
             Max capacity reached — congrats on selling this place out!
         </div>
-        <div id="vip-capacity-banner"
-             class="hidden mb-3 rounded-2xl border border-purple-400/40 bg-purple-400/10 px-4 py-3 text-sm text-purple-200">
-            VIP area full — new VIP scans admit as GA; VIP still valid for another event if not used as VIP.
-        </div>
 
-        <div class="mb-4 flex flex-col items-center gap-2 text-xs">
-            <div class="flex items-center justify-center gap-2 flex-wrap">
-                <label for="max-capacity-input" class="text-zinc-500">Max capacity</label>
-                <input type="number"
-                       id="max-capacity-input"
-                       min="1"
-                       step="1"
-                       placeholder="No limit"
-                       value="{{ admission_totals.max_capacity or '' }}"
-                       class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
-                <button type="button"
-                        onclick="saveMaxCapacity()"
-                        class="text-zinc-400 hover:text-white transition-colors">
-                    Save
-                </button>
-            </div>
-            <div class="flex items-center justify-center gap-2 flex-wrap">
-                <label for="max-vip-capacity-input" class="text-zinc-500">VIP cap</label>
-                <input type="number"
-                       id="max-vip-capacity-input"
-                       min="1"
-                       step="1"
-                       placeholder="No limit"
-                       value="{{ admission_totals.max_vip_capacity or '' }}"
-                       class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
-                <button type="button"
-                        onclick="saveMaxVipCapacity()"
-                        class="text-zinc-400 hover:text-white transition-colors">
-                    Save
-                </button>
-            </div>
+        <div class="mb-4 flex items-center justify-center gap-2 text-xs flex-wrap">
+            <label for="max-capacity-input" class="text-zinc-500">Max capacity</label>
+            <input type="number"
+                   id="max-capacity-input"
+                   min="1"
+                   step="1"
+                   placeholder="No limit"
+                   value="{{ admission_totals.max_capacity or '' }}"
+                   class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
+            <button type="button"
+                    onclick="saveMaxCapacity()"
+                    class="text-zinc-400 hover:text-white transition-colors">
+                Save
+            </button>
+            <span class="text-zinc-700">|</span>
             <button type="button"
                     onclick="resetAdmissionTotals()"
                     class="text-zinc-500 hover:text-red-400 transition-colors">
                 Reset counts
             </button>
-        </div>
-
-        <div id="reset-history" class="hidden mb-4 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-            <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Count reset history</p>
-            <ul id="reset-history-list" class="space-y-2 text-xs text-zinc-400 max-h-36 overflow-y-auto"></ul>
         </div>
 
         <h1 class="text-3xl sm:text-4xl font-bold mb-2">🎟️ Door Scanner</h1>
@@ -110,6 +80,10 @@
 <script>
     const html5QrCode = new Html5Qrcode("reader");
     let scanning = false;
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    function csrfHeaders(extra = {}) {
+        return { 'X-CSRF-Token': csrfToken, ...extra };
+    }
 
     const scannerConfig = {
         fps: 10,
@@ -127,17 +101,11 @@
         document.getElementById('total-all').textContent = totals.total;
 
         const progressEl = document.getElementById('capacity-progress');
-        const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
-        const vipBannerEl = document.getElementById('vip-capacity-banner');
         const maxInput = document.getElementById('max-capacity-input');
-        const maxVipInput = document.getElementById('max-vip-capacity-input');
 
-        if (maxInput && document.activeElement !== maxInput) {
-            maxInput.value = totals.max_capacity || '';
-        }
-        if (maxVipInput && document.activeElement !== maxVipInput) {
-            maxVipInput.value = totals.max_vip_capacity || '';
+        if (maxInput && document.activeElement !== maxInput && totals.max_capacity) {
+            maxInput.value = totals.max_capacity;
         }
 
         if (progressEl) {
@@ -148,14 +116,6 @@
                 progressEl.classList.add('hidden');
             }
         }
-        if (vipProgressEl) {
-            if (totals.max_vip_capacity) {
-                vipProgressEl.textContent = `${totals.vip} / ${totals.max_vip_capacity}`;
-                vipProgressEl.classList.remove('hidden');
-            } else {
-                vipProgressEl.classList.add('hidden');
-            }
-        }
 
         if (bannerEl) {
             if (totals.capacity_reached) {
@@ -163,88 +123,6 @@
             } else {
                 bannerEl.classList.add('hidden');
             }
-        }
-        if (vipBannerEl) {
-            if (totals.vip_capacity_reached) {
-                vipBannerEl.classList.remove('hidden');
-            } else {
-                vipBannerEl.classList.add('hidden');
-            }
-        }
-
-        updateResetHistory(totals.reset_history);
-    }
-
-    function formatResetTimestamp(iso) {
-        if (!iso) return 'Unknown time';
-        const date = new Date(iso);
-        if (Number.isNaN(date.getTime())) return iso;
-        return date.toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-        });
-    }
-
-    function updateResetHistory(history) {
-        const section = document.getElementById('reset-history');
-        const list = document.getElementById('reset-history-list');
-        if (!section || !list) return;
-
-        const entries = Array.isArray(history) ? [...history].reverse() : [];
-        if (!entries.length) {
-            section.classList.add('hidden');
-            list.innerHTML = '';
-            return;
-        }
-
-        section.classList.remove('hidden');
-        list.innerHTML = entries.map(entry => {
-            const when = formatResetTimestamp(entry.reset_at);
-            const ga = entry.ga ?? 0;
-            const vip = entry.vip ?? 0;
-            const total = entry.total ?? (ga + vip);
-            const entryId = entry.id || entry.reset_at || '';
-            const safeId = String(entryId).replace(/"/g, '&quot;');
-            return `<li class="flex items-center justify-between gap-3 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
-                <div class="min-w-0 text-left">
-                    <span class="text-zinc-500 block">${when}</span>
-                    <span class="tabular-nums text-zinc-300 text-[11px]">GA ${ga} · VIP ${vip} · ${total} total</span>
-                </div>
-                <button type="button"
-                        data-reset-id="${safeId}"
-                        onclick="deleteResetHistoryEntry(this.dataset.resetId)"
-                        class="shrink-0 text-[11px] text-zinc-500 hover:text-red-400 transition-colors px-2 py-1">
-                    Delete
-                </button>
-            </li>`;
-        }).join('');
-    }
-
-    async function deleteResetHistoryEntry(entryId) {
-        if (!entryId) return;
-        if (!window.confirm('Delete this reset history entry?')) return;
-        try {
-            const response = await fetch('/api/admission-totals/reset-history', {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: entryId }),
-            });
-            if (response.status === 401) {
-                redirectToScannerLogin();
-                return;
-            }
-            if (!response.ok) {
-                alert('Could not delete that entry. Try again.');
-                return;
-            }
-            const totals = await response.json();
-            updateAdmissionTotals(totals);
-        } catch (err) {
-            console.warn('Failed to delete reset history entry', err);
-            alert('Could not delete that entry. Check your connection.');
         }
     }
 
@@ -267,66 +145,53 @@
         }
     }
 
-    async function saveScannerSetting(payload, errorLabel) {
+    async function saveMaxCapacity() {
+        const input = document.getElementById('max-capacity-input');
+        const raw = (input.value || '').trim();
+        const payload = { max_capacity: raw === '' ? null : Number(raw) };
+
+        if (payload.max_capacity !== null && (!Number.isFinite(payload.max_capacity) || payload.max_capacity < 1)) {
+            alert('Enter a whole number of 1 or higher, or leave blank for no limit.');
+            return;
+        }
+
         try {
             const response = await fetch('/api/scanner-settings', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: csrfHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify(payload),
             });
             if (response.status === 401) {
                 redirectToScannerLogin();
-                return null;
+                return;
             }
             if (!response.ok) {
-                alert(`Failed to save ${errorLabel}. Please try again.`);
-                return null;
+                alert('Failed to save max capacity. Please try again.');
+                return;
             }
             const totals = await response.json();
             updateAdmissionTotals(totals);
-            return totals;
+            if (!totals.max_capacity) {
+                input.value = '';
+            }
         } catch (err) {
-            console.warn(`Failed to save ${errorLabel}`, err);
-            alert(`Failed to save ${errorLabel}. Check your connection and try again.`);
-            return null;
+            console.warn('Failed to save max capacity', err);
+            alert('Failed to save max capacity. Check your connection and try again.');
         }
-    }
-
-    async function saveMaxCapacity() {
-        const input = document.getElementById('max-capacity-input');
-        const raw = (input.value || '').trim();
-        const value = raw === '' ? null : Number(raw);
-        if (value !== null && (!Number.isFinite(value) || value < 1)) {
-            alert('Enter a whole number of 1 or higher, or leave blank for no limit.');
-            return;
-        }
-        const totals = await saveScannerSetting({ max_capacity: value }, 'max capacity');
-        if (totals && !totals.max_capacity) input.value = '';
-    }
-
-    async function saveMaxVipCapacity() {
-        const input = document.getElementById('max-vip-capacity-input');
-        const raw = (input.value || '').trim();
-        const value = raw === '' ? null : Number(raw);
-        if (value !== null && (!Number.isFinite(value) || value < 1)) {
-            alert('Enter a whole number of 1 or higher for VIP cap, or leave blank for no limit.');
-            return;
-        }
-        const totals = await saveScannerSetting({ max_vip_capacity: value }, 'VIP cap');
-        if (totals && !totals.max_vip_capacity) input.value = '';
     }
 
     async function resetAdmissionTotals() {
         const confirmed = window.confirm(
             'Are you sure you want to reset admission counts?\n\n' +
-            'GA, VIP, and Total will go back to 0 for a new counting period. ' +
-            'Already-scanned tickets stay void and cannot be scanned again. ' +
-            'This reset will be logged with the date and attendance totals.'
+            'GA, VIP, and Total will go back to 0, and all tickets can be scanned again.'
         );
         if (!confirmed) return;
 
         try {
-            const response = await fetch('/api/admission-totals/reset', { method: 'POST' });
+            const response = await fetch('/api/admission-totals/reset', {
+                method: 'POST',
+                headers: csrfHeaders(),
+            });
             if (response.status === 401) {
                 redirectToScannerLogin();
                 return;
@@ -350,9 +215,6 @@
         stopScanner();
 
         if (decodedText.includes('/verify/t/')) {
-            if (typeof markScannerInternalNav === 'function') {
-                markScannerInternalNav();
-            }
             window.location.href = decodedText.startsWith('http')
                 ? decodedText
                 : `${window.location.origin}${decodedText.startsWith('/') ? '' : '/'}${decodedText}`;
@@ -365,7 +227,7 @@
 
         fetch('/verify', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: csrfHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ ticket_data: decodedText })
         })
         .then(r => {
@@ -387,14 +249,10 @@
                 const soldOutNote = result.admission_totals && result.admission_totals.capacity_reached
                     ? '<div class="text-amber-300 text-sm mt-4">Max capacity reached — congrats on selling this place out!</div>'
                     : '';
-                const vipOverflow = result.vip_overflow_note
-                    ? `<div class="text-purple-200 text-sm mt-4">${result.vip_overflow_note}</div>`
-                    : '';
                 resultEl.innerHTML = `
                     <div class="text-white text-2xl font-bold mb-1">✅ You're In!</div>
                     <div class="text-6xl font-black leading-none mb-2 ${typeColor}">${typeLabel}</div>
                     <div class="text-3xl font-bold text-white">${result.quantity} ${guestWord}</div>
-                    ${vipOverflow}
                     ${soldOutNote}
                 `;
             } else if (result.status === 'sold_out') {
@@ -499,9 +357,6 @@
             total: {{ admission_totals.total }},
             max_capacity: {{ admission_totals.max_capacity if admission_totals.max_capacity else 'null' }},
             capacity_reached: {{ 'true' if admission_totals.capacity_reached else 'false' }},
-            max_vip_capacity: {{ admission_totals.max_vip_capacity if admission_totals.max_vip_capacity else 'null' }},
-            vip_capacity_reached: {{ 'true' if admission_totals.vip_capacity_reached else 'false' }},
-            reset_history: {{ admission_totals.reset_history | tojson }},
         });
         refreshAdmissionTotals();
         if (shouldAutostartScanner()) {
@@ -509,6 +364,5 @@
         }
     });
 </script>
-    <script src="{{ url_for('static', filename='js/scanner_session.js') }}"></script>
 </body>
 </html>

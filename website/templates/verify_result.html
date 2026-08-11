@@ -33,13 +33,8 @@
                 {{ quantity }} {% if quantity == 1 %}guest{% else %}guests{% endif %}
             </p>
             <p class="text-zinc-300 mb-4 text-lg">Welcome to The Section</p>
-            {% if vip_overflow_note %}
-            <p class="text-purple-200 mb-4 text-sm">{{ vip_overflow_note }}</p>
-            {% endif %}
             {% if admission_totals.capacity_reached %}
             <p class="text-amber-300 mb-8">Max capacity reached — congrats on selling this place out!</p>
-            {% elif admission_totals.vip_capacity_reached and not is_vip %}
-            <p class="text-purple-200 mb-8 text-sm">VIP area is full for this event.</p>
             {% else %}
             <p class="mb-8">&nbsp;</p>
             {% endif %}
@@ -71,12 +66,10 @@
 
         <div class="flex flex-col items-center gap-3">
             <a href="/verify?autostart=1" class="text-zinc-400 hover:text-white text-sm">← Scan another ticket</a>
-            <a href="/" class="text-zinc-400 hover:text-white text-sm">Home</a>
             <form method="POST" action="/verify/logout">
                 <button type="submit" class="text-xs text-zinc-500 hover:text-white transition-colors">Sign out</button>
             </form>
         </div>
     </div>
-    <script src="{{ url_for('static', filename='js/scanner_session.js') }}"></script>
 </body>
 </html>

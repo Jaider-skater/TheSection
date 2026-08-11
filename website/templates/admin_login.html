@@ -9,10 +9,8 @@
 <body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center p-6">
     <div class="max-w-md w-full">
         <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold mb-2">Ticket Admin</h1>
-            <p class="text-zinc-400 text-sm">
-                Sign in with staff email/password, or use the admin key.
-            </p>
+            <h1 class="text-3xl font-bold mb-2">Admin</h1>
+            <p class="text-zinc-400 text-sm">Staff access only</p>
         </div>
 
         {% if error %}
@@ -21,46 +19,18 @@
         </div>
         {% endif %}
 
-        <form method="POST" action="/admin/login" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 space-y-5">
-            {% if next_path %}
-            <input type="hidden" name="next" value="{{ next_path }}">
-            {% endif %}
+        <form method="POST" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 space-y-5">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div>
-                <label for="email" class="block text-sm text-zinc-400 mb-2">Staff email</label>
-                <input type="email" id="email" name="email" autocomplete="username"
-                       class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white"
-                       placeholder="staff@…">
-            </div>
-            <div>
-                <label for="password" class="block text-sm text-zinc-400 mb-2">Staff password</label>
-                <input type="password" id="password" name="password" autocomplete="current-password"
-                       class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white"
-                       placeholder="VERIFY_LOGIN_PASSWORD">
-            </div>
-            <div class="relative py-1">
-                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-zinc-700"></div></div>
-                <div class="relative flex justify-center text-xs"><span class="bg-zinc-900 px-2 text-zinc-500">or admin key</span></div>
-            </div>
-            <div>
-                <label for="key" class="block text-sm text-zinc-400 mb-2">Admin key (optional)</label>
-                <input type="password" id="key" name="key" autocomplete="off"
-                       class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white"
-                       placeholder="ADMIN_KEY">
+                <label for="password" class="block text-sm text-zinc-400 mb-2">Admin password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password"
+                       class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-white">
             </div>
             <button type="submit"
                     class="w-full py-4 border-2 border-white bg-black text-white font-semibold rounded-2xl hover:bg-white hover:text-black transition-colors">
                 Sign in
             </button>
         </form>
-
-        <p class="mt-6 text-center text-xs text-zinc-500">
-            Same staff account as door scanner
-            (<a href="/verify/login" class="underline hover:text-zinc-300">/verify/login</a>
-            and member portal (when email matches VERIFY_LOGIN_EMAIL).
-        </p>
-        <p class="mt-4 text-center">
-            <a href="/" class="text-sm text-zinc-400 hover:text-white">← Home</a>
-        </p>
     </div>
 </body>
 </html>

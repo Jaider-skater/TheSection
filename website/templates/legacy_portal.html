@@ -47,6 +47,7 @@
 
         <div id="login-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab in ['register', 'forgot'] %}hidden{% endif %}">
             <form method="POST" class="space-y-5">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="login">
                 {% if next_url %}
                 <input type="hidden" name="next" value="{{ next_url }}">
@@ -77,6 +78,7 @@
             <h2 class="text-xl font-semibold mb-2 text-center">Reset password</h2>
             <p class="text-zinc-400 text-sm text-center mb-6">Enter your email and we'll send a link to set a new password.</p>
             <form method="POST" class="space-y-5">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="forgot_password">
                 {% if next_url %}
                 <input type="hidden" name="next" value="{{ next_url }}">
@@ -100,6 +102,7 @@
 
         <div id="register-panel" class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 max-w-md mx-auto {% if active_tab != 'register' %}hidden{% endif %}">
             <form method="POST" class="space-y-5" id="register-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="register">
                 {% if next_url %}
                 <input type="hidden" name="next" value="{{ next_url }}">
@@ -144,51 +147,17 @@
                 <h1 class="text-3xl font-bold tracking-tight">Welcome back</h1>
                 <p class="text-zinc-400 mt-1">{{ member.email }}</p>
             </div>
-            <div class="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
-                {% if show_scanner_link %}
-                <a href="/admin"
-                   class="text-sm text-white border border-white rounded-xl px-4 py-2 font-semibold hover:bg-white hover:text-black transition-colors">
-                    Ticket Admin
-                </a>
-                <a href="/verify"
-                   class="text-sm text-white border border-white rounded-xl px-4 py-2 font-semibold hover:bg-white hover:text-black transition-colors">
-                    Door Scanner
-                </a>
-                {% endif %}
-                <form method="POST">
-                    <input type="hidden" name="action" value="logout">
-                    <button type="submit" class="text-sm text-zinc-400 hover:text-white px-2 py-2">Sign out</button>
-                </form>
-            </div>
+            <form method="POST">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="logout">
+                <button type="submit" class="text-sm text-zinc-400 hover:text-white">Sign out</button>
+            </form>
         </div>
-
-        {% if show_scanner_link %}
-        <div class="mb-8 bg-zinc-900 border border-emerald-500/30 rounded-2xl p-6">
-            <p class="text-white font-medium mb-1">Staff tools</p>
-            <p class="text-zinc-400 text-sm mb-4">Ticket sales admin and door scanner for entry.</p>
-            <div class="flex flex-col sm:flex-row flex-wrap gap-3">
-                <a href="/admin"
-                   class="inline-flex items-center justify-center px-5 py-2.5 border border-white text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
-                    Ticket Admin
-                </a>
-                <a href="/verify"
-                   class="inline-flex items-center justify-center px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
-                    Door Scanner
-                </a>
-            </div>
-        </div>
-        {% endif %}
 
         <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
-            {% if discount_eligible and member.discount_code %}
-            <p class="text-white font-medium mb-1">{% if has_returning_guest_discount %}Welcome back discount{% else %}Your discount code{% endif %}</p>
-            <p class="text-zinc-400 text-sm mb-4">
-                {% if has_returning_guest_discount %}
-                {{ returning_guest_discount_percent }}% off any single ticket for life (or {{ member_discount_percent }}% when you buy more than one for friends) — tap your code on the tickets page. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) stacks on multi-ticket orders when you qualify.
-                {% else %}
-                {{ member_discount_percent }}% off future purchases — tap your code on the tickets page to apply.
-                {% endif %}
-            </p>
+            {% if has_past_purchases %}
+            <p class="text-white font-medium mb-1">Your discount code</p>
+            <p class="text-zinc-400 text-sm mb-4">{{ member_discount_percent }}% off future purchases — applied automatically when you're signed in.</p>
             <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
                 <p id="discount-code-display" class="font-mono text-2xl tracking-wider bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-3 text-center flex-1">
                     {{ member.discount_code }}
@@ -202,46 +171,46 @@
             <p class="text-white font-medium mb-1">Member discount</p>
             <p class="text-zinc-400 text-sm mb-4">Your {{ member_discount_percent }}% member discount unlocks after your first ticket purchase. Bulk pricing ({{ bundle_discount_percent }}% GA at {{ bundle_min }}+ · {{ vip_bulk_discount_percent }}% VIP at {{ vip_bundle_min }}+) is available now.</p>
             {% endif %}
-            <a href="/?open_tickets=1"
+            <a href="{% if has_past_purchases %}/?open_tickets=1&amp;apply_member_discount=1{% else %}/?open_tickets=1{% endif %}"
                class="inline-block mt-5 px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
                 Get tickets
             </a>
         </div>
 
         <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-8">
-            <h2 class="text-xl font-semibold mb-4 text-center sm:text-left">Your tickets</h2>
+            <h2 class="text-xl font-semibold mb-4">Your tickets</h2>
             {% if saved_ticket_details %}
             <ul class="space-y-3">
                 {% for ticket in saved_ticket_details %}
-                <li class="flex flex-col items-center sm:flex-row sm:items-center sm:justify-between gap-3 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-4 text-center sm:text-left">
-                    <div class="flex flex-col items-center sm:items-start gap-1 min-w-0">
-                        <span class="font-mono text-sm break-all">{{ ticket.ticket_id }}</span>
-                        <span class="text-zinc-500 text-xs">
+                <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3">
+                    <div>
+                        <span class="font-mono text-sm">{{ ticket.ticket_id }}</span>
+                        <span class="text-zinc-500 text-xs ml-2">
                             {{ ticket.quantity }}× {{ 'VIP' if ticket.ticket_type == 'vip' else 'GA' }}
-                            {% if ticket.scanned %} · Used at door{% endif %}
                         </span>
+                        {% if ticket.scanned %}
+                        <span class="text-zinc-500 text-xs ml-2">· Used at door</span>
+                        {% endif %}
                     </div>
-                    <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-3 shrink-0">
+                    <div class="flex items-center gap-3">
                         {% if ticket.purchased_at %}
-                        <span class="text-zinc-500 text-xs">{{ ticket.purchased_at | local_date }}</span>
+                        <span class="text-zinc-500 text-xs">{{ ticket.purchased_at[:10] }}</span>
                         {% endif %}
                         {% if ticket.view_url %}
-                        <a href="{{ ticket.view_url }}"
-                           class="inline-flex items-center justify-center px-4 py-2 text-sm font-semibold border border-white rounded-xl hover:bg-white hover:text-black transition-colors whitespace-nowrap">
-                            View
-                        </a>
+                        <a href="{{ ticket.view_url }}" class="text-sm text-zinc-400 hover:text-white whitespace-nowrap">View</a>
                         {% endif %}
                     </div>
                 </li>
                 {% endfor %}
             </ul>
             {% else %}
-            <p class="text-zinc-500 text-sm text-center sm:text-left">No tickets yet. Buy while signed in and your ticket email will go to {{ member.email }}.</p>
+            <p class="text-zinc-500 text-sm">No tickets yet. Buy while signed in and your ticket email will go to {{ member.email }}.</p>
             {% endif %}
         </div>
 
         <div class="text-center">
             <form method="POST" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="forgot_password">
                 <input type="hidden" name="email" value="{{ member.email }}">
                 <button type="submit" class="text-sm text-zinc-400 hover:text-white transition-colors">

@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.deploy-secrets.env
+__pycache__/
+*.pyc
+.venv/
+.idea/
+data/tickets.json
+data/legacy_members.json
+data/scanner_settings.json
+data/*.tmp.*
+*.pkpass

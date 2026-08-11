@@ -9,6 +9,18 @@ let memberStatus = {
 };
 let pricing = null;
 let memberDiscountApplied = false;
+const MAX_TICKET_QUANTITY = 20;
+
+function getCsrfToken() {
+    return document.querySelector('meta[name="csrf-token"]')?.content || '';
+}
+
+function csrfHeaders(extra = {}) {
+    const headers = { ...extra };
+    const token = getCsrfToken();
+    if (token) headers['X-CSRF-Token'] = token;
+    return headers;
+}
 
 function formatDollars(cents) {
     return '$' + (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
@@ -53,50 +65,18 @@ async function loadMemberStatus() {
     }
 }
 
-function eligibleMemberPct() {
-    // Rate that will apply if they tap the code (never use applied=0 when code is off).
-    if (pricing && pricing.eligible_member_discount_percent != null
-        && pricing.eligible_member_discount_percent > 0) {
-        return pricing.eligible_member_discount_percent;
-    }
-    if (memberStatus.returning_guest_discount && quantity === 1) {
-        return memberStatus.returning_guest_discount_percent || 20;
-    }
-    return memberStatus.member_discount_percent || 10;
-}
-
-function appliedMemberPct() {
-    if (memberDiscountApplied && pricing
-        && pricing.applied_member_discount_percent != null
-        && pricing.applied_member_discount_percent > 0) {
-        return pricing.applied_member_discount_percent;
-    }
-    return eligibleMemberPct();
-}
-
 function memberCodeHintText() {
-    const memberPct = memberDiscountApplied ? appliedMemberPct() : eligibleMemberPct();
+    const memberPct = memberStatus.member_discount_percent;
     const bulkPct = bulkPctForType();
-    const welcome = memberStatus.returning_guest_discount;
-    const qty = quantity;
     if (!memberDiscountApplied) {
         if (pricing && pricing.bundle_discount_applied) {
             return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
-        }
-        if (welcome && qty === 1) {
-            return `Tap to add ${memberPct}% lifetime single-ticket discount`;
-        }
-        if (welcome && qty > 1) {
-            return `Tap to add ${memberPct}% member discount (multi-ticket rate)`;
         }
         return `Tap to add ${memberPct}% member discount`;
     }
     if (pricing && pricing.stacked_discount_applied) {
         const totalPct = pricing.combined_discount_percent || (bulkPct + memberPct);
         return `${totalPct}% off (${bulkPct}% bulk + ${memberPct}% member)`;
-    }
-    if (pricing && pricing.returning_single_ticket_rate) {
-        return `${memberPct}% lifetime single-ticket discount applied`;
     }
     if (pricing && pricing.member_discount_applied) {
         return `${memberPct}% member discount applied`;
@@ -147,16 +127,7 @@ function updateMemberBanner() {
         if (discountLine) {
             const bulkLabel = formatBulkPricingLabel();
             if (memberStatus.member_discount_eligible && memberStatus.discount_code) {
-                if (memberStatus.returning_guest_discount) {
-                    const welcomePct = memberStatus.returning_guest_discount_percent || 20;
-                    const memberPct = memberStatus.member_discount_percent || 10;
-                    discountLine.textContent =
-                        `Welcome back — ${welcomePct}% off any single ticket for life, or ${memberPct}% when buying more than one for friends. ` +
-                        `Bulk pricing (${bulkLabel}) stacks on multi-ticket orders. Tap your code below to apply.`;
-                } else {
-                    discountLine.textContent =
-                        `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to apply ${memberStatus.member_discount_percent}% off.`;
-                }
+                discountLine.textContent = `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
             } else {
                 discountLine.textContent = `Bulk pricing: ${bulkLabel}. Member discount unlocks after your first purchase.`;
             }
@@ -276,12 +247,7 @@ function updateModalQuantity() {
         }
 
         const bulkPct = bulkPctForType();
-        const memberPct = (memberDiscountApplied && pricing.applied_member_discount_percent > 0)
-            ? pricing.applied_member_discount_percent
-            : (pricing.eligible_member_discount_percent
-                || (memberStatus.returning_guest_discount && quantity === 1
-                    ? (memberStatus.returning_guest_discount_percent || 20)
-                    : (pricing.member_discount_percent || memberStatus.member_discount_percent || 10)));
+        const memberPct = pricing.member_discount_percent;
         const priceLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(pricing.unit_price_cents)} each`;
         const bulkOnlyUnit = Math.round(pricing.base_unit_price_cents * (1 - bulkPct / 100));
         const bulkOnlyLine = `${formatDollars(pricing.base_unit_price_cents)} → ${formatDollars(bulkOnlyUnit)} each`;
@@ -338,7 +304,7 @@ function updateModalQuantity() {
 }
 
 function changeQuantity(change) {
-    quantity = Math.max(1, quantity + change);
+    quantity = Math.max(1, Math.min(MAX_TICKET_QUANTITY, quantity + change));
     refreshPricing();
 }
 
@@ -346,7 +312,7 @@ async function redirectToLoginForCheckout() {
     try {
         await fetch('/api/checkout-intent', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: csrfHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
                 quantity: quantity,
                 ticket_type: ticketType,
@@ -368,7 +334,7 @@ async function createCheckoutSession() {
     try {
         const response = await fetch('/create-checkout-session', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: csrfHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
                 quantity: quantity,
                 ticket_type: ticketType,
@@ -389,34 +355,9 @@ async function createCheckoutSession() {
     }
 }
 
-let modalScrollY = 0;
-
-function lockPageScroll() {
-    modalScrollY = window.scrollY || window.pageYOffset || 0;
-    document.documentElement.classList.add('overflow-hidden');
-    document.body.classList.add('overflow-hidden');
-    document.body.style.position = 'fixed';
-    document.body.style.top = `-${modalScrollY}px`;
-    document.body.style.left = '0';
-    document.body.style.right = '0';
-    document.body.style.width = '100%';
-}
-
-function unlockPageScroll() {
-    document.documentElement.classList.remove('overflow-hidden');
-    document.body.classList.remove('overflow-hidden');
-    document.body.style.position = '';
-    document.body.style.top = '';
-    document.body.style.left = '';
-    document.body.style.right = '';
-    document.body.style.width = '';
-    window.scrollTo(0, modalScrollY);
-}
-
 async function showTicketsModal(options = {}) {
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
-    lockPageScroll();
     modal.style.opacity = '0';
     setTimeout(() => {
         modal.style.transition = 'opacity 0.3s ease-out';
@@ -427,6 +368,7 @@ async function showTicketsModal(options = {}) {
         options.applyMemberDiscount
         && memberStatus.logged_in
         && memberStatus.member_discount_eligible
+        && memberStatus.discount_code
     ) {
         memberDiscountApplied = true;
         updateDiscountCodeButton();
@@ -439,7 +381,6 @@ function closeTicketsModal() {
     modal.style.opacity = '0';
     setTimeout(() => {
         modal.classList.add('hidden');
-        unlockPageScroll();
     }, 300);
 }
 
@@ -457,15 +398,9 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-const ticketsModal = document.getElementById('tickets-modal');
-if (ticketsModal) {
-    ticketsModal.addEventListener('click', function(e) {
-        const panel = ticketsModal.querySelector('.max-w-md');
-        if (panel && !panel.contains(e.target)) {
-            closeTicketsModal();
-        }
-    });
-}
+document.getElementById('tickets-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeTicketsModal();
+});
 
 const hamburgerBtn = document.getElementById('hamburger-btn');
 const menuDropdown = document.getElementById('menu-dropdown');

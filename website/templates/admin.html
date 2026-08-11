@@ -8,36 +8,27 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
     <div class="max-w-5xl mx-auto">
-        <div class="mb-4">
-            <a href="/" class="text-sm text-zinc-400 hover:text-white">← Home</a>
-        </div>
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
                 <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions</p>
             </div>
-            <div class="flex flex-wrap gap-3">
-                <a href="/admin/tickets.csv{% if key %}?key={{ key }}{% endif %}"
+            <div class="flex flex-wrap gap-3 items-center">
+                <a href="/admin/tickets.csv"
                    class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm">
                     Download CSV
                 </a>
-                <a href="/admin/tickets.json{% if key %}?key={{ key }}{% endif %}"
+                <a href="/admin/tickets.json"
                    download="thesection-tickets.json"
                    class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
                     Download JSON
                 </a>
-                <a href="/admin/mailing-list{% if key %}?key={{ key }}{% endif %}"
-                   class="px-4 py-2 border border-white text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
-                    Mailing Lists
-                </a>
-                <a href="/"
-                   class="px-4 py-2 border border-white text-white font-semibold rounded-xl text-sm hover:bg-white hover:text-black transition-colors">
-                    Home
-                </a>
-                <a href="/admin/logout"
-                   class="px-4 py-2 text-zinc-400 hover:text-white text-sm">
-                    Log out
-                </a>
+                <form method="POST" action="{{ url_for('admin_logout') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="px-4 py-2 border border-zinc-700 text-zinc-300 hover:text-white rounded-xl text-sm">
+                        Sign out
+                    </button>
+                </form>
             </div>
         </div>
 
@@ -56,7 +47,7 @@
             <table class="w-full text-left text-sm">
                 <thead class="bg-zinc-900 text-zinc-400">
                     <tr>
-                        <th class="p-4">Purchased ({{ timezone_label }})</th>
+                        <th class="p-4">Purchased</th>
                         <th class="p-4">Ticket ID</th>
                         <th class="p-4">Email</th>
                         <th class="p-4">Qty</th>
@@ -68,7 +59,7 @@
                 <tbody>
                     {% for ticket in tickets %}
                     <tr class="border-t border-zinc-800">
-                        <td class="p-4 text-zinc-300">{{ ticket.purchased_at | local_time }}</td>
+                        <td class="p-4 text-zinc-300">{{ ticket.purchased_at[:16].replace('T', ' ') }}</td>
                         <td class="p-4 font-mono">{{ ticket.ticket_id }}</td>
                         <td class="p-4">{{ ticket.email or '—' }}</td>
                         <td class="p-4">{{ ticket.quantity }}</td>

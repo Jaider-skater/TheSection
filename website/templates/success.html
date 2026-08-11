@@ -6,9 +6,8 @@
     <title>Tickets • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-zinc-950 text-white min-h-dvh">
-    <main class="min-h-dvh w-full flex flex-col items-center justify-center px-6 py-10 box-border">
-    <div class="w-full max-w-md mx-auto flex flex-col items-center text-center">
+<body class="bg-zinc-950 text-white min-h-screen flex items-center justify-center p-6">
+    <div class="max-w-md w-full text-center">
 
         {% if error %}
             <div class="bg-red-900/50 border border-red-500 p-6 rounded-2xl">
@@ -75,7 +74,7 @@
                 {% if wallet_enabled and ticket_id %}
                 <div class="mt-5 pt-5 border-t border-zinc-800">
                     <p class="text-sm font-medium text-white mb-3">Add to Apple Wallet</p>
-                    <a href="/wallet/{{ ticket_id }}.pkpass"
+                    <a href="/wallet/{{ ticket_id }}.pkpass{% if view_token %}?k={{ view_token }}{% endif %}"
                        class="inline-flex items-center justify-center w-full max-w-[220px] h-11 rounded-lg bg-black border border-zinc-700 hover:border-zinc-500 transition-colors px-4 mx-auto">
                         <svg viewBox="0 0 152 44" class="h-7 w-auto" aria-label="Add to Apple Wallet">
                             <rect width="152" height="44" rx="8" fill="#000"/>
@@ -105,11 +104,10 @@
             </div>
         {% endif %}
 
-        <div class="mt-10 w-full flex flex-col items-center">
+        <div class="mt-10">
             <a href="/" class="text-zinc-400 hover:text-white text-sm">← Back to homepage</a>
         </div>
     </div>
-    </main>
 
     {% if ticket_data and ticket_id %}
     <script>
