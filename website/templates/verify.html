@@ -96,6 +96,12 @@
                 class="hidden mt-6 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm">
             Scan Another Ticket
         </button>
+
+        <div id="reset-history" class="hidden mt-8 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+            <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Count reset log</p>
+            <p class="text-[11px] text-zinc-500 mb-3">Resets zero the live counters only. Already-scanned tickets stay void.</p>
+            <ul id="reset-history-list" class="space-y-2 text-xs text-zinc-400 max-h-48 overflow-y-auto"></ul>
+        </div>
     </div>
 
 <script>
@@ -165,6 +171,81 @@
             } else {
                 vipBannerEl.classList.add('hidden');
             }
+        }
+
+        updateResetHistory(totals.reset_history);
+    }
+
+    function formatResetTimestamp(iso) {
+        if (!iso) return 'Unknown time';
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) return iso;
+        return date.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+        });
+    }
+
+    function updateResetHistory(history) {
+        const section = document.getElementById('reset-history');
+        const list = document.getElementById('reset-history-list');
+        if (!section || !list) return;
+
+        const entries = Array.isArray(history) ? [...history].reverse() : [];
+        if (!entries.length) {
+            section.classList.add('hidden');
+            list.innerHTML = '';
+            return;
+        }
+
+        section.classList.remove('hidden');
+        list.innerHTML = entries.map(entry => {
+            const when = formatResetTimestamp(entry.reset_at);
+            const ga = entry.ga ?? 0;
+            const vip = entry.vip ?? 0;
+            const total = entry.total ?? (ga + vip);
+            const entryId = entry.id || entry.reset_at || '';
+            const safeId = String(entryId).replace(/"/g, '&quot;');
+            return `<li class="flex items-center justify-between gap-3 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
+                <div class="min-w-0 text-left">
+                    <span class="text-zinc-300 block">${when}</span>
+                    <span class="tabular-nums text-zinc-500 text-[11px]">Was GA ${ga} · VIP ${vip} · ${total} total</span>
+                </div>
+                <button type="button"
+                        data-reset-id="${safeId}"
+                        onclick="deleteResetHistoryEntry(this.dataset.resetId)"
+                        class="shrink-0 text-[11px] text-zinc-500 hover:text-red-400 transition-colors px-2 py-1">
+                    Delete
+                </button>
+            </li>`;
+        }).join('');
+    }
+
+    async function deleteResetHistoryEntry(entryId) {
+        if (!entryId) return;
+        if (!window.confirm('Delete this reset log entry?')) return;
+        try {
+            const response = await fetch('/api/admission-totals/reset-history', {
+                method: 'DELETE',
+                headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ id: entryId }),
+            });
+            if (response.status === 401) {
+                redirectToScannerLogin();
+                return;
+            }
+            if (!response.ok) {
+                alert('Could not delete that entry. Try again.');
+                return;
+            }
+            const totals = await response.json();
+            updateAdmissionTotals(totals);
+        } catch (err) {
+            console.warn('Failed to delete reset history entry', err);
+            alert('Could not delete that entry. Check your connection.');
         }
     }
 
@@ -238,8 +319,10 @@
 
     async function resetAdmissionTotals() {
         const confirmed = window.confirm(
-            'Are you sure you want to reset admission counts?\n\n' +
-            'GA, VIP, and Total will go back to 0, and all tickets can be scanned again.'
+            'Reset admission counts?\n\n' +
+            'GA, VIP, and Total go back to 0 for a new counting period.\n' +
+            'Already-scanned tickets stay VOID and cannot be scanned again.\n' +
+            'This reset is saved in the log at the bottom of the page.'
         );
         if (!confirmed) return;
 
@@ -419,6 +502,7 @@
             max_vip_capacity: {{ admission_totals.max_vip_capacity if admission_totals.max_vip_capacity else 'null' }},
             capacity_reached: {{ 'true' if admission_totals.capacity_reached else 'false' }},
             vip_capacity_reached: {{ 'true' if admission_totals.vip_capacity_reached else 'false' }},
+            reset_history: {{ (admission_totals.reset_history or []) | tojson }},
         });
         refreshAdmissionTotals();
         if (shouldAutostartScanner()) {

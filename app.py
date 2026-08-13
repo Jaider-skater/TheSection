@@ -1469,17 +1469,108 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
     return False
 
 
+def get_counting_epoch():
+    settings = load_scanner_settings()
+    return parse_iso_datetime(settings.get('counting_epoch'))
+
+
+def ticket_counts_for_current_period(scanned_at):
+    """Whether a scan should count toward the live GA/VIP/total boards."""
+    scanned = parse_iso_datetime(scanned_at)
+    if not scanned:
+        return False
+    counting_epoch = get_counting_epoch()
+    if counting_epoch is None:
+        return True
+    return scanned >= counting_epoch
+
+
+def get_reset_history():
+    settings = load_scanner_settings()
+    history = settings.get('reset_history', [])
+    if not isinstance(history, list):
+        return []
+    # Ensure each entry has a stable id for delete buttons.
+    changed = False
+    for entry in history:
+        if isinstance(entry, dict) and not entry.get('id'):
+            entry['id'] = entry.get('reset_at') or secrets.token_hex(8)
+            changed = True
+    if changed:
+        with scanner_settings_lock:
+            settings = load_scanner_settings()
+            settings['reset_history'] = history[-50:]  # bound growth
+            save_scanner_settings(settings)
+    return history
+
+
+def delete_reset_history_entry(entry_id):
+    """Remove one reset history row by id (or legacy reset_at string)."""
+    target = (entry_id or '').strip()
+    if not target:
+        return False
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        history = settings.get('reset_history', [])
+        if not isinstance(history, list):
+            return False
+        updated = []
+        removed = False
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            eid = str(entry.get('id') or entry.get('reset_at') or '')
+            if not removed and eid == target:
+                removed = True
+                continue
+            updated.append(entry)
+        if not removed:
+            return False
+        settings['reset_history'] = updated
+        save_scanner_settings(settings)
+        return True
+
+
+def reset_admission_counts():
+    """Zero live counts for a new period WITHOUT making old tickets reusable.
+
+    Scanned tickets keep scanned_at forever (void). Counts only include scans
+    at/after counting_epoch. Each reset is logged for the door team.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    counts = compute_admission_counts()
+
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        history = settings.get('reset_history', [])
+        if not isinstance(history, list):
+            history = []
+        history.append({
+            'id': secrets.token_hex(8),
+            'reset_at': now_iso,
+            'ga': counts['ga'],
+            'vip': counts['vip'],
+            'total': counts['total'],
+        })
+        # Keep last 50 resets
+        settings['reset_history'] = history[-50:]
+        settings['counting_epoch'] = now_iso
+        save_scanner_settings(settings)
+
+    return {
+        'reset_at': now_iso,
+        'ga': counts['ga'],
+        'vip': counts['vip'],
+        'total': counts['total'],
+        'cleared': 0,  # tickets stay void; not cleared
+    }
+
+
+# Back-compat alias used by older call sites
 def reset_all_ticket_scans():
-    cleared = 0
-    with tickets_lock:
-        tickets = load_tickets()
-        for ticket in tickets:
-            if ticket.get('scanned_at'):
-                ticket['scanned_at'] = None
-                cleared += 1
-        if cleared:
-            save_tickets(tickets)
-    return cleared
+    result = reset_admission_counts()
+    return result.get('cleared', 0)
 
 
 def admin_authenticated():
@@ -1938,7 +2029,8 @@ def compute_admission_counts():
     ga = 0
     vip = 0
     for ticket in load_tickets():
-        if not ticket.get('scanned_at'):
+        scanned_at = ticket.get('scanned_at')
+        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
             continue
         qty = int(ticket.get('quantity') or 1)
         if admission_entry_type(ticket) == 'vip':
@@ -1984,6 +2076,8 @@ def get_admission_totals():
         'max_vip_capacity': max_vip_capacity,
         'vip_capacity_reached': vip_capacity_reached,
         'vip_spots_remaining': vip_spots_remaining,
+        'reset_history': get_reset_history(),
+        'counting_epoch': (load_scanner_settings().get('counting_epoch')),
     }
 
 
@@ -2665,9 +2759,21 @@ def reset_admission_totals():
     guard = protect_scanner_response()
     if guard:
         return guard
-    cleared = reset_all_ticket_scans()
+    result = reset_admission_counts()
     totals = get_admission_totals()
-    return jsonify({'cleared': cleared, **totals})
+    return jsonify({**result, **totals})
+
+
+@app.route('/api/admission-totals/reset-history', methods=['DELETE'])
+def delete_admission_reset_history():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get('id') or request.args.get('id') or ''
+    if not delete_reset_history_entry(entry_id):
+        return jsonify({'error': 'Reset history entry not found'}), 404
+    return jsonify(get_admission_totals())
 
 
 @app.route('/api/scanner-settings', methods=['GET', 'POST'])
