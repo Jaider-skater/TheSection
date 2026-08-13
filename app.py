@@ -387,11 +387,16 @@ def security_after_request(response):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Permissions-Policy'] = 'camera=(self), microphone=(), geolocation=()'
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
+    response.headers['X-Permitted-Cross-Domain-Policies'] = 'none'
     if IS_PRODUCTION:
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     # Expose CSRF token for JS clients
     if session.get('csrf_token'):
         response.headers['X-CSRF-Token'] = session['csrf_token']
+    # Never cache authenticated HTML responses in shared caches
+    if session.get('legacy_member_email') or session.get('admin_authenticated') or session.get('verify_authenticated'):
+        response.headers['Cache-Control'] = 'private, no-store'
     return response
 
 
@@ -649,7 +654,7 @@ def verify_password_reset_token(email, token):
     if datetime.now(timezone.utc) > expires:
         return False
     try:
-        return secrets.compare_digest(member['password_reset_token'], hash_reset_token(token))
+        return secure_equals(member.get('password_reset_token'), hash_reset_token(token))
     except (TypeError, ValueError):
         return False
 
@@ -682,19 +687,21 @@ def save_invites(invites):
     return _locked_json_write(invites_file, invites)
 
 
-def normalize_email_list(raw):
+def normalize_email_list(raw, max_emails=500):
     if not raw:
         return []
     normalized = []
     seen = set()
     for chunk in raw.replace(',', '\n').replace(';', '\n').split('\n'):
         email = chunk.strip().lower()
-        if not email or '@' not in email:
+        if not email or '@' not in email or len(email) > 254:
             continue
         if email in seen:
             continue
         seen.add(email)
         normalized.append(email)
+        if len(normalized) >= max_emails:
+            break
     return normalized
 
 
@@ -1121,22 +1128,6 @@ def send_broadcast_email(subject, body, recipients):
 
 
 
-
-def member_has_past_purchases(member):
-    if not member:
-        return False
-    email = member.get('email', '').strip().lower()
-    if email:
-        for ticket in load_tickets():
-            if ticket.get('email', '').lower() == email:
-                return True
-    for ticket_id in member.get('saved_tickets', []):
-        if get_ticket_record(ticket_id):
-            return True
-    return False
-
-
-
 def clear_returning_guest_discount_if_purchased(email):
     """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
     return
@@ -1544,9 +1535,14 @@ def grant_session_ticket_access(ticket_id):
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
         return
-    access = session.get('ticket_access') or {}
+    access = dict(session.get('ticket_access') or {})
     access[normalized] = True
+    # Bound cookie growth
+    if len(access) > 30:
+        # keep most recent keys only
+        access = dict(list(access.items())[-30:])
     session['ticket_access'] = access
+    touch_auth_session()
 
 
 def ensure_ticket_view_token(record):
@@ -3219,17 +3215,20 @@ def admin_mailing_list():
             else:
                 error = err or 'Could not update that email.'
         elif action == 'send_invites':
-            result = send_pending_member_invites()
-            sent_count = len(result['sent'])
-            failed_count = len(result['failed'])
-            if sent_count:
-                success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
-                if failed_count:
-                    success += f' {failed_count} failed to send.'
-            elif failed_count:
-                error = f'Could not send invites ({failed_count} failed). Check mail settings.'
+            if not rate_limit_allow('send_invites', 5, 3600):
+                error = 'Invite send limit reached (5 per hour). Wait before sending again.'
             else:
-                success = 'No pending invites to send.'
+                result = send_pending_member_invites()
+                sent_count = len(result['sent'])
+                failed_count = len(result['failed'])
+                if sent_count:
+                    success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
+                    if failed_count:
+                        success += f' {failed_count} failed to send.'
+                elif failed_count:
+                    error = f'Could not send invites ({failed_count} failed). Check mail settings.'
+                else:
+                    success = 'No pending invites to send.'
         elif action == 'add_full_emails':
             emails = normalize_email_list(request.form.get('emails', ''))
             if not emails:
@@ -3268,31 +3267,44 @@ def admin_mailing_list():
                 f'{len(skipped)} already present or exclusive.'
             )
         elif action == 'send_broadcast':
-            subject = (request.form.get('subject') or '').strip()
-            body = (request.form.get('body') or '').strip()
-            lists = set()
-            if request.form.get('list_exclusive'):
-                lists.add('exclusive')
-            if request.form.get('list_full'):
-                lists.add('full')
-            if not lists:
-                error = 'Select at least one mailing list to send to.'
-            elif not subject or not body:
-                error = 'Subject and message body are required.'
+            if not rate_limit_allow('broadcast_email', 3, 3600):
+                error = 'Broadcast limit reached (3 per hour). Wait before sending again.'
             else:
-                recipients = resolve_broadcast_recipients(lists)
-                if not recipients:
-                    error = 'No recipients on the selected list(s).'
+                subject = (request.form.get('subject') or '').strip()
+                body = (request.form.get('body') or '').strip()
+                lists = set()
+                if request.form.get('list_exclusive'):
+                    lists.add('exclusive')
+                if request.form.get('list_full'):
+                    lists.add('full')
+                if not lists:
+                    error = 'Select at least one mailing list to send to.'
+                elif not subject or not body:
+                    error = 'Subject and message body are required.'
+                elif len(subject) > 200:
+                    error = 'Subject is too long (max 200 characters).'
+                elif len(body) > 20000:
+                    error = 'Message is too long (max 20,000 characters).'
                 else:
-                    sent, failed = send_broadcast_email(subject, body, recipients)
-                    if sent:
-                        success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
-                        if failed:
-                            success += f' {len(failed)} failed.'
-                    elif failed:
-                        error = f'All {len(failed)} sends failed. Check mail settings.'
+                    recipients = resolve_broadcast_recipients(lists)
+                    max_recipients = int(os.getenv('BROADCAST_MAX_RECIPIENTS', '2000'))
+                    if not recipients:
+                        error = 'No recipients on the selected list(s).'
+                    elif len(recipients) > max_recipients:
+                        error = (
+                            f'Too many recipients ({len(recipients)}). '
+                            f'Max is {max_recipients}. Split the send or raise BROADCAST_MAX_RECIPIENTS.'
+                        )
                     else:
-                        error = 'Nothing was sent.'
+                        sent, failed = send_broadcast_email(subject, body, recipients)
+                        if sent:
+                            success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
+                            if failed:
+                                success += f' {len(failed)} failed.'
+                        elif failed:
+                            error = f'All {len(failed)} sends failed. Check mail settings.'
+                        else:
+                            error = 'Nothing was sent.'
 
     invites = invite_list_for_admin()
     ready_count = len(invites_ready_to_send())
