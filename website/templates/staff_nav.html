@@ -1,0 +1,34 @@
+        <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-4">
+                <button type="button"
+                        id="staff-nav-back"
+                        onclick="history.back()"
+                        hidden
+                        class="text-sm text-zinc-400 hover:text-white transition-colors">
+                    ← Back
+                </button>
+                <a href="/" class="text-sm text-zinc-400 hover:text-white transition-colors">Home</a>
+            </div>
+            {% if staff_nav_sign_out %}
+            <form method="POST" action="{{ staff_nav_sign_out }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="text-sm text-zinc-500 hover:text-white transition-colors">Sign out</button>
+            </form>
+            {% endif %}
+        </div>
+        <script>
+        (function () {
+            var back = document.getElementById('staff-nav-back');
+            if (!back) return;
+            var showBack = false;
+            try {
+                if (document.referrer) {
+                    var ref = new URL(document.referrer);
+                    var path = ref.pathname.replace(/\/+$/, '') || '/';
+                    showBack = ref.origin === location.origin && path !== '/';
+                }
+            } catch (e) {}
+            if (showBack) back.hidden = false;
+            else back.remove();
+        })();
+        </script>
