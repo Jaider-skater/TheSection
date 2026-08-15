@@ -8,6 +8,20 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
     <div class="max-w-5xl mx-auto">
+        <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-4">
+                <button type="button"
+                        onclick="history.back()"
+                        class="text-sm text-zinc-400 hover:text-white transition-colors">
+                    ← Back
+                </button>
+                <a href="/" class="text-sm text-zinc-400 hover:text-white transition-colors">Home</a>
+            </div>
+            <form method="POST" action="{{ url_for('admin_logout') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="text-sm text-zinc-500 hover:text-white transition-colors">Sign out</button>
+            </form>
+        </div>
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
@@ -27,21 +41,6 @@
                    class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-black font-semibold rounded-xl text-sm">
                     Mailing Lists
                 </a>
-                <button type="button"
-                        onclick="history.back()"
-                        class="px-4 py-2 border border-zinc-700 text-zinc-300 hover:text-white rounded-xl text-sm">
-                    ← Back
-                </button>
-                <a href="/"
-                   class="px-4 py-2 border border-zinc-700 text-zinc-300 hover:text-white rounded-xl text-sm">
-                    Home
-                </a>
-                <form method="POST" action="{{ url_for('admin_logout') }}" class="inline">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button type="submit" class="px-4 py-2 border border-zinc-700 text-zinc-300 hover:text-white rounded-xl text-sm">
-                        Sign out
-                    </button>
-                </form>
             </div>
         </div>
 
