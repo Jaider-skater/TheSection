@@ -428,6 +428,8 @@ def inject_security_template_globals():
     return {
         'csrf_token': ensure_csrf_token(),
         'csrf_field': f'<input type="hidden" name="csrf_token" value="{ensure_csrf_token()}">',
+        'show_staff_nav': is_staff_user(),
+        'member_logged_in': bool(get_logged_in_member()),
     }
 
 
@@ -463,7 +465,7 @@ def get_ticket_by_session(session_id):
     return None
 
 
-def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None):
+def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None, exclusive_single_rate=False):
     ticket_id = normalize_ticket_id(ticket_id)
     if not ticket_id:
         raise ValueError('Invalid ticket id')
@@ -487,6 +489,7 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
             'ticket_type': ticket_type,
             'access': ticket_meta.get('access'),
             'legacy_discount': legacy_discount,
+            'exclusive_single_rate': bool(exclusive_single_rate),
             'event_id': stamped_event_id,
             'purchased_at': datetime.now(timezone.utc).isoformat(),
             'scanned_at': None,
@@ -814,7 +817,7 @@ def clear_exclusive_member_features(email):
 
 
 def grant_exclusive_member_features(email):
-    """If a member account exists for this email, attach exclusive lifetime perk."""
+    """If a member account exists for this email, attach exclusive 20% one-per-event perk."""
     normalized = (email or '').strip().lower()
     if not normalized:
         return False
@@ -1154,7 +1157,7 @@ def send_broadcast_email(subject, body, recipients):
 
 
 def clear_returning_guest_discount_if_purchased(email):
-    """No-op: list members keep 20% on single tickets for life (multi-ticket stays at member rate)."""
+    """No-op: exclusive members keep 20% on one single ticket per event."""
     return
 
 
@@ -1177,7 +1180,7 @@ def member_has_returning_guest_discount(member):
 
 
 def ensure_returning_guest_flag_for_exclusive_member(member):
-    """Exclusive-list emails keep the lifetime single-ticket perk even if they signed up without the invite link."""
+    """Exclusive-list emails keep the one-per-event single-ticket perk even if they signed up without the invite link."""
     if not member:
         return member
     if member.get('returning_guest_discount'):
@@ -1221,12 +1224,43 @@ def resolve_member_discount_application(requested):
     return member_discount_active()
 
 
-def active_member_discount_rate(quantity=1, require_active=True):
+def exclusive_single_rate_used_for_event(member, event_id):
+    """True when this exclusive member already used the 20% single-ticket rate on this event."""
+    if not member:
+        return False
+    email = (member.get('email') or '').strip().lower()
+    target = (event_id or '').strip()
+    if not email or not target:
+        return False
+    for ticket in load_tickets():
+        if (ticket.get('email') or '').strip().lower() != email:
+            continue
+        if not ticket_belongs_to_event(ticket, target):
+            continue
+        if ticket.get('exclusive_single_rate'):
+            return True
+        # Older singles bought with a discount, before this flag existed.
+        if int(ticket.get('quantity') or 1) == 1 and ticket.get('legacy_discount'):
+            return True
+    return False
+
+
+def exclusive_single_rate_available(member, event_id=None, quantity=1):
+    if not member_has_returning_guest_discount(member):
+        return False
+    if max(1, int(quantity or 1)) != 1:
+        return False
+    target = (event_id or '').strip() or get_sales_event_id()
+    if not target:
+        return True
+    return not exclusive_single_rate_used_for_event(member, target)
+
+
+def active_member_discount_rate(quantity=1, require_active=True, event_id=None):
     """Percent rate (0–1) for the logged-in member at this quantity.
 
-    Exclusive-list members keep returning_guest_discount for life:
-    - quantity 1 → higher welcome rate (default 20%)
-    - quantity 2+ → standard member rate (default 10%) for group/friend buys
+    Exclusive-list members get 20% off one single ticket per event.
+    After that, or for 2+ tickets, they use the standard member rate (10%).
 
     If require_active is False, returns the eligible rate even when the code is not applied.
     """
@@ -1238,7 +1272,7 @@ def active_member_discount_rate(quantity=1, require_active=True):
     if not member or not member_discount_eligible(member):
         return 0.0
     quantity = max(1, int(quantity or 1))
-    if member_has_returning_guest_discount(member) and quantity == 1:
+    if exclusive_single_rate_available(member, event_id, quantity):
         rate = returning_guest_discount if returning_guest_discount > 0 else member_discount
         return rate if rate > 0 else 0.20
     rate = member_discount if member_discount > 0 else 0.0
@@ -1300,11 +1334,12 @@ def calculate_bulk_total_cents(ticket_type, quantity):
     return base_total
 
 
-def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
+def calculate_total_cents(ticket_type, quantity, apply_member_discount=False, event_id=None):
     """Price with optional member/exclusive discount.
 
-    Exclusive (returning-guest) members: 20% off a single ticket for life.
-    Two or more tickets use the normal member rate (default 10%), and can stack with bulk.
+    Exclusive members: 20% off one single ticket per event.
+    Two or more tickets, or a later single after that perk is used, use the
+    normal member rate (default 10%) and can stack with bulk.
     """
     quantity = max(1, int(quantity or 1))
     base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
@@ -1313,7 +1348,7 @@ def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
     if not apply_member_discount:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
-    rate = active_member_discount_rate(quantity)
+    rate = active_member_discount_rate(quantity, event_id=event_id)
     if rate <= 0:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
@@ -1324,20 +1359,20 @@ def calculate_total_cents(ticket_type, quantity, apply_member_discount=False):
     return int(base_total * (1 - rate))
 
 
-def calculate_unit_price(ticket_type, quantity, apply_member_discount=False):
+def calculate_unit_price(ticket_type, quantity, apply_member_discount=False, event_id=None):
     if quantity < 1:
         quantity = 1
-    return calculate_total_cents(ticket_type, quantity, apply_member_discount) // quantity
+    return calculate_total_cents(ticket_type, quantity, apply_member_discount, event_id=event_id) // quantity
 
 
-def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
+def pricing_breakdown(ticket_type, quantity, apply_member_discount=False, event_id=None):
     quantity = max(1, int(quantity or 1))
     base = TICKET_TYPES[ticket_type]['price_cents']
     base_total_cents = base * quantity
     bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
-    eligible_rate = active_member_discount_rate(quantity, require_active=False)
+    eligible_rate = active_member_discount_rate(quantity, require_active=False, event_id=event_id)
     rate = eligible_rate if apply_member_discount else 0.0
-    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount)
+    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount, event_id=event_id)
     unit_price = total_cents // quantity
 
     bulk_savings_active = bulk_only_total < base_total_cents
@@ -1368,7 +1403,11 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
 
     member = get_logged_in_member()
     is_returning = bool(member and member_has_returning_guest_discount(member))
-    # Percent shown for the code at this quantity (20% single exclusive, else 10%).
+    exclusive_single_available = exclusive_single_rate_available(member, event_id, quantity)
+    exclusive_single_applied = bool(
+        apply_member_discount and exclusive_single_available and quantity == 1 and rate >= 0.20
+    )
+    # Percent shown for the code at this quantity (20% unused exclusive single, else 10%).
     display_member_percent = int(round(rate * 100)) if rate > 0 else int(member_discount * 100)
     if not apply_member_discount and eligible_rate > 0:
         display_member_percent = int(round(eligible_rate * 100))
@@ -1393,7 +1432,8 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False):
         'bundle_discount_percent': bulk_percent,
         'member_discount_percent': display_member_percent,
         'returning_guest_discount': is_returning,
-        'returning_guest_single_ticket_rate': is_returning and quantity == 1 and rate >= 0.20,
+        'returning_guest_single_ticket_rate': exclusive_single_applied,
+        'exclusive_single_available': exclusive_single_available,
         'vip_bundle_min': vip_bundle_min,
         'vip_bulk_discount_percent': int(vip_bulk_discount * 100),
     }
@@ -1855,6 +1895,7 @@ def fulfill_paid_checkout(checkout_session):
         ticket_type=ticket_type, legacy_discount=legacy_discount,
         view_token=view_token,
         event_id=metadata.get('event_id') or get_sales_event_id(),
+        exclusive_single_rate=metadata.get('exclusive_single_rate') == 'true',
     )
 
     if delivery_email:
@@ -3034,7 +3075,7 @@ def send_member_invite_email(customer_email, token, invite_url=None):
     member_pct = int(member_discount * 100)
     plain_body = (
         "You've been to The Section before — welcome back!\n\n"
-        f'Create your member account for {welcome_pct}% off any single ticket for life '
+        f'Create your member account for {welcome_pct}% off one single ticket per event '
         f'(or {member_pct}% when you buy more than one):\n'
         f'{invite_url}\n\n'
         f'This link expires in {days_label}.\n'
@@ -3044,7 +3085,7 @@ def send_member_invite_email(customer_email, token, invite_url=None):
         '<h2 style="margin:0 0 12px;">The Section</h2>'
         '<p>You\'ve been to The Section before — welcome back!</p>'
         f'<p>Create your member account to save tickets and get '
-        f'<strong>{welcome_pct}% off any one-ticket order for life</strong> — or '
+        f'<strong>{welcome_pct}% off one single ticket per event</strong> — or '
         f'<strong>{member_pct}% off</strong> when you buy more than one for friends.</p>'
         f'<p><a href="{invite_url}" style="display:inline-block;padding:12px 18px;'
         'background:#111;color:#fff;text-decoration:none;border-radius:10px;">'
@@ -3116,6 +3157,7 @@ def member_status():
     member = get_logged_in_member()
     discount_code = None
     discount_eligible = False
+    event_id = (request.args.get('event_id') or '').strip() or get_sales_event_id()
     if member:
         member = ensure_returning_guest_flag_for_exclusive_member(member)
         discount_eligible = member_discount_eligible(member)
@@ -3127,6 +3169,7 @@ def member_status():
         'discount_code': discount_code,
         'member_discount_eligible': discount_eligible,
         'returning_guest_discount': member_has_returning_guest_discount(member) if member else False,
+        'exclusive_single_available': exclusive_single_rate_available(member, event_id, 1) if member else False,
         'member_discount_percent': int(member_discount * 100) if member_discount > 0 else 10,
         'returning_guest_discount_percent': int(returning_guest_discount * 100) if returning_guest_discount > 0 else 20,
         'bundle_min': bundle_min,
@@ -3153,7 +3196,8 @@ def pricing():
     apply_member = resolve_member_discount_application(
         request.args.get('apply_member_discount', '').lower() in ('1', 'true', 'yes')
     )
-    return jsonify(pricing_breakdown(ticket_type, quantity, apply_member))
+    event_id = resolve_checkout_event_id(request.args.get('event_id'))
+    return jsonify(pricing_breakdown(ticket_type, quantity, apply_member, event_id=event_id))
 
 
 @app.route('/api/ticket-availability')
@@ -3181,7 +3225,7 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False, e
 
     legacy_member = is_legacy_member_logged_in()
     apply_member = resolve_member_discount_application(apply_member_discount)
-    breakdown = pricing_breakdown(ticket_type, quantity, apply_member)
+    breakdown = pricing_breakdown(ticket_type, quantity, apply_member, event_id=sales_event_id)
     unit_price = breakdown['unit_price_cents']
     ticket_meta = TICKET_TYPES[ticket_type]
     if sales_event:
@@ -3240,6 +3284,7 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False, e
             'legacy_discount': 'true' if breakdown['legacy_discount_applied'] else 'false',
             'member_email': member_email,
             'event_id': sales_event_id or '',
+            'exclusive_single_rate': 'true' if breakdown.get('returning_guest_single_ticket_rate') else 'false',
         },
         'success_url': f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
         'cancel_url': f"{base_url}/",
@@ -3969,6 +4014,17 @@ def admin_logout():
     session.pop('admin_authenticated', None)
     regenerate_session()
     return redirect(url_for('admin_login'))
+
+
+@app.route('/logout', methods=['POST'])
+def site_logout():
+    session.pop('legacy_member_email', None)
+    session.pop('admin_authenticated', None)
+    session.pop('verify_authenticated', None)
+    session.pop('verify_login_email', None)
+    regenerate_session()
+    next_url = safe_next_url(request.form.get('next') or request.args.get('next'), '/')
+    return redirect(next_url or '/')
 
 
 def event_payload_from_form(form, existing=None):

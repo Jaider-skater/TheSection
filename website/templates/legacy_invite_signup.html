@@ -8,10 +8,9 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen">
     <header class="bg-zinc-900 border-b border-zinc-800">
-        <div class="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
-            <a href="/" class="text-zinc-400 hover:text-white text-sm">← Home</a>
+        <div class="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
             <span class="text-sm tracking-widest text-zinc-400 uppercase">Welcome Back</span>
-            <div class="w-12"></div>
+            {% include 'site_menu.html' %}
         </div>
     </header>
 
@@ -22,7 +21,7 @@
             <p class="text-zinc-400">For <span class="text-white">{{ email }}</span></p>
             {% endif %}
             <p class="text-emerald-300 text-sm mt-3">
-                {{ returning_guest_discount_percent }}% off any single ticket for life ·
+                {{ returning_guest_discount_percent }}% off one single ticket per event ·
                 {{ member_discount_percent }}% when you buy more than one
             </p>
         </div>

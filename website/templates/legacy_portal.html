@@ -8,10 +8,9 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen">
     <header class="bg-zinc-900 border-b border-zinc-800">
-        <div class="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
-            <a href="/" class="text-zinc-400 hover:text-white text-sm">← Home</a>
+        <div class="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
             <span class="text-sm tracking-widest text-zinc-400 uppercase">Legacy Members</span>
-            <div class="w-12"></div>
+            {% include 'site_menu.html' %}
         </div>
     </header>
 
@@ -142,32 +141,9 @@
         </div>
 
         {% else %}
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-10">
-            <div>
-                <h1 class="text-3xl font-bold tracking-tight">Welcome back</h1>
-                <p class="text-zinc-400 mt-1">{{ member.email }}</p>
-            </div>
-            <div class="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
-                {% if show_scanner_link %}
-                <a href="/admin"
-                   class="text-sm text-white border border-white rounded-xl px-4 py-2 font-semibold hover:bg-white hover:text-black transition-colors">
-                    Ticket Admin
-                </a>
-                <a href="/verify"
-                   class="text-sm text-white border border-white rounded-xl px-4 py-2 font-semibold hover:bg-white hover:text-black transition-colors">
-                    Door Scanner
-                </a>
-                <a href="/admin/mailing-list"
-                   class="text-sm text-white border border-white rounded-xl px-4 py-2 font-semibold hover:bg-white hover:text-black transition-colors">
-                    Mailing Lists
-                </a>
-                {% endif %}
-                <form method="POST">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <input type="hidden" name="action" value="logout">
-                    <button type="submit" class="text-sm text-zinc-400 hover:text-white px-2 py-2">Sign out</button>
-                </form>
-            </div>
+        <div class="mb-10">
+            <h1 class="text-3xl font-bold tracking-tight">Welcome back</h1>
+            <p class="text-zinc-400 mt-1">{{ member.email }}</p>
         </div>
 
         <div class="mb-8 bg-zinc-900 border border-white/20 rounded-2xl p-6">
@@ -175,7 +151,7 @@
             <p class="text-white font-medium mb-1">{% if has_returning_guest_discount %}Welcome back discount{% else %}Your discount code{% endif %}</p>
             <p class="text-zinc-400 text-sm mb-4">
                 {% if has_returning_guest_discount %}
-                {{ returning_guest_discount_percent }}% off any single ticket for life (or {{ member_discount_percent }}% when you buy more than one). Tap your code on the tickets page. Bulk pricing stacks on multi-ticket orders when you qualify.
+                {{ returning_guest_discount_percent }}% off one single ticket per event (or {{ member_discount_percent }}% when you buy more than one, or after that perk is used). Tap your code on the tickets page. Bulk pricing stacks on multi-ticket orders when you qualify.
                 {% else %}
                 {{ member_discount_percent }}% off future purchases — tap your code on the tickets page to apply.
                 {% endif %}

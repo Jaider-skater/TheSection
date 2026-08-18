@@ -9,7 +9,6 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
     <div class="max-w-lg mx-auto text-center">
-        {% set staff_nav_sign_out = '/verify/logout' %}
         {% include 'staff_nav.html' %}
         <meta name="csrf-token" content="{{ csrf_token }}">
         <div id="admission-totals" class="grid grid-cols-3 gap-2 mb-2">

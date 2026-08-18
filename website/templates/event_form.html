@@ -8,9 +8,7 @@
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
     <div class="max-w-3xl mx-auto">
-        {% set staff_nav_sign_out = url_for('admin_logout') %}
         {% include 'staff_nav.html' %}
-        {% include 'admin_nav.html' %}
 
         <h1 class="text-3xl font-bold mb-2">{% if is_new %}New event{% else %}Edit event{% endif %}</h1>
         <p class="text-zinc-400 mb-8">On-sale events appear on the homepage with Get Tickets. Coming-soon events show as teasers.</p>

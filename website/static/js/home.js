@@ -146,7 +146,10 @@ function formatBulkPricingLabel() {
 
 async function loadMemberStatus() {
     try {
-        const response = await apiFetch('/api/member-status');
+        const statusUrl = selectedEventId
+            ? `/api/member-status?event_id=${encodeURIComponent(selectedEventId)}`
+            : '/api/member-status';
+        const response = await apiFetch(statusUrl);
         memberStatus = await response.json();
         // Prefer CSRF token from response header if Flask rotated it.
         const headerToken = response.headers.get('X-CSRF-Token');
@@ -161,11 +164,21 @@ async function loadMemberStatus() {
     }
 }
 
+function exclusiveSingleAvailable() {
+    if (pricing && pricing.exclusive_single_available != null) {
+        return !!pricing.exclusive_single_available;
+    }
+    if (memberStatus.exclusive_single_available != null) {
+        return !!memberStatus.exclusive_single_available;
+    }
+    return !!(memberStatus.returning_guest_discount && quantity === 1);
+}
+
 function activeMemberPercent() {
     if (pricing && pricing.member_discount_percent) {
         return pricing.member_discount_percent;
     }
-    if (memberStatus.returning_guest_discount && quantity === 1) {
+    if (exclusiveSingleAvailable() && quantity === 1) {
         return memberStatus.returning_guest_discount_percent || 20;
     }
     return memberStatus.member_discount_percent || 10;
@@ -174,13 +187,13 @@ function activeMemberPercent() {
 function memberCodeHintText() {
     const memberPct = activeMemberPercent();
     const bulkPct = bulkPctForType();
-    const isExclusiveSingle = memberStatus.returning_guest_discount && quantity === 1;
+    const isExclusiveSingle = exclusiveSingleAvailable() && quantity === 1;
     if (!memberDiscountApplied) {
         if (pricing && pricing.bundle_discount_applied) {
             return `Bulk pricing active — tap to add ${memberPct}% member (${bulkPct + memberPct}% total)`;
         }
         if (isExclusiveSingle) {
-            return `Tap to add ${memberPct}% off this single ticket (lifetime exclusive perk)`;
+            return `Tap to add ${memberPct}% off this single ticket (one per event)`;
         }
         return `Tap to add ${memberPct}% member discount`;
     }
@@ -245,7 +258,11 @@ function updateMemberBanner() {
                 if (memberStatus.returning_guest_discount) {
                     const welcome = memberStatus.returning_guest_discount_percent || 20;
                     const multi = memberStatus.member_discount_percent || 10;
-                    discountLine.textContent = `${welcome}% off one ticket for life — or ${multi}% when you buy 2+. Bulk (${bulkLabel}) can stack on multi-ticket orders. Tap your code below to apply.`;
+                    if (exclusiveSingleAvailable()) {
+                        discountLine.textContent = `${welcome}% off one ticket for this event — or ${multi}% when you buy 2+. Bulk (${bulkLabel}) can stack on multi-ticket orders. Tap your code below to apply.`;
+                    } else {
+                        discountLine.textContent = `You already used the ${welcome}% single-ticket rate for this event. ${multi}% member rate applies. Bulk (${bulkLabel}) can stack. Tap your code below to apply.`;
+                    }
                 } else {
                     discountLine.textContent = `Bulk pricing (${bulkLabel}) applies automatically. Tap your code below to stack another ${memberStatus.member_discount_percent}% off.`;
                 }
@@ -306,6 +323,9 @@ async function refreshPricing() {
         let url = `/api/pricing?ticket_type=${ticketType}&quantity=${quantity}`;
         if (memberDiscountApplied) {
             url += '&apply_member_discount=1';
+        }
+        if (selectedEventId) {
+            url += `&event_id=${encodeURIComponent(selectedEventId)}`;
         }
         const response = await apiFetch(url);
         pricing = await response.json();
@@ -413,7 +433,7 @@ function updateModalQuantity() {
             if (pricing.bundle_discount_applied) {
                 memberText = `Tap ${memberStatus.discount_code} above to add ${memberPct}% more (→ ${bulkPct + memberPct}% total)`;
             } else if (memberStatus.returning_guest_discount && quantity === 1) {
-                memberText = `Tap ${memberStatus.discount_code} for ${memberPct}% off this single ticket (lifetime exclusive)`;
+                memberText = `Tap ${memberStatus.discount_code} for ${memberPct}% off this single ticket (one per event)`;
             } else {
                 memberText = `Tap ${memberStatus.discount_code} above to apply ${memberPct}% off`;
             }
@@ -567,19 +587,6 @@ document.addEventListener('keydown', function(e) {
 document.getElementById('tickets-modal').addEventListener('click', function(e) {
     if (e.target === this) closeTicketsModal();
 });
-
-const hamburgerBtn = document.getElementById('hamburger-btn');
-const menuDropdown = document.getElementById('menu-dropdown');
-if (hamburgerBtn && menuDropdown) {
-    hamburgerBtn.addEventListener('click', () => {
-        menuDropdown.classList.toggle('hidden');
-    });
-    document.addEventListener('click', (e) => {
-        if (!hamburgerBtn.contains(e.target) && !menuDropdown.contains(e.target)) {
-            menuDropdown.classList.add('hidden');
-        }
-    });
-}
 
 function maybeOpenTicketsFromUrl() {
     const params = new URLSearchParams(window.location.search);
