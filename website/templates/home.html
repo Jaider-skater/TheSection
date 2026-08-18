@@ -56,77 +56,106 @@
 
     <main class="max-w-6xl mx-auto px-6 pt-10 pb-20">
 
-        <!-- NEXT EVENT + FLYER (Wrapped together) -->
-{% if featured_event %}
-<div class="max-w-2xl mx-auto border-4 border-white rounded-3xl overflow-hidden mb-16">
+{% if on_sale_events %}
+<section class="max-w-2xl mx-auto mb-16 space-y-10">
+    {% for event in on_sale_events %}
+    <article class="border-4 border-white rounded-3xl overflow-hidden">
+        <div class="bg-zinc-900 p-8 md:p-10">
+            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">
+                {% if loop.first %}NEXT EVENT{% else %}ALSO ON SALE{% endif %}
+            </div>
+            <div class="text-5xl font-bold tracking-tighter mb-6">{{ event.headline_display }}</div>
 
-    <!-- NEXT EVENT CARD -->
-    <div class="bg-zinc-900 p-8 md:p-10">
-        <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">NEXT EVENT</div>
-        <div class="text-5xl font-bold tracking-tighter mb-6">{{ featured_event.headline_display }}</div>
+            <div class="space-y-3 text-[15px] mb-8">
+                {% if event.date_display %}
+                <div><span class="font-medium">Date:</span> {{ event.date_display }}</div>
+                {% endif %}
+                {% if event.time_display %}
+                <div><span class="font-medium">Time:</span> {{ event.time_display }}</div>
+                {% endif %}
+                {% if event.venue %}
+                <div><span class="font-medium">Venue:</span> {{ event.venue }}</div>
+                {% endif %}
+                <div><span class="font-medium">Price:</span> {{ event.price_display }}</div>
+            </div>
 
-        <div class="space-y-3 text-[15px] mb-8">
-            {% if featured_event.date_display %}
-            <div><span class="font-medium">Date:</span> {{ featured_event.date_display }}</div>
+            {% if event.description %}
+            <p class="text-[15px] text-zinc-300 whitespace-pre-line mb-8">{{ event.description }}</p>
             {% endif %}
-            {% if featured_event.time_display %}
-            <div><span class="font-medium">Time:</span> {{ featured_event.time_display }}</div>
+
+            {% if event.sold_out %}
+            <div class="block w-full text-center py-4 mb-4 border-2 border-zinc-600 bg-zinc-950 text-zinc-400 text-xl font-semibold rounded-2xl">
+                Sold Out
+            </div>
+            {% else %}
+            <a href="#tickets"
+               class="get-tickets-btn block w-full text-center py-4 mb-4
+                      border-2 border-white
+                      bg-black text-white text-xl font-semibold rounded-2xl
+                      transition-all duration-500 ease-out
+                      hover:bg-white hover:text-black hover:border-white
+                      active:scale-[1.015] hover:scale-[1.015]
+                      hover:shadow-lg
+                      touch-manipulation select-none"
+               data-event-id="{{ event.id }}"
+               data-event-name="{{ event.name }}"
+               data-event-date="{{ event.date_display or '' }}">
+                Get Tickets
+            </a>
             {% endif %}
-            {% if featured_event.venue %}
-            <div><span class="font-medium">Venue:</span> {{ featured_event.venue }}</div>
+
+            {% if event.details %}
+            <div class="text-center text-sm text-zinc-400">{{ event.details }}</div>
             {% endif %}
-            <div><span class="font-medium">Price:</span> {{ featured_event.price_display }}</div>
         </div>
-
-        {% if featured_event.description %}
-        <p class="text-[15px] text-zinc-300 whitespace-pre-line mb-8">{{ featured_event.description }}</p>
+        {% if event.flyer_url %}
+        <img src="{{ event.flyer_url }}"
+             alt="{{ event.name }} flyer"
+             class="w-full h-auto object-cover">
         {% endif %}
-
-        {% if featured_event.sales_open %}
-<a href="#tickets"
-   id="get-tickets-btn"
-   class="block w-full text-center py-4 mb-4
-          border-2 border-white
-          bg-black text-white text-xl font-semibold rounded-2xl
-          transition-all duration-500 ease-out
-          hover:bg-white hover:text-black hover:border-white
-          active:scale-[1.015] hover:scale-[1.015]
-          hover:shadow-lg
-          touch-manipulation select-none">
-    Get Tickets
-</a>
-        {% else %}
-<div id="get-tickets-btn"
-     class="block w-full text-center py-4 mb-4
-            border-2 border-zinc-600
-            bg-zinc-950 text-zinc-400 text-xl font-semibold rounded-2xl">
-    Tickets soon
-</div>
-        {% endif %}
-
-        {% if featured_event.details %}
-        <div class="text-center text-sm text-zinc-400">
-            {{ featured_event.details }}
-        </div>
-        {% endif %}
-    </div>
-
-    {% if featured_event.flyer_url %}
-    <section id="flyer-section" class="relative">
-        <div class="max-w-2xl mx-auto">
-            <img src="{{ featured_event.flyer_url }}"
-                 alt="{{ featured_event.name }} flyer"
-                 class="w-full h-auto object-cover rounded-b-3xl shadow-lg">
-        </div>
-    </section>
-    {% endif %}
-</div>
-{% else %}
+    </article>
+    {% endfor %}
+</section>
+{% elif not teaser_events %}
 <div class="max-w-2xl mx-auto border-4 border-zinc-800 rounded-3xl overflow-hidden mb-16 bg-zinc-900 p-10 text-center">
     <div class="uppercase tracking-[2px] text-xs text-zinc-500 font-medium mb-3">NEXT EVENT</div>
     <p class="text-2xl font-bold mb-2">Nothing announced yet</p>
     <p class="text-zinc-400">Check back soon.</p>
 </div>
+{% endif %}
+
+{% if teaser_events %}
+<section class="max-w-2xl mx-auto mb-16">
+    <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-4 text-center">Coming soon</div>
+    <div class="space-y-6">
+        {% for event in teaser_events %}
+        <article class="border-2 border-zinc-700 rounded-3xl overflow-hidden bg-zinc-900">
+            <div class="p-6 md:p-8">
+                <div class="text-3xl font-bold tracking-tight mb-3">{{ event.headline_display }}</div>
+                <div class="space-y-2 text-sm text-zinc-300 mb-4">
+                    {% if event.date_display %}
+                    <div>{{ event.date_display }}{% if event.time_display %} · {{ event.time_display }}{% endif %}</div>
+                    {% endif %}
+                    {% if event.venue %}
+                    <div>{{ event.venue }}</div>
+                    {% endif %}
+                </div>
+                {% if event.description %}
+                <p class="text-sm text-zinc-400 whitespace-pre-line mb-4">{{ event.description }}</p>
+                {% endif %}
+                <div class="text-center py-3 border border-zinc-600 rounded-2xl text-zinc-400 font-semibold">
+                    Tickets soon
+                </div>
+            </div>
+            {% if event.flyer_url %}
+            <img src="{{ event.flyer_url }}"
+                 alt="{{ event.name }} flyer"
+                 class="w-full h-auto object-cover">
+            {% endif %}
+        </article>
+        {% endfor %}
+    </div>
+</section>
 {% endif %}
 
         <!-- TICKETS MODAL (pops over flyer) -->
@@ -136,12 +165,8 @@
                 <button onclick="closeTicketsModal()"
                         class="absolute top-4 right-4 text-zinc-400 hover:text-white text-3xl leading-none">×</button>
 
-                <h2 id="tickets-modal-title" class="text-4xl font-bold tracking-tight mb-3 text-center">
-                    {% if featured_event %}{{ featured_event.name }}{% else %}Secure Your Spot{% endif %}
-                </h2>
-                <p id="tickets-modal-subtitle" class="text-xl text-zinc-400 mb-10 text-center">
-                    {% if featured_event and featured_event.date_display %}{{ featured_event.date_display }}{% else %}Limited tickets available.{% endif %}
-                </p>
+                <h2 id="tickets-modal-title" class="text-4xl font-bold tracking-tight mb-3 text-center">Secure Your Spot</h2>
+                <p id="tickets-modal-subtitle" class="text-xl text-zinc-400 mb-10 text-center">Limited tickets available.</p>
                 <div id="sold-out-panel" class="hidden mb-6 rounded-2xl border border-amber-400/40 bg-amber-400/10 px-4 py-4 text-center">
                     <p class="text-amber-200 font-semibold">Sold out</p>
                     <p class="text-zinc-400 text-sm mt-1">This event is at capacity.</p>
@@ -150,7 +175,8 @@
                 <div id="sign-in-prompt" class="mb-4 bg-zinc-950 border border-zinc-600 rounded-2xl p-4 text-sm">
                     <p class="text-white font-medium">Sign in before you buy</p>
                     <p class="text-zinc-400 mt-1 mb-3">Create an account or sign in to get your discount code and save tickets.</p>
-                    <a href="{{ url_for('legacy_portal', next='/?open_tickets=1') }}"
+                    <a id="sign-in-tickets-link"
+                       href="{{ url_for('legacy_portal', next='/?open_tickets=1') }}"
                        class="inline-block w-full text-center py-2.5 border border-white rounded-xl font-semibold hover:bg-white hover:text-black transition-colors">
                         Sign in
                     </a>
@@ -252,6 +278,7 @@
 
     <script>
         window.ticketAvailability = {{ (ticket_availability or {}) | tojson }};
+        window.onSaleEvents = {{ (on_sale_events or []) | tojson }};
         window.featuredEvent = {{ (featured_event or none) | tojson }};
     </script>
     <script src="{{ url_for('static', filename='js/home.js') }}"></script>

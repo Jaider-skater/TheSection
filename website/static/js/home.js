@@ -15,7 +15,13 @@ let ticketAvailability = window.ticketAvailability || {
     remaining: null,
     sold_out: false,
 };
+let selectedEventId = (ticketAvailability && ticketAvailability.event_id) || (window.featuredEvent && window.featuredEvent.id) || '';
 const MAX_TICKET_QUANTITY = 20;
+
+function onSaleEventById(eventId) {
+    const events = window.onSaleEvents || [];
+    return events.find(event => event.id === eventId) || null;
+}
 
 function maxPurchasableQuantity() {
     const remaining = ticketAvailability && ticketAvailability.remaining;
@@ -25,20 +31,16 @@ function maxPurchasableQuantity() {
 
 function applyAvailabilityToUi() {
     const soldOut = !!(ticketAvailability && ticketAvailability.sold_out);
-    const salesOpen = !ticketAvailability || ticketAvailability.sales_open !== false;
     const remaining = ticketAvailability ? ticketAvailability.remaining : null;
-    const getTicketsBtn = document.getElementById('get-tickets-btn');
     const soldOutPanel = document.getElementById('sold-out-panel');
     const purchasePanel = document.getElementById('ticket-purchase-panel');
+    const title = document.getElementById('tickets-modal-title');
     const subtitle = document.getElementById('tickets-modal-subtitle');
+    const selected = onSaleEventById(selectedEventId) || window.featuredEvent;
+    const eventName = (ticketAvailability && ticketAvailability.event_name) || (selected && selected.name) || 'Secure Your Spot';
+    const eventDate = (ticketAvailability && ticketAvailability.event_date_display) || (selected && selected.date_display) || '';
 
-    if (getTicketsBtn && getTicketsBtn.tagName === 'A') {
-        if (!salesOpen) {
-            getTicketsBtn.textContent = 'Tickets soon';
-        } else {
-            getTicketsBtn.textContent = soldOut ? 'Sold Out' : 'Get Tickets';
-        }
-    }
+    if (title) title.textContent = eventName;
     if (soldOutPanel) {
         soldOutPanel.classList.toggle('hidden', !soldOut);
     }
@@ -53,8 +55,16 @@ function applyAvailabilityToUi() {
                 ? 'Only 1 ticket left.'
                 : `Only ${remaining} tickets left.`;
         } else {
-            subtitle.textContent = 'Limited tickets available.';
+            subtitle.textContent = eventDate || 'Limited tickets available.';
         }
+    }
+
+    const signInLink = document.getElementById('sign-in-tickets-link');
+    if (signInLink) {
+        const next = selectedEventId
+            ? `/?open_tickets=1&event_id=${encodeURIComponent(selectedEventId)}`
+            : '/?open_tickets=1';
+        signInLink.href = '/legacy?next=' + encodeURIComponent(next);
     }
 
     const cap = maxPurchasableQuantity();
@@ -63,11 +73,16 @@ function applyAvailabilityToUi() {
     }
 }
 
-async function loadTicketAvailability() {
+async function loadTicketAvailability(eventId) {
     try {
-        const response = await apiFetch('/api/ticket-availability');
+        const target = eventId || selectedEventId;
+        const url = target
+            ? `/api/ticket-availability?event_id=${encodeURIComponent(target)}`
+            : '/api/ticket-availability';
+        const response = await apiFetch(url);
         if (!response.ok) return;
         ticketAvailability = await response.json();
+        if (ticketAvailability.event_id) selectedEventId = ticketAvailability.event_id;
         applyAvailabilityToUi();
         updateModalQuantity();
     } catch (err) {
@@ -436,6 +451,7 @@ async function redirectToLoginForCheckout() {
                 quantity: quantity,
                 ticket_type: ticketType,
                 apply_member_discount: memberDiscountApplied,
+                event_id: selectedEventId,
             }),
         });
     } catch (err) {
@@ -467,6 +483,7 @@ async function createCheckoutSession() {
                 quantity: quantity,
                 ticket_type: ticketType,
                 apply_member_discount: memberDiscountApplied,
+                event_id: selectedEventId,
             }),
         });
 
@@ -494,9 +511,12 @@ async function createCheckoutSession() {
 }
 
 async function showTicketsModal(options = {}) {
-    if (!window.featuredEvent || window.featuredEvent.sales_open === false) {
+    const eventId = options.eventId || selectedEventId;
+    const event = onSaleEventById(eventId);
+    if (!event || event.sales_open === false) {
         return;
     }
+    selectedEventId = event.id;
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
     modal.style.opacity = '0';
@@ -504,7 +524,8 @@ async function showTicketsModal(options = {}) {
         modal.style.transition = 'opacity 0.3s ease-out';
         modal.style.opacity = '1';
     }, 10);
-    await Promise.all([loadMemberStatus(), loadTicketAvailability()]);
+    applyAvailabilityToUi();
+    await Promise.all([loadMemberStatus(), loadTicketAvailability(event.id)]);
     if (ticketAvailability && ticketAvailability.sold_out) {
         applyAvailabilityToUi();
         return;
@@ -529,10 +550,10 @@ function closeTicketsModal() {
     }, 300);
 }
 
-document.querySelectorAll('a[href="#tickets"]').forEach(link => {
+document.querySelectorAll('.get-tickets-btn').forEach(link => {
     link.addEventListener('click', function(e) {
         e.preventDefault();
-        showTicketsModal();
+        showTicketsModal({ eventId: this.dataset.eventId });
     });
 });
 
@@ -564,12 +585,14 @@ function maybeOpenTicketsFromUrl() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('open_tickets') === '1') {
         const applyMemberDiscount = params.get('apply_member_discount') === '1';
+        const eventId = params.get('event_id') || selectedEventId;
         params.delete('open_tickets');
         params.delete('apply_member_discount');
+        params.delete('event_id');
         const nextQuery = params.toString();
         const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : '') + window.location.hash;
         window.history.replaceState({}, '', nextUrl);
-        showTicketsModal({ applyMemberDiscount });
+        showTicketsModal({ applyMemberDiscount, eventId });
     }
 }
 

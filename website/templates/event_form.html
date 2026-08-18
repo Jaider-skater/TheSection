@@ -13,7 +13,7 @@
         {% include 'admin_nav.html' %}
 
         <h1 class="text-3xl font-bold mb-2">{% if is_new %}New event{% else %}Edit event{% endif %}</h1>
-        <p class="text-zinc-400 mb-8">This is what guests see on the homepage, and the event tickets are sold for.</p>
+        <p class="text-zinc-400 mb-8">On-sale events appear on the homepage with Get Tickets. Coming-soon events show as teasers.</p>
 
         {% if error %}
         <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ error }}</div>
@@ -101,18 +101,14 @@
                 </div>
             </div>
 
-            <label class="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="sales_open" value="1" class="accent-white" {% if event.sales_open %}checked{% endif %}>
-                Tickets on sale
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="feature" value="1" class="accent-white" {% if event.id and event.id == featured_event_id %}checked{% endif %}{% if is_new %}checked{% endif %}>
-                Show this event on the homepage (Get Tickets sells this one)
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="use_at_door" value="1" class="accent-white" {% if event.id and event.id == door_event_id %}checked{% endif %}>
-                Use this event at the door scanner
-            </label>
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="sales_open">Listing</label>
+                <select id="sales_open" name="sales_open"
+                        class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                    <option value="1" {% if event.sales_open %}selected{% endif %}>On sale — homepage + Get Tickets</option>
+                    <option value="0" {% if not event.sales_open %}selected{% endif %}>Coming soon — teaser only, no tickets</option>
+                </select>
+            </div>
 
             <div class="flex flex-wrap gap-3 pt-2">
                 <button type="submit" class="px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm">

@@ -2248,6 +2248,11 @@ def event_display(event):
         return None
     date_line = format_event_date_line(event.get('date'))
     headline = format_event_headline(event.get('date'), event.get('headline')) or event.get('name')
+    sold = compute_ticket_sales_counts(event.get('id'))['sold']
+    cap = parse_max_capacity(event.get('ticket_cap'))
+    remaining = None if not cap else max(0, cap - sold)
+    sold_out = bool(cap and remaining == 0)
+    sales_open = bool(event.get('sales_open', True))
     return {
         **event,
         'headline_display': headline,
@@ -2257,8 +2262,40 @@ def event_display(event):
         'flyer_url': event_flyer_url(event),
         'is_featured': event.get('id') == get_featured_event_id(),
         'is_door': event.get('id') == get_door_event_id(),
-        'tickets_sold': compute_ticket_sales_counts(event.get('id'))['sold'],
+        'tickets_sold': sold,
+        'tickets_remaining': remaining,
+        'sold_out': sold_out,
+        'sales_open': sales_open,
+        'can_buy': sales_open and not sold_out,
     }
+
+
+def event_sort_key(event):
+    return (event.get('date') or '9999-99-99', (event.get('name') or '').lower())
+
+
+def today_iso():
+    return datetime.now(get_display_timezone()).date().isoformat()
+
+
+def list_on_sale_events():
+    events = [event_display(event) for event in load_events() if event.get('sales_open', True)]
+    events.sort(key=event_sort_key)
+    return events
+
+
+def list_teaser_events():
+    today = today_iso()
+    teasers = []
+    for event in load_events():
+        if event.get('sales_open', True):
+            continue
+        date_value = (event.get('date') or '')[:10]
+        if date_value and date_value < today:
+            continue
+        teasers.append(event_display(event))
+    teasers.sort(key=event_sort_key)
+    return teasers
 
 
 def get_event(event_id):
@@ -2285,9 +2322,13 @@ def get_door_event_id():
 
 
 def get_sales_event_id():
-    featured = get_featured_event_id()
-    if featured:
-        return featured
+    on_sale = list_on_sale_events()
+    if on_sale:
+        featured = get_featured_event_id()
+        for event in on_sale:
+            if event.get('id') == featured:
+                return featured
+        return on_sale[0]['id']
     return get_door_event_id()
 
 
@@ -2628,8 +2669,8 @@ def ticket_sales_remaining(event_id=None):
     return max(0, max_capacity - counts['sold'])
 
 
-def get_ticket_availability():
-    event = get_sales_event()
+def get_ticket_availability(event_id=None):
+    event = get_event(event_id) if event_id else get_sales_event()
     max_capacity = event_ticket_cap(event)
     sold = compute_ticket_sales_counts(event.get('id') if event else None)['sold']
     remaining = None if not max_capacity else max(0, max_capacity - sold)
@@ -2643,13 +2684,14 @@ def get_ticket_availability():
         'sales_open': sales_open,
         'event_id': event.get('id') if event else None,
         'event_name': event.get('name') if event else None,
+        'event_date_display': format_event_date_line((event or {}).get('date')) if event else None,
         'can_buy': bool(event and sales_open and not sold_out),
     }
 
 
-def ensure_ticket_sales_available(quantity):
-    """Reject checkout when the advertised event is not for sale or is at cap."""
-    event = get_sales_event()
+def ensure_ticket_sales_available(quantity, event_id=None):
+    """Reject checkout when the chosen event is not for sale or is at cap."""
+    event = get_event(event_id) if event_id else get_sales_event()
     if not event:
         raise TicketSalesError('No event is on sale right now.', remaining=0)
     if not event.get('sales_open', True):
@@ -3056,12 +3098,16 @@ def send_pending_member_invites():
 
 @app.route('/')
 def home():
-    featured = event_display(get_featured_event())
+    on_sale_events = list_on_sale_events()
+    teaser_events = list_teaser_events()
+    featured = on_sale_events[0] if on_sale_events else None
     return render_template(
         'home.html',
         show_scanner_link=is_scanner_admin_member(),
-        ticket_availability=get_ticket_availability(),
+        ticket_availability=get_ticket_availability(featured.get('id') if featured else None),
         featured_event=featured,
+        on_sale_events=on_sale_events,
+        teaser_events=teaser_events,
     )
 
 
@@ -3112,18 +3158,26 @@ def pricing():
 
 @app.route('/api/ticket-availability')
 def ticket_availability():
-    return jsonify(get_ticket_availability())
+    return jsonify(get_ticket_availability(request.args.get('event_id')))
 
 
-def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
+def resolve_checkout_event_id(raw):
+    event_id = (raw or '').strip()
+    if event_id and get_event(event_id):
+        return event_id
+    return get_sales_event_id()
+
+
+def build_checkout_session(quantity, ticket_type, apply_member_discount=False, event_id=None):
     if not stripe.api_key:
         raise RuntimeError('Stripe is not configured')
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
     quantity = clamp_quantity(quantity)
-    ensure_ticket_sales_available(quantity)
-    sales_event = get_sales_event()
-    sales_event_id = sales_event.get('id') if sales_event else get_sales_event_id()
+    sales_event_id = resolve_checkout_event_id(event_id)
+    ensure_ticket_sales_available(quantity, sales_event_id)
+    sales_event = get_event(sales_event_id) if sales_event_id else get_sales_event()
+    sales_event_id = sales_event.get('id') if sales_event else sales_event_id
 
     legacy_member = is_legacy_member_logged_in()
     apply_member = resolve_member_discount_application(apply_member_discount)
@@ -3207,6 +3261,7 @@ def checkout_intent():
             'quantity': clamp_quantity(data.get('quantity', 1)),
             'ticket_type': ticket_type,
             'apply_member_discount': bool(data.get('apply_member_discount')),
+            'event_id': resolve_checkout_event_id(data.get('event_id')),
         }
         touch_auth_session()
         return jsonify({'ok': True})
@@ -3228,10 +3283,12 @@ def checkout_resume():
             intent.get('quantity', 1),
             intent.get('ticket_type', 'general'),
             apply_member_discount=intent.get('apply_member_discount', False),
+            event_id=intent.get('event_id'),
         )
         return redirect(checkout_session.url)
     except TicketSalesError:
-        return redirect('/?open_tickets=1')
+        event_id = (intent or {}).get('event_id') or ''
+        return redirect('/?open_tickets=1' + (f'&event_id={event_id}' if event_id else ''))
     except Exception as e:
         print("Error resuming checkout:", str(e))
         return redirect('/?open_tickets=1')
@@ -3249,17 +3306,20 @@ def create_checkout_session():
         quantity = clamp_quantity(data.get('quantity', 1))
         ticket_type = data.get('ticket_type', 'general')
         apply_member_discount = bool(data.get('apply_member_discount'))
+        event_id = resolve_checkout_event_id(data.get('event_id'))
         # Re-stamp permanent session so login survives Stripe + browser Back.
         member = get_logged_in_member()
         if member:
             mark_member_session(member.get('email'))
         checkout_session = build_checkout_session(
             quantity, ticket_type, apply_member_discount=apply_member_discount,
+            event_id=event_id,
         )
         print("Session created successfully:", checkout_session.url)
         return jsonify({'url': checkout_session.url})
     except TicketSalesError as e:
-        availability = get_ticket_availability()
+        event_id = resolve_checkout_event_id((request.get_json() or {}).get('event_id'))
+        availability = get_ticket_availability(event_id)
         return jsonify({
             'error': str(e),
             'remaining': e.remaining,
@@ -3923,7 +3983,7 @@ def event_payload_from_form(form, existing=None):
         'details': form.get('details'),
         'ticket_cap': form.get('ticket_cap'),
         'vip_cap': form.get('vip_cap'),
-        'sales_open': form.get('sales_open') == '1',
+        'sales_open': form.get('sales_open') != '0',
     }
     if existing:
         payload['id'] = existing.get('id')
@@ -3950,10 +4010,7 @@ def admin_events():
     if request.method == 'POST':
         action = request.form.get('action')
         event_id = (request.form.get('event_id') or '').strip()
-        if action == 'feature' and event_id and get_event(event_id):
-            set_featured_event_id(event_id)
-            success = 'Homepage event updated. Get Tickets now sells this event.'
-        elif action == 'door' and event_id and get_event(event_id):
+        if action == 'door' and event_id and get_event(event_id):
             set_door_event_id(event_id)
             success = 'Door scanner will check tickets for this event.'
         elif action == 'delete' and event_id:
@@ -4018,11 +4075,7 @@ def admin_event_form(existing=None):
                         saved = upsert_event({**saved, 'flyer_filename': filename, 'flyer_static': ''}, event_id=saved['id'])
                         if old and old != filename:
                             delete_event_flyer_file(old)
-                if request.form.get('feature') == '1':
-                    set_featured_event_id(saved['id'])
-                if request.form.get('use_at_door') == '1':
-                    set_door_event_id(saved['id'])
-                if not get_featured_event_id():
+                if saved.get('sales_open') and not get_featured_event_id():
                     set_featured_event_id(saved['id'])
                 if not get_door_event_id():
                     set_door_event_id(saved['id'])

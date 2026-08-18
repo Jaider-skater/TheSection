@@ -15,7 +15,7 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Events</h1>
-                <p class="text-zinc-400 mt-1">Create nights, pick the homepage event, and sell tickets for that night only.</p>
+                <p class="text-zinc-400 mt-1">On-sale events show on the homepage with Get Tickets. Coming-soon events appear as teasers.</p>
             </div>
             <a href="{{ url_for('admin_event_new') }}"
                class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm text-center">
@@ -51,14 +51,13 @@
                                 </p>
                             </div>
                             <div class="flex flex-wrap gap-2">
-                                {% if event.is_featured %}
-                                <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-white text-black font-semibold">Homepage</span>
+                                {% if event.sales_open %}
+                                <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-white text-black font-semibold">On sale</span>
+                                {% else %}
+                                <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-zinc-800 text-zinc-400">Coming soon</span>
                                 {% endif %}
                                 {% if event.is_door %}
                                 <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-emerald-400/20 text-emerald-300 font-semibold">Door</span>
-                                {% endif %}
-                                {% if not event.sales_open %}
-                                <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-zinc-800 text-zinc-400">Off sale</span>
                                 {% endif %}
                             </div>
                         </div>
@@ -74,16 +73,6 @@
                                class="px-3 py-1.5 rounded-lg border border-zinc-600 text-sm hover:border-white transition-colors">
                                 Edit
                             </a>
-                            {% if not event.is_featured %}
-                            <form method="POST" class="inline">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                <input type="hidden" name="action" value="feature">
-                                <input type="hidden" name="event_id" value="{{ event.id }}">
-                                <button type="submit" class="px-3 py-1.5 rounded-lg border border-zinc-600 text-sm hover:border-white transition-colors">
-                                    Show on homepage
-                                </button>
-                            </form>
-                            {% endif %}
                             {% if not event.is_door %}
                             <form method="POST" class="inline">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
