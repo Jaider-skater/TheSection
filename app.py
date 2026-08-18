@@ -1726,26 +1726,28 @@ def event_looks_like_halloween(event):
     return date_value == HALLOWEEN_EVENT_DATE
 
 
-def ticket_belongs_to_event(record, event_id):
-    """True when this ticket was sold for the given named event.
+def resolved_ticket_event_id(record):
+    """Night this ticket is valid for.
 
-    Tickets sold before named events existed have no catalog event_id (or an
-    old anonymous stamp). Those belong to Halloween, not a later event.
+    Catalog stamps win. Untagged / unknown stamps are the original Halloween sale.
     """
+    if not record:
+        return None
+    stamped = (record.get('event_id') or '').strip()
+    if stamped and get_event(stamped):
+        return stamped
+    halloween = find_halloween_event()
+    return (halloween.get('id') if halloween else HALLOWEEN_EVENT_SLUG)
+
+
+def ticket_belongs_to_event(record, event_id):
+    """True only when this ticket was sold for the door event being scanned."""
     if not record:
         return False
     target_id = (event_id or '').strip()
-    target = get_event(target_id) if target_id else None
-    ticket_event_id = (record.get('event_id') or '').strip()
-    ticket_event = get_event(ticket_event_id) if ticket_event_id else None
-
-    if ticket_event:
-        return bool(target) and ticket_event.get('id') == target.get('id')
-
-    # Untagged / orphaned stamps are the original Halloween sales.
-    if target:
-        return event_looks_like_halloween(target)
-    return not target_id
+    if not target_id:
+        return False
+    return resolved_ticket_event_id(record) == target_id
 
 
 def ticket_belongs_to_current_event(record):
@@ -2854,8 +2856,46 @@ def set_max_vip_capacity(value):
     return normalized
 
 
+SCAN_RESET_TOKEN = 'unused-after-door-event-fix-1'
+
+
+def apply_one_time_unused_ticket_reset():
+    """Clear every door scan once so wrongly-accepted tickets can be used tonight."""
+    settings = load_scanner_settings()
+    if settings.get('scan_reset_applied') == SCAN_RESET_TOKEN:
+        return 0
+    halloween = find_halloween_event()
+    halloween_id = halloween.get('id') if halloween else HALLOWEEN_EVENT_SLUG
+    catalog_ids = {event.get('id') for event in load_events() if event.get('id')}
+    cleared = 0
+    with tickets_lock:
+        tickets = load_tickets()
+        changed = False
+        for ticket in tickets:
+            if ticket.get('scanned_at') or ticket.get('admission_as') or ticket.get('vip_redeemed_at'):
+                ticket['scanned_at'] = None
+                ticket.pop('admission_as', None)
+                ticket.pop('vip_redeemed_at', None)
+                changed = True
+                cleared += 1
+            stamped = (ticket.get('event_id') or '').strip()
+            if not stamped or stamped not in catalog_ids:
+                ticket['event_id'] = halloween_id
+                changed = True
+        if changed:
+            save_tickets(tickets)
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        settings['scan_reset_applied'] = SCAN_RESET_TOKEN
+        save_scanner_settings(settings)
+    if cleared:
+        print(f'Cleared {cleared} door scan(s); tickets are unused again')
+    return cleared
+
+
 try:
     seed_default_event()
+    apply_one_time_unused_ticket_reset()
 except Exception as exc:
     print('Event seed skipped:', exc)
 
@@ -3025,8 +3065,22 @@ def check_ticket(ticket_id):
     display_id = record.get('ticket_id', normalized)
     ticket_type = record.get('ticket_type', 'general')
     meta = ticket_result_meta(record)
+    door_id = get_door_event_id()
+    door_event = get_event(door_id) if door_id else None
+    ticket_event = ticket_event_record(record)
+    meta['door_event_name'] = (door_event or {}).get('name') if door_event else None
+    meta['ticket_event_name'] = (ticket_event or {}).get('name') if ticket_event else None
 
-    if not ticket_belongs_to_current_event(record):
+    if not door_id or not door_event:
+        return {
+            'status': 'wrong_event',
+            'ticket_id': display_id,
+            'quantity': quantity,
+            **meta,
+            'detail': 'Pick tonight’s event on the scanner first.',
+        }
+
+    if not ticket_belongs_to_event(record, door_id):
         return {'status': 'wrong_event', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
     if record.get('scanned_at'):
@@ -3941,7 +3995,10 @@ def verify_ticket():
         if result['status'] == 'sold_out':
             return '🎉 Ticket cap reached — congrats on selling this place out!'
         if result['status'] == 'wrong_event':
-            return '❌ Wrong event — this ticket is not valid tonight'
+            ticket_night = result.get('ticket_event_name') or 'another event'
+            door_night = result.get('door_event_name') or 'tonight'
+            detail = result.get('detail') or f'This ticket is for {ticket_night}. Tonight is {door_night}.'
+            return f'❌ Wrong event — {detail}'
         return "Invalid ticket"
 
     return render_template('verify.html', admission_totals=get_admission_totals())

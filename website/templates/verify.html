@@ -53,16 +53,16 @@
                 </button>
             </div>
             <p id="sales-progress" class="hidden text-[10px] text-zinc-500 tabular-nums"></p>
+            <div id="door-event-banner" class="w-full mb-1 rounded-2xl border-2 border-white bg-zinc-900 px-4 py-3">
+                <p class="text-[10px] uppercase tracking-[2px] text-zinc-400">Scanning for</p>
+                <p id="door-event-label" class="text-2xl font-bold leading-tight">Pick tonight’s event</p>
+            </div>
             <div class="flex items-center justify-center gap-2 flex-wrap">
                 <label for="door-event-select" class="text-zinc-500">Door event</label>
                 <select id="door-event-select"
+                        onchange="saveDoorEvent()"
                         class="max-w-[220px] bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
                 </select>
-                <button type="button"
-                        onclick="saveDoorEvent()"
-                        class="text-zinc-400 hover:text-white transition-colors">
-                    Use
-                </button>
             </div>
             <div class="flex items-center justify-center gap-2 flex-wrap">
                 <label for="max-vip-capacity-input" class="text-zinc-500">VIP cap</label>
@@ -162,6 +162,10 @@
                     doorSelect.appendChild(option);
                 });
             }
+        }
+        const doorLabel = document.getElementById('door-event-label');
+        if (doorLabel) {
+            doorLabel.textContent = totals.door_event_name || 'Pick tonight’s event';
         }
 
         if (maxInput && document.activeElement !== maxInput) {
@@ -452,9 +456,12 @@
                     <div class="text-zinc-300">${result.quantity} ${guestWord} on this ticket</div>
                 `;
             } else if (result.status === 'wrong_event') {
+                const ticketNight = result.ticket_event_name || 'another event';
+                const doorNight = result.door_event_name || 'tonight';
+                const detail = result.detail || `This ticket is for ${ticketNight}. Tonight is ${doorNight}.`;
                 resultEl.innerHTML = `
                     <div class="text-red-400 text-2xl font-bold mb-2">❌ Wrong Event</div>
-                    <div class="text-zinc-200">This ticket is for a previous event</div>
+                    <div class="text-zinc-200">${detail}</div>
                 `;
             } else {
                 resultEl.innerHTML = `<span class="text-red-400 text-xl">Invalid ticket</span>`;
@@ -509,6 +516,11 @@
         const resultEl = document.getElementById('result');
         const readerEl = document.getElementById('reader');
         const startBtn = document.getElementById('start-btn');
+        const doorSelect = document.getElementById('door-event-select');
+        if (doorSelect && !doorSelect.value) {
+            resultEl.innerHTML = `<span class="text-red-400">Pick tonight’s event first.</span>`;
+            return;
+        }
 
         startBtn.classList.add('hidden');
         readerEl.classList.remove('hidden');
