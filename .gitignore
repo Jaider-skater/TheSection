@@ -9,5 +9,7 @@ __pycache__/
 data/tickets.json
 data/legacy_members.json
 data/scanner_settings.json
+data/events.json
+data/flyers/
 data/*.tmp.*
 *.pkpass

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if is_new %}New Event{% else %}Edit Event{% endif %} • The Section</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen p-6">
+    <div class="max-w-3xl mx-auto">
+        {% set staff_nav_sign_out = url_for('admin_logout') %}
+        {% include 'staff_nav.html' %}
+        {% include 'admin_nav.html' %}
+
+        <h1 class="text-3xl font-bold mb-2">{% if is_new %}New event{% else %}Edit event{% endif %}</h1>
+        <p class="text-zinc-400 mb-8">This is what guests see on the homepage, and the event tickets are sold for.</p>
+
+        {% if error %}
+        <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" enctype="multipart/form-data" class="space-y-5">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="name">Event name</label>
+                <input id="name" name="name" required value="{{ event.name or '' }}"
+                       class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                       placeholder="Halloween">
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="headline">Homepage headline</label>
+                <input id="headline" name="headline" value="{{ event.headline or '' }}"
+                       class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                       placeholder="October 24th">
+                <p class="text-zinc-500 text-xs mt-1">Big title on the homepage. Leave blank to use the date.</p>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm text-zinc-400 mb-1" for="date">Date</label>
+                    <input id="date" name="date" type="date" value="{{ event.date or '' }}"
+                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label class="block text-sm text-zinc-400 mb-1" for="time_start">Doors / start</label>
+                    <input id="time_start" name="time_start" type="time" value="{{ event.time_start or '' }}"
+                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                </div>
+                <div>
+                    <label class="block text-sm text-zinc-400 mb-1" for="time_end">End</label>
+                    <input id="time_end" name="time_end" type="time" value="{{ event.time_end or '' }}"
+                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="venue">Venue</label>
+                <input id="venue" name="venue" value="{{ event.venue or '' }}"
+                       class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                       placeholder="The Gem, Idaho Falls">
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="description">Description</label>
+                <textarea id="description" name="description" rows="4"
+                          class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                          placeholder="What’s the night about?">{{ event.description or '' }}</textarea>
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="details">Fine print</label>
+                <input id="details" name="details" value="{{ event.details or '' }}"
+                       class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                       placeholder="21+ • Limited Capacity • +$5 at door">
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="flyer">Flyer</label>
+                {% if event.flyer_url %}
+                <img src="{{ event.flyer_url }}" alt="Current flyer" class="w-40 rounded-xl border border-zinc-800 mb-3">
+                {% endif %}
+                <input id="flyer" name="flyer" type="file" accept="image/jpeg,image/png,image/webp,image/gif"
+                       class="block w-full text-sm text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-zinc-800 file:text-white">
+                <p class="text-zinc-500 text-xs mt-1">JPG, PNG, WEBP, or GIF. Max 8MB.</p>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm text-zinc-400 mb-1" for="ticket_cap">Ticket cap</label>
+                    <input id="ticket_cap" name="ticket_cap" type="number" min="1" step="1" value="{{ event.ticket_cap or '' }}"
+                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                           placeholder="No limit">
+                </div>
+                <div>
+                    <label class="block text-sm text-zinc-400 mb-1" for="vip_cap">VIP door cap</label>
+                    <input id="vip_cap" name="vip_cap" type="number" min="1" step="1" value="{{ event.vip_cap or '' }}"
+                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                           placeholder="No limit">
+                </div>
+            </div>
+
+            <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" name="sales_open" value="1" class="accent-white" {% if event.sales_open %}checked{% endif %}>
+                Tickets on sale
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" name="feature" value="1" class="accent-white" {% if event.id and event.id == featured_event_id %}checked{% endif %}{% if is_new %}checked{% endif %}>
+                Show this event on the homepage (Get Tickets sells this one)
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" name="use_at_door" value="1" class="accent-white" {% if event.id and event.id == door_event_id %}checked{% endif %}>
+                Use this event at the door scanner
+            </label>
+
+            <div class="flex flex-wrap gap-3 pt-2">
+                <button type="submit" class="px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm">
+                    {% if is_new %}Create event{% else %}Save event{% endif %}
+                </button>
+                <a href="{{ url_for('admin_events') }}" class="px-5 py-2.5 border border-zinc-700 rounded-xl text-sm text-zinc-300 hover:text-white">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+</body>
+</html>

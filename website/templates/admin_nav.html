@@ -1,0 +1,14 @@
+        <nav class="flex flex-wrap gap-2 mb-6 text-sm">
+            <a href="{{ url_for('admin_dashboard') }}"
+               class="px-3 py-1.5 rounded-lg border {% if request.endpoint == 'admin_dashboard' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500{% endif %}">
+                Tickets
+            </a>
+            <a href="{{ url_for('admin_events') }}"
+               class="px-3 py-1.5 rounded-lg border {% if request.endpoint in ('admin_events', 'admin_event_new', 'admin_event_edit') %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500{% endif %}">
+                Events
+            </a>
+            <a href="{{ url_for('admin_mailing_list') }}"
+               class="px-3 py-1.5 rounded-lg border {% if request.endpoint == 'admin_mailing_list' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500{% endif %}">
+                Mailing Lists
+            </a>
+        </nav>

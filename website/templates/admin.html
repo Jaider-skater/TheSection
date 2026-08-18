@@ -10,6 +10,7 @@
     <div class="max-w-5xl mx-auto">
         {% set staff_nav_sign_out = url_for('admin_logout') %}
         {% include 'staff_nav.html' %}
+        {% include 'admin_nav.html' %}
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
@@ -52,6 +53,7 @@
                         <th class="p-4">Email</th>
                         <th class="p-4">Qty</th>
                         <th class="p-4">Type</th>
+                        <th class="p-4">Event</th>
                         <th class="p-4">Access</th>
                         <th class="p-4">Scanned</th>
                     </tr>
@@ -73,6 +75,7 @@
                                 <span class="text-zinc-500 text-xs block">legacy discount</span>
                             {% endif %}
                         </td>
+                        <td class="p-4 text-zinc-300">{{ ticket.event_name or '—' }}</td>
                         <td class="p-4 text-zinc-400">{{ ticket.access or '—' }}</td>
                         <td class="p-4">
                             {% if ticket.scanned_at %}

@@ -40,6 +40,10 @@ services:
         value: /opt/render/project/src/data/legacy_members.json
       - key: TICKETS_FILE
         value: /opt/render/project/src/data/tickets.json
+      - key: EVENTS_FILE
+        value: /opt/render/project/src/data/events.json
+      - key: FLYERS_DIR
+        value: /opt/render/project/src/data/flyers
       - key: LEGACY_BOOTSTRAP_EMAIL
         value: hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD

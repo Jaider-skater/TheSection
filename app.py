@@ -1,6 +1,7 @@
-from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort
+from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 import stripe
 import qrcode
 from io import BytesIO, StringIO
@@ -8,6 +9,7 @@ import base64
 import secrets
 from flask_mail import Mail, Message
 import os
+import re
 import threading
 import json
 import ast
@@ -110,6 +112,14 @@ full_mailing_list_file = os.getenv(
     'FULL_MAILING_LIST_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'full_mailing_list.json'),
 )
+events_file = os.getenv(
+    'EVENTS_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'events.json'),
+)
+flyers_dir = os.getenv(
+    'FLYERS_DIR',
+    os.path.join(os.path.dirname(__file__), 'data', 'flyers'),
+)
 INVITE_EXPIRY_DAYS = int(os.getenv('INVITE_EXPIRY_DAYS', '14'))
 APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'America/Los_Angeles')
 stripe_webhook_secret = (os.getenv('STRIPE_WEBHOOK_SECRET') or '').strip()
@@ -149,14 +159,19 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(days=31),
     SESSION_REFRESH_EACH_REQUEST=True,
     SESSION_COOKIE_NAME='thesection_session',
+    MAX_CONTENT_LENGTH=10 * 1024 * 1024,
 )
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
 scanner_settings_lock = threading.Lock()
+events_lock = threading.Lock()
 invites_lock = threading.Lock()
 full_list_lock = threading.Lock()
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
+
+HALLOWEEN_EVENT_SLUG = 'halloween-2026'
+HALLOWEEN_EVENT_DATE = '2026-10-24'
 
 TICKET_TYPES = {
     'general': {
@@ -293,6 +308,14 @@ def csrf_failure_response():
     if request.is_json or request.path.startswith('/api/') or request.path == '/create-checkout-session':
         return jsonify({'error': 'Invalid or missing CSRF token'}), 400
     return 'Invalid or missing CSRF token', 400
+
+
+class TicketSalesError(Exception):
+    """Raised when a checkout would exceed the ticket sales cap."""
+
+    def __init__(self, message, remaining=0):
+        super().__init__(message)
+        self.remaining = remaining
 
 
 def clamp_quantity(raw, default=1):
@@ -440,12 +463,13 @@ def get_ticket_by_session(session_id):
     return None
 
 
-def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None):
+def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None):
     ticket_id = normalize_ticket_id(ticket_id)
     if not ticket_id:
         raise ValueError('Invalid ticket id')
     ticket_meta = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])
     view_token = view_token or new_view_token()
+    stamped_event_id = (event_id or get_sales_event_id() or '').strip() or None
     with tickets_lock:
         tickets = load_tickets()
         for ticket in tickets:
@@ -463,6 +487,7 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
             'ticket_type': ticket_type,
             'access': ticket_meta.get('access'),
             'legacy_discount': legacy_discount,
+            'event_id': stamped_event_id,
             'purchased_at': datetime.now(timezone.utc).isoformat(),
             'scanned_at': None,
             'email_sent_at': None,
@@ -1474,6 +1499,72 @@ def get_counting_epoch():
     return parse_iso_datetime(settings.get('counting_epoch'))
 
 
+def get_sales_epoch():
+    settings = load_scanner_settings()
+    return parse_iso_datetime(settings.get('sales_epoch'))
+
+
+def new_event_id():
+    return secrets.token_hex(8)
+
+
+def get_current_event_id():
+    settings = load_scanner_settings()
+    event_id = (settings.get('current_event_id') or '').strip()
+    return event_id or None
+
+
+def ensure_current_event_id():
+    existing = get_door_event_id()
+    if existing and get_event(existing):
+        return existing
+    seeded = ensure_halloween_event()
+    if seeded:
+        set_door_event_id(seeded['id'])
+        return seeded['id']
+    return existing
+
+
+def event_looks_like_halloween(event):
+    if not event:
+        return False
+    event_id = (event.get('id') or '').strip().lower()
+    name = (event.get('name') or '').strip().lower()
+    date_value = (event.get('date') or '')[:10]
+    if event_id == HALLOWEEN_EVENT_SLUG:
+        return True
+    if name == 'halloween' or 'halloween' in name:
+        return True
+    return date_value == HALLOWEEN_EVENT_DATE
+
+
+def ticket_belongs_to_event(record, event_id):
+    """True when this ticket was sold for the given named event.
+
+    Tickets sold before named events existed have no catalog event_id (or an
+    old anonymous stamp). Those belong to Halloween, not a later event.
+    """
+    if not record:
+        return False
+    target_id = (event_id or '').strip()
+    target = get_event(target_id) if target_id else None
+    ticket_event_id = (record.get('event_id') or '').strip()
+    ticket_event = get_event(ticket_event_id) if ticket_event_id else None
+
+    if ticket_event:
+        return bool(target) and ticket_event.get('id') == target.get('id')
+
+    # Untagged / orphaned stamps are the original Halloween sales.
+    if target:
+        return event_looks_like_halloween(target)
+    return not target_id
+
+
+def ticket_belongs_to_current_event(record):
+    """True when this ticket was sold for the door/scanner event."""
+    return ticket_belongs_to_event(record, get_door_event_id())
+
+
 def ticket_counts_for_current_period(scanned_at):
     """Whether a scan should count toward the live GA/VIP/total boards."""
     scanned = parse_iso_datetime(scanned_at)
@@ -1483,6 +1574,17 @@ def ticket_counts_for_current_period(scanned_at):
     if counting_epoch is None:
         return True
     return scanned >= counting_epoch
+
+
+def ticket_counts_for_current_sales_period(purchased_at):
+    """Whether a purchase counts toward the live ticket-sales cap."""
+    epoch = get_sales_epoch()
+    if epoch is None:
+        return True
+    purchased = parse_iso_datetime(purchased_at)
+    if not purchased:
+        return False
+    return purchased >= epoch
 
 
 def get_reset_history():
@@ -1564,6 +1666,19 @@ def reset_admission_counts():
         'vip': counts['vip'],
         'total': counts['total'],
         'cleared': 0,  # tickets stay void; not cleared
+    }
+
+
+def reset_ticket_sales():
+    """Deprecated: create and feature a new event in Admin → Events instead."""
+    sales = compute_ticket_sales_counts(get_door_event_id())
+    return {
+        'reset_at': datetime.now(timezone.utc).isoformat(),
+        'sold': sales['sold'],
+        'ga': sales['ga'],
+        'vip': sales['vip'],
+        'event_id': get_door_event_id(),
+        'error': 'Create a new event in Admin to start the next sale.',
     }
 
 
@@ -1739,6 +1854,7 @@ def fulfill_paid_checkout(checkout_session):
         session_id, ticket_id, delivery_email, quantity,
         ticket_type=ticket_type, legacy_discount=legacy_discount,
         view_token=view_token,
+        event_id=metadata.get('event_id') or get_sales_event_id(),
     )
 
     if delivery_email:
@@ -1895,7 +2011,10 @@ def build_wallet_pass(ticket_id, quantity):
             'primaryFields': [{
                 'key': 'event',
                 'label': 'EVENT',
-                'value': 'The Section',
+                'value': (
+                    (ticket_event_record(get_ticket_record(ticket_id)) or {}).get('name')
+                    or 'The Section'
+                ),
             }],
             'secondaryFields': [
                 {
@@ -1950,6 +2069,7 @@ _founding = [e for e in verify_login_emails]
 if _founding:
     add_emails_to_full_mailing_list(_founding, source='founding')
 log_storage_state()
+# Event catalog is seeded after helper functions are defined (see seed_default_event call below).
 
 
 def extract_ticket_id_from_url(raw):
@@ -1973,6 +2093,404 @@ def save_scanner_settings(settings):
     return _locked_json_write(scanner_settings_file, settings)
 
 
+def load_events():
+    if not ensure_data_dir(events_file):
+        return []
+    data = _locked_json_read(events_file, [])
+    if not isinstance(data, list):
+        return []
+    return [normalize_event(item) for item in data if isinstance(item, dict)]
+
+
+def save_events(events):
+    if not ensure_data_dir(events_file):
+        return False
+    cleaned = [normalize_event(item) for item in events if isinstance(item, dict)]
+    return _locked_json_write(events_file, cleaned)
+
+
+def parse_event_date(raw):
+    value = (raw or '').strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value[:10], '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _day_ordinal(day):
+    if 10 <= day % 100 <= 20:
+        suffix = 'th'
+    else:
+        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+    return f'{day}{suffix}'
+
+
+def format_clock_label(raw):
+    value = (raw or '').strip()
+    if not value:
+        return ''
+    for fmt in ('%H:%M', '%H:%M:%S', '%I:%M %p', '%I:%M%p', '%I:%M %P'):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return parsed.strftime('%I:%M %p').lstrip('0')
+        except ValueError:
+            continue
+    return value
+
+
+def format_event_headline(date_str, headline=None):
+    custom = (headline or '').strip()
+    if custom:
+        return custom
+    day = parse_event_date(date_str)
+    if not day:
+        return ''
+    return f"{day.strftime('%B')} {_day_ordinal(day.day)}"
+
+
+def format_event_date_line(date_str):
+    day = parse_event_date(date_str)
+    if not day:
+        return ''
+    return f"{day.strftime('%A')}, {day.strftime('%B')} {_day_ordinal(day.day)}"
+
+
+def format_event_time_line(start, end):
+    start_label = format_clock_label(start)
+    end_label = format_clock_label(end)
+    if start_label and end_label:
+        return f'{start_label} – {end_label}'
+    return start_label or end_label or ''
+
+
+def ticket_price_line():
+    ga = TICKET_TYPES['general']['price_cents'] // 100
+    vip = TICKET_TYPES['vip']['price_cents'] // 100
+    ga_pct = int(round(bundle_discount * 100))
+    vip_pct = int(round(vip_bulk_discount * 100))
+    return (
+        f'GA ${ga} · VIP ${vip} · {ga_pct}% off at {bundle_min}+ GA '
+        f'or {vip_bundle_min}+ VIP'
+    )
+
+
+def flyer_is_safe_filename(filename):
+    name = os.path.basename((filename or '').strip())
+    if not name or name != filename:
+        return False
+    if '..' in name or '/' in name or '\\' in name:
+        return False
+    return re.fullmatch(r'[A-Za-z0-9._-]+', name) is not None
+
+
+def detect_image_extension(data):
+    if not data or len(data) < 12:
+        return None
+    if data.startswith(b'\xff\xd8\xff'):
+        return '.jpg'
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return '.png'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return '.webp'
+    if data.startswith((b'GIF87a', b'GIF89a')):
+        return '.gif'
+    return None
+
+
+def event_flyer_url(event):
+    if not event:
+        return None
+    filename = (event.get('flyer_filename') or '').strip()
+    if filename and flyer_is_safe_filename(filename):
+        return f'/media/flyers/{filename}'
+    static_name = (event.get('flyer_static') or '').strip().lstrip('/')
+    if static_name:
+        return f'/static/{static_name}'
+    return None
+
+
+def normalize_event(raw):
+    data = raw if isinstance(raw, dict) else {}
+    event_id = (data.get('id') or '').strip() or new_event_id()
+    date_value = ''
+    parsed_date = parse_event_date(data.get('date'))
+    if parsed_date:
+        date_value = parsed_date.isoformat()
+    ticket_cap = parse_max_capacity(data.get('ticket_cap'))
+    vip_cap = parse_max_capacity(data.get('vip_cap'))
+    sales_open = data.get('sales_open')
+    if sales_open is None:
+        sales_open = True
+    return {
+        'id': event_id,
+        'name': (data.get('name') or '').strip() or 'Untitled event',
+        'headline': (data.get('headline') or '').strip(),
+        'date': date_value,
+        'time_start': (data.get('time_start') or '').strip(),
+        'time_end': (data.get('time_end') or '').strip(),
+        'venue': (data.get('venue') or '').strip(),
+        'description': (data.get('description') or '').strip(),
+        'details': (data.get('details') or '').strip(),
+        'flyer_filename': (data.get('flyer_filename') or '').strip(),
+        'flyer_static': (data.get('flyer_static') or '').strip(),
+        'ticket_cap': ticket_cap,
+        'vip_cap': vip_cap,
+        'sales_open': bool(sales_open),
+        'created_at': data.get('created_at') or datetime.now(timezone.utc).isoformat(),
+        'updated_at': data.get('updated_at') or data.get('created_at') or datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def event_display(event):
+    if not event:
+        return None
+    date_line = format_event_date_line(event.get('date'))
+    headline = format_event_headline(event.get('date'), event.get('headline')) or event.get('name')
+    return {
+        **event,
+        'headline_display': headline,
+        'date_display': date_line,
+        'time_display': format_event_time_line(event.get('time_start'), event.get('time_end')),
+        'price_display': ticket_price_line(),
+        'flyer_url': event_flyer_url(event),
+        'is_featured': event.get('id') == get_featured_event_id(),
+        'is_door': event.get('id') == get_door_event_id(),
+        'tickets_sold': compute_ticket_sales_counts(event.get('id'))['sold'],
+    }
+
+
+def get_event(event_id):
+    target = (event_id or '').strip()
+    if not target:
+        return None
+    for event in load_events():
+        if event.get('id') == target:
+            return event
+    return None
+
+
+def get_featured_event_id():
+    settings = load_scanner_settings()
+    return (settings.get('featured_event_id') or '').strip() or None
+
+
+def get_door_event_id():
+    settings = load_scanner_settings()
+    door = (settings.get('current_event_id') or '').strip()
+    if door:
+        return door
+    return get_featured_event_id()
+
+
+def get_sales_event_id():
+    featured = get_featured_event_id()
+    if featured:
+        return featured
+    return get_door_event_id()
+
+
+def get_featured_event():
+    return get_event(get_featured_event_id())
+
+
+def get_door_event():
+    return get_event(get_door_event_id())
+
+
+def get_sales_event():
+    return get_event(get_sales_event_id())
+
+
+def set_featured_event_id(event_id):
+    normalized = (event_id or '').strip() or None
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized:
+            settings['featured_event_id'] = normalized
+        else:
+            settings.pop('featured_event_id', None)
+        save_scanner_settings(settings)
+    return normalized
+
+
+def set_door_event_id(event_id):
+    normalized = (event_id or '').strip() or None
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        if normalized:
+            settings['current_event_id'] = normalized
+        else:
+            settings.pop('current_event_id', None)
+        save_scanner_settings(settings)
+    return normalized
+
+
+def upsert_event(payload, event_id=None):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with events_lock:
+        events = load_events()
+        existing = None
+        target = (event_id or payload.get('id') or '').strip()
+        if target:
+            for event in events:
+                if event.get('id') == target:
+                    existing = event
+                    break
+        if existing:
+            merged = {**existing, **payload, 'id': existing['id'], 'updated_at': now_iso}
+            updated = normalize_event(merged)
+            events = [updated if event.get('id') == updated['id'] else event for event in events]
+        else:
+            created = normalize_event({**payload, 'id': target or new_event_id(), 'created_at': now_iso, 'updated_at': now_iso})
+            events.append(created)
+            updated = created
+        save_events(events)
+        return updated
+
+
+def delete_event(event_id):
+    target = (event_id or '').strip()
+    if not target:
+        return False
+    with events_lock:
+        events = load_events()
+        remaining = [event for event in events if event.get('id') != target]
+        if len(remaining) == len(events):
+            return False
+        save_events(remaining)
+    settings = load_scanner_settings()
+    if settings.get('featured_event_id') == target:
+        next_id = remaining[0]['id'] if remaining else None
+        set_featured_event_id(next_id)
+    if settings.get('current_event_id') == target:
+        next_id = remaining[0]['id'] if remaining else None
+        set_door_event_id(next_id)
+    return True
+
+
+def save_event_flyer(event_id, file_storage):
+    if not file_storage or not getattr(file_storage, 'filename', None):
+        return None
+    raw = file_storage.read()
+    if not raw:
+        return None
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError('Flyer must be 8MB or smaller.')
+    ext = detect_image_extension(raw)
+    if not ext:
+        raise ValueError('Flyer must be a JPG, PNG, WEBP, or GIF image.')
+    if not ensure_data_dir(os.path.join(flyers_dir, 'placeholder')):
+        raise ValueError('Could not save flyer.')
+    filename = f'{secure_filename(event_id) or new_event_id()}_{secrets.token_hex(6)}{ext}'
+    path = os.path.join(flyers_dir, filename)
+    with open(path, 'wb') as handle:
+        handle.write(raw)
+    return filename
+
+
+def delete_event_flyer_file(filename):
+    if not flyer_is_safe_filename(filename):
+        return
+    path = os.path.join(flyers_dir, filename)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def find_halloween_event():
+    events = load_events()
+    for event in events:
+        if (event.get('id') or '').strip() == HALLOWEEN_EVENT_SLUG:
+            return event
+    for event in events:
+        if event_looks_like_halloween(event):
+            return event
+    return None
+
+
+def adopt_legacy_tickets_for_event(event_id):
+    """Stamp pre-catalog tickets onto this event so they keep working at the door."""
+    target = (event_id or '').strip()
+    if not target:
+        return 0
+    catalog_ids = {event.get('id') for event in load_events() if event.get('id')}
+    adopted = 0
+    with tickets_lock:
+        tickets = load_tickets()
+        changed = False
+        for ticket in tickets:
+            stamped = (ticket.get('event_id') or '').strip()
+            if stamped == target:
+                continue
+            if stamped and stamped in catalog_ids:
+                continue
+            ticket['event_id'] = target
+            changed = True
+            adopted += 1
+        if changed:
+            save_tickets(tickets)
+    if adopted:
+        print(f'Adopted {adopted} previously sold ticket(s) onto event {target}')
+    return adopted
+
+
+def ensure_halloween_event():
+    """Keep the Halloween event and attach every older sale to it."""
+    existing = find_halloween_event()
+    if not existing:
+        with events_lock:
+            existing = find_halloween_event()
+            if not existing:
+                seeded = normalize_event({
+                    'id': HALLOWEEN_EVENT_SLUG,
+                    'name': 'Halloween',
+                    'headline': 'October 24th',
+                    'date': HALLOWEEN_EVENT_DATE,
+                    'time_start': '22:00',
+                    'time_end': '02:00',
+                    'venue': 'The Gem, Idaho Falls',
+                    'description': '',
+                    'details': '21+ • Limited Capacity • +$5 at door',
+                    'flyer_static': 'images/TheSectionHalloweenFlyer.JPG',
+                    'ticket_cap': get_legacy_max_capacity(),
+                    'vip_cap': get_legacy_max_vip_capacity(),
+                    'sales_open': True,
+                })
+                events = load_events()
+                events.append(seeded)
+                save_events(events)
+                existing = seeded
+
+    # Orphan door/homepage settings (old anonymous IDs) should point at Halloween
+    # so previously sold tickets are the ones being scanned tonight.
+    if not get_event(get_featured_event_id() or ''):
+        set_featured_event_id(existing['id'])
+    if not get_event(get_current_event_id() or ''):
+        set_door_event_id(existing['id'])
+
+    adopt_legacy_tickets_for_event(existing['id'])
+    return existing
+
+
+def seed_default_event():
+    return ensure_halloween_event()
+
+
+def ticket_event_record(record):
+    """Catalog event this ticket is for; Halloween if it predates named events."""
+    if not record:
+        return None
+    stamped = (record.get('event_id') or '').strip()
+    event = get_event(stamped) if stamped else None
+    if event:
+        return event
+    return find_halloween_event()
+
+
 def parse_max_capacity(raw):
     if raw is None or raw == '':
         return None
@@ -1983,13 +2501,46 @@ def parse_max_capacity(raw):
     return value if value > 0 else None
 
 
-def get_max_capacity():
+def get_legacy_max_capacity():
     settings = load_scanner_settings()
     return parse_max_capacity(settings.get('max_capacity'))
 
 
+def get_legacy_max_vip_capacity():
+    settings = load_scanner_settings()
+    return parse_max_capacity(settings.get('max_vip_capacity'))
+
+
+def event_ticket_cap(event):
+    if event:
+        cap = parse_max_capacity(event.get('ticket_cap'))
+        if cap is not None:
+            return cap
+    return get_legacy_max_capacity()
+
+
+def event_vip_cap(event):
+    if event:
+        cap = parse_max_capacity(event.get('vip_cap'))
+        if cap is not None:
+            return cap
+    return get_legacy_max_vip_capacity()
+
+
+def get_max_capacity():
+    return event_ticket_cap(get_door_event())
+
+
+def get_sales_ticket_cap():
+    return event_ticket_cap(get_sales_event())
+
+
 def set_max_capacity(value):
     normalized = parse_max_capacity(value)
+    door = get_door_event()
+    if door:
+        upsert_event({**door, 'ticket_cap': normalized}, event_id=door['id'])
+        return normalized
     with scanner_settings_lock:
         settings = load_scanner_settings()
         if normalized is None:
@@ -2001,12 +2552,15 @@ def set_max_capacity(value):
 
 
 def get_max_vip_capacity():
-    settings = load_scanner_settings()
-    return parse_max_capacity(settings.get('max_vip_capacity'))
+    return event_vip_cap(get_door_event())
 
 
 def set_max_vip_capacity(value):
     normalized = parse_max_capacity(value)
+    door = get_door_event()
+    if door:
+        upsert_event({**door, 'vip_cap': normalized}, event_id=door['id'])
+        return normalized
     with scanner_settings_lock:
         settings = load_scanner_settings()
         if normalized is None:
@@ -2015,6 +2569,12 @@ def set_max_vip_capacity(value):
             settings['max_vip_capacity'] = normalized
         save_scanner_settings(settings)
     return normalized
+
+
+try:
+    seed_default_event()
+except Exception as exc:
+    print('Event seed skipped:', exc)
 
 
 def admission_entry_type(ticket):
@@ -2040,12 +2600,70 @@ def compute_admission_counts():
     return {'ga': ga, 'vip': vip, 'total': ga + vip}
 
 
-def admission_capacity_remaining():
-    max_capacity = get_max_capacity()
+def compute_ticket_sales_counts(event_id=None):
+    """Tickets sold for an event (quantity, not orders)."""
+    target = (event_id or get_sales_event_id() or '').strip() or None
+    ga = 0
+    vip = 0
+    for ticket in load_tickets():
+        if target:
+            if not ticket_belongs_to_event(ticket, target):
+                continue
+        elif not ticket_belongs_to_current_event(ticket):
+            continue
+        qty = int(ticket.get('quantity') or 1)
+        if ticket.get('ticket_type') == 'vip':
+            vip += qty
+        else:
+            ga += qty
+    return {'ga': ga, 'vip': vip, 'sold': ga + vip}
+
+
+def ticket_sales_remaining(event_id=None):
+    event = get_event(event_id) if event_id else get_sales_event()
+    max_capacity = event_ticket_cap(event)
     if not max_capacity:
         return None
-    counts = compute_admission_counts()
-    return max(0, max_capacity - counts['total'])
+    counts = compute_ticket_sales_counts(event.get('id') if event else event_id)
+    return max(0, max_capacity - counts['sold'])
+
+
+def get_ticket_availability():
+    event = get_sales_event()
+    max_capacity = event_ticket_cap(event)
+    sold = compute_ticket_sales_counts(event.get('id') if event else None)['sold']
+    remaining = None if not max_capacity else max(0, max_capacity - sold)
+    sales_open = bool(event.get('sales_open', True)) if event else False
+    sold_out = bool(max_capacity and remaining == 0)
+    return {
+        'max_capacity': max_capacity,
+        'sold': sold if max_capacity else None,
+        'remaining': remaining,
+        'sold_out': sold_out,
+        'sales_open': sales_open,
+        'event_id': event.get('id') if event else None,
+        'event_name': event.get('name') if event else None,
+        'can_buy': bool(event and sales_open and not sold_out),
+    }
+
+
+def ensure_ticket_sales_available(quantity):
+    """Reject checkout when the advertised event is not for sale or is at cap."""
+    event = get_sales_event()
+    if not event:
+        raise TicketSalesError('No event is on sale right now.', remaining=0)
+    if not event.get('sales_open', True):
+        raise TicketSalesError('Tickets are not on sale for this event yet.', remaining=0)
+    remaining = ticket_sales_remaining(event.get('id'))
+    if remaining is None:
+        return remaining
+    quantity = clamp_quantity(quantity)
+    if remaining <= 0:
+        raise TicketSalesError('Tickets are sold out.', remaining=0)
+    if quantity > remaining:
+        noun = 'ticket' if remaining == 1 else 'tickets'
+        raise TicketSalesError(f'Only {remaining} {noun} left.', remaining=remaining)
+    return remaining
 
 
 def vip_capacity_remaining():
@@ -2058,26 +2676,49 @@ def vip_capacity_remaining():
 
 def get_admission_totals():
     counts = compute_admission_counts()
-    max_capacity = get_max_capacity()
-    max_vip_capacity = get_max_vip_capacity()
-    capacity_reached = bool(max_capacity and counts['total'] >= max_capacity)
-    vip_capacity_reached = bool(max_vip_capacity and counts['vip'] >= max_vip_capacity)
-    spots_remaining = None
+    door_event = get_door_event()
+    door_event_id = door_event.get('id') if door_event else get_door_event_id()
+    sales = compute_ticket_sales_counts(door_event_id)
+    max_capacity = event_ticket_cap(door_event)
+    max_vip_capacity = event_vip_cap(door_event)
+    tickets_sold = sales['sold']
+    tickets_remaining = None
+    sold_out = False
     if max_capacity:
-        spots_remaining = max(0, max_capacity - counts['total'])
+        tickets_remaining = max(0, max_capacity - tickets_sold)
+        sold_out = tickets_sold >= max_capacity
+    vip_capacity_reached = bool(max_vip_capacity and counts['vip'] >= max_vip_capacity)
     vip_spots_remaining = None
     if max_vip_capacity:
         vip_spots_remaining = max(0, max_vip_capacity - counts['vip'])
+    settings = load_scanner_settings()
+    event_options = []
+    for event in sorted(load_events(), key=lambda item: item.get('date') or '', reverse=True):
+        event_options.append({
+            'id': event.get('id'),
+            'name': event.get('name'),
+            'date': event.get('date'),
+            'headline': format_event_headline(event.get('date'), event.get('headline')),
+        })
     return {
         **counts,
         'max_capacity': max_capacity,
-        'capacity_reached': capacity_reached,
-        'spots_remaining': spots_remaining,
+        'capacity_reached': sold_out,
+        'spots_remaining': tickets_remaining,
+        'tickets_sold': tickets_sold,
+        'tickets_remaining': tickets_remaining,
+        'sold_out': sold_out,
         'max_vip_capacity': max_vip_capacity,
         'vip_capacity_reached': vip_capacity_reached,
         'vip_spots_remaining': vip_spots_remaining,
         'reset_history': get_reset_history(),
-        'counting_epoch': (load_scanner_settings().get('counting_epoch')),
+        'counting_epoch': settings.get('counting_epoch'),
+        'sales_epoch': settings.get('sales_epoch'),
+        'current_event_id': door_event_id,
+        'featured_event_id': get_featured_event_id(),
+        'door_event_id': door_event_id,
+        'door_event_name': door_event.get('name') if door_event else None,
+        'events': event_options,
     }
 
 
@@ -2101,12 +2742,11 @@ def check_ticket(ticket_id):
     ticket_type = record.get('ticket_type', 'general')
     meta = ticket_result_meta(record)
 
+    if not ticket_belongs_to_current_event(record):
+        return {'status': 'wrong_event', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
     if record.get('scanned_at'):
         return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
-
-    remaining = admission_capacity_remaining()
-    if remaining is not None and quantity > remaining:
-        return {'status': 'sold_out', 'ticket_id': display_id, 'quantity': quantity, **meta}
 
     # VIP tickets: if VIP area is full, still admit but as GA (like before).
     admission_as = 'vip' if ticket_type == 'vip' else 'ga'
@@ -2173,6 +2813,11 @@ def mark_email_sent(session_id):
 def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_type='general', access=None):
     view_url = ticket_display_url(ticket_id)
     type_label = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['name']
+    record = get_ticket_record(ticket_id)
+    event = ticket_event_record(record) if record else get_sales_event()
+    event_name = (event or {}).get('name') or 'The Section'
+    event_when = format_event_date_line((event or {}).get('date')) if event else ''
+    event_line = f"Event: {event_name}" + (f" — {event_when}" if event_when else '')
     with app.app_context():
         try:
             msg = Message(
@@ -2183,6 +2828,7 @@ def send_ticket_email(customer_email, ticket_id, quantity, ticket_data, ticket_t
             access_line = f"Access: {access}\n" if access else ''
             msg.body = (
                 f"You're in for The Section!\n\n"
+                f"{event_line}\n"
                 f"Ticket type: {type_label}\n"
                 f"Ticket ID: {ticket_id}\n"
                 f"Guests: {quantity}\n"
@@ -2410,7 +3056,13 @@ def send_pending_member_invites():
 
 @app.route('/')
 def home():
-    return render_template('home.html', show_scanner_link=is_scanner_admin_member())
+    featured = event_display(get_featured_event())
+    return render_template(
+        'home.html',
+        show_scanner_link=is_scanner_admin_member(),
+        ticket_availability=get_ticket_availability(),
+        featured_event=featured,
+    )
 
 
 @app.route('/api/member-status')
@@ -2458,19 +3110,35 @@ def pricing():
     return jsonify(pricing_breakdown(ticket_type, quantity, apply_member))
 
 
+@app.route('/api/ticket-availability')
+def ticket_availability():
+    return jsonify(get_ticket_availability())
+
+
 def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
     if not stripe.api_key:
         raise RuntimeError('Stripe is not configured')
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
     quantity = clamp_quantity(quantity)
+    ensure_ticket_sales_available(quantity)
+    sales_event = get_sales_event()
+    sales_event_id = sales_event.get('id') if sales_event else get_sales_event_id()
 
     legacy_member = is_legacy_member_logged_in()
     apply_member = resolve_member_discount_application(apply_member_discount)
     breakdown = pricing_breakdown(ticket_type, quantity, apply_member)
     unit_price = breakdown['unit_price_cents']
     ticket_meta = TICKET_TYPES[ticket_type]
-    description = ticket_meta['description']
+    if sales_event:
+        event_bits = [
+            sales_event.get('name'),
+            format_event_date_line(sales_event.get('date')) or format_event_headline(sales_event.get('date'), sales_event.get('headline')),
+            sales_event.get('venue'),
+        ]
+        description = ' • '.join(bit for bit in event_bits if bit) or ticket_meta['description']
+    else:
+        description = ticket_meta['description']
     if breakdown['stacked_discount_applied']:
         member = get_logged_in_member()
         code = member.get('discount_code') if member else None
@@ -2501,7 +3169,10 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
             'price_data': {
                 'currency': 'usd',
                 'product_data': {
-                    'name': f"The Section - {ticket_meta['name']}",
+                    'name': (
+                        f"The Section - {ticket_meta['name']}"
+                        + (f" ({sales_event.get('name')})" if sales_event and sales_event.get('name') else '')
+                    ),
                     'description': description,
                 },
                 'unit_amount': unit_price,
@@ -2514,6 +3185,7 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False):
             'legacy_member': 'true' if legacy_member else 'false',
             'legacy_discount': 'true' if breakdown['legacy_discount_applied'] else 'false',
             'member_email': member_email,
+            'event_id': sales_event_id or '',
         },
         'success_url': f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
         'cancel_url': f"{base_url}/",
@@ -2558,6 +3230,8 @@ def checkout_resume():
             apply_member_discount=intent.get('apply_member_discount', False),
         )
         return redirect(checkout_session.url)
+    except TicketSalesError:
+        return redirect('/?open_tickets=1')
     except Exception as e:
         print("Error resuming checkout:", str(e))
         return redirect('/?open_tickets=1')
@@ -2584,6 +3258,14 @@ def create_checkout_session():
         )
         print("Session created successfully:", checkout_session.url)
         return jsonify({'url': checkout_session.url})
+    except TicketSalesError as e:
+        availability = get_ticket_availability()
+        return jsonify({
+            'error': str(e),
+            'remaining': e.remaining,
+            'sold_out': e.remaining <= 0,
+            **availability,
+        }), 409
     except Exception as e:
         return jsonify({'error': public_error_message(e, 'Could not start checkout. Please try again.')}), 500
 
@@ -2739,6 +3421,8 @@ def show_ticket(ticket_id):
             'ticket_id': record.get('ticket_id', normalized),
             'quantity': int(record.get('quantity') or 1),
             'scanned': bool(record.get('scanned_at')),
+            'current_event': ticket_belongs_to_current_event(record),
+            'event_name': (ticket_event_record(record) or {}).get('name') or '',
             **meta,
         },
         ticket_data=build_qr_image(normalized),
@@ -2776,6 +3460,16 @@ def delete_admission_reset_history():
     return jsonify(get_admission_totals())
 
 
+@app.route('/api/ticket-sales/reset', methods=['POST'])
+def reset_ticket_sales_route():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    result = reset_ticket_sales()
+    totals = get_admission_totals()
+    return jsonify({**result, **totals})
+
+
 @app.route('/api/scanner-settings', methods=['GET', 'POST'])
 def scanner_settings():
     guard = protect_scanner_response()
@@ -2790,6 +3484,10 @@ def scanner_settings():
             max_capacity = set_max_capacity(data.get('max_capacity'))
         if 'max_vip_capacity' in data:
             max_vip_capacity = set_max_vip_capacity(data.get('max_vip_capacity'))
+        if 'door_event_id' in data or 'current_event_id' in data:
+            chosen = data.get('door_event_id', data.get('current_event_id'))
+            if chosen and get_event(chosen):
+                set_door_event_id(chosen)
         totals = get_admission_totals()
         return jsonify({
             'max_capacity': max_capacity,
@@ -2891,7 +3589,9 @@ def verify_ticket():
             guest_word = 'guest' if qty == 1 else 'guests'
             return f"❌ Already used ({qty} {guest_word})"
         if result['status'] == 'sold_out':
-            return '❌ Max capacity reached — congrats on selling this place out!'
+            return '🎉 Ticket cap reached — congrats on selling this place out!'
+        if result['status'] == 'wrong_event':
+            return '❌ Wrong event — this ticket is not valid tonight'
         return "Invalid ticket"
 
     return render_template('verify.html', admission_totals=get_admission_totals())
@@ -2915,6 +3615,8 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
                     'ticket_type': record.get('ticket_type', 'general'),
                     'purchased_at': record.get('purchased_at', ''),
                     'scanned': bool(record.get('scanned_at')),
+                    'current_event': ticket_belongs_to_current_event(record),
+                    'event_name': (ticket_event_record(record) or {}).get('name') or '',
                     'view_url': ticket_display_url(ticket_id, ensure_ticket_view_token(record)),
                 })
     if logged_in:
@@ -3209,6 +3911,154 @@ def admin_logout():
     return redirect(url_for('admin_login'))
 
 
+def event_payload_from_form(form, existing=None):
+    payload = {
+        'name': form.get('name'),
+        'headline': form.get('headline'),
+        'date': form.get('date'),
+        'time_start': form.get('time_start'),
+        'time_end': form.get('time_end'),
+        'venue': form.get('venue'),
+        'description': form.get('description'),
+        'details': form.get('details'),
+        'ticket_cap': form.get('ticket_cap'),
+        'vip_cap': form.get('vip_cap'),
+        'sales_open': form.get('sales_open') == '1',
+    }
+    if existing:
+        payload['id'] = existing.get('id')
+        payload['flyer_filename'] = existing.get('flyer_filename')
+        payload['flyer_static'] = existing.get('flyer_static')
+        payload['created_at'] = existing.get('created_at')
+    return payload
+
+
+@app.route('/media/flyers/<filename>')
+def serve_event_flyer(filename):
+    if not flyer_is_safe_filename(filename):
+        abort(404)
+    return send_from_directory(flyers_dir, filename)
+
+
+@app.route('/admin/events', methods=['GET', 'POST'])
+def admin_events():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+
+    error = None
+    success = None
+    if request.method == 'POST':
+        action = request.form.get('action')
+        event_id = (request.form.get('event_id') or '').strip()
+        if action == 'feature' and event_id and get_event(event_id):
+            set_featured_event_id(event_id)
+            success = 'Homepage event updated. Get Tickets now sells this event.'
+        elif action == 'door' and event_id and get_event(event_id):
+            set_door_event_id(event_id)
+            success = 'Door scanner will check tickets for this event.'
+        elif action == 'delete' and event_id:
+            event = get_event(event_id)
+            if not event:
+                error = 'Event not found.'
+            else:
+                sold = compute_ticket_sales_counts(event_id)['sold']
+                if sold:
+                    error = f'Cannot delete — {sold} ticket{"s" if sold != 1 else ""} already sold for this event.'
+                else:
+                    if event.get('flyer_filename'):
+                        delete_event_flyer_file(event['flyer_filename'])
+                    delete_event(event_id)
+                    success = 'Event deleted.'
+        else:
+            error = 'Unknown action.'
+
+    events = [event_display(event) for event in load_events()]
+    events.sort(key=lambda item: item.get('date') or '', reverse=True)
+    return render_template(
+        'events.html',
+        events=events,
+        featured_event_id=get_featured_event_id(),
+        door_event_id=get_door_event_id(),
+        error=error,
+        success=success,
+    )
+
+
+@app.route('/admin/events/new', methods=['GET', 'POST'])
+def admin_event_new():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    return admin_event_form()
+
+
+@app.route('/admin/events/<event_id>', methods=['GET', 'POST'])
+def admin_event_edit(event_id):
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    event = get_event(event_id)
+    if not event:
+        return redirect(url_for('admin_events'))
+    return admin_event_form(event)
+
+
+def admin_event_form(existing=None):
+    error = None
+    if request.method == 'POST':
+        payload = event_payload_from_form(request.form, existing)
+        if not (payload.get('name') or '').strip():
+            error = 'Give the event a name.'
+        else:
+            try:
+                saved = upsert_event(payload, event_id=(existing or {}).get('id'))
+                upload = request.files.get('flyer')
+                if upload and upload.filename:
+                    filename = save_event_flyer(saved['id'], upload)
+                    if filename:
+                        old = saved.get('flyer_filename')
+                        saved = upsert_event({**saved, 'flyer_filename': filename, 'flyer_static': ''}, event_id=saved['id'])
+                        if old and old != filename:
+                            delete_event_flyer_file(old)
+                if request.form.get('feature') == '1':
+                    set_featured_event_id(saved['id'])
+                if request.form.get('use_at_door') == '1':
+                    set_door_event_id(saved['id'])
+                if not get_featured_event_id():
+                    set_featured_event_id(saved['id'])
+                if not get_door_event_id():
+                    set_door_event_id(saved['id'])
+                return redirect(url_for('admin_events'))
+            except ValueError as exc:
+                error = str(exc)
+            except Exception as exc:
+                print('Event save failed:', exc)
+                error = 'Could not save this event. Try again.'
+
+    event = existing or {
+        'name': '',
+        'headline': '',
+        'date': '',
+        'time_start': '22:00',
+        'time_end': '02:00',
+        'venue': 'The Gem, Idaho Falls',
+        'description': '',
+        'details': '21+ • Limited Capacity • +$5 at door',
+        'ticket_cap': '',
+        'vip_cap': '',
+        'sales_open': True,
+        'flyer_url': None,
+    }
+    if existing:
+        event = event_display(existing)
+    return render_template(
+        'event_form.html',
+        event=event,
+        is_new=existing is None,
+        error=error,
+        featured_event_id=get_featured_event_id(),
+        door_event_id=get_door_event_id(),
+    )
+
+
 @app.route('/admin')
 def admin_dashboard():
     if not require_admin():
@@ -3219,6 +4069,7 @@ def admin_dashboard():
     safe_tickets = []
     for ticket in tickets:
         safe = {k: v for k, v in ticket.items() if k != 'view_token'}
+        safe['event_name'] = (ticket_event_record(ticket) or {}).get('name') or ''
         safe_tickets.append(safe)
     total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
     return render_template(
@@ -3239,7 +4090,7 @@ def download_tickets_csv():
     writer = csv.writer(output)
     writer.writerow([
         'purchased_at', 'ticket_id', 'email', 'quantity', 'ticket_type', 'access',
-        'legacy_discount', 'scanned_at', 'email_sent_at', 'verify_url',
+        'event_id', 'legacy_discount', 'scanned_at', 'email_sent_at', 'verify_url',
     ])
     for ticket in tickets:
         writer.writerow([
@@ -3249,6 +4100,7 @@ def download_tickets_csv():
             ticket.get('quantity', ''),
             ticket.get('ticket_type', 'general'),
             ticket.get('access', ''),
+            ticket.get('event_id', ''),
             ticket.get('legacy_discount', False),
             ticket.get('scanned_at', ''),
             ticket.get('email_sent_at', ''),

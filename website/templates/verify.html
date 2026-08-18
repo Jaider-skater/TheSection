@@ -25,13 +25,12 @@
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
                 <p class="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">Total</p>
                 <p id="total-all" class="text-3xl font-black tabular-nums">{{ admission_totals.total }}</p>
-                <p id="capacity-progress" class="hidden text-[10px] text-zinc-500 mt-1 tabular-nums"></p>
             </div>
         </div>
 
         <div id="capacity-banner"
              class="hidden mb-3 rounded-2xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
-            Max capacity reached — congrats on selling this place out!
+            Ticket cap reached — congrats on selling this place out!
         </div>
         <div id="vip-capacity-banner"
              class="hidden mb-3 rounded-2xl border border-purple-400/40 bg-purple-400/10 px-4 py-3 text-sm text-purple-200">
@@ -40,7 +39,7 @@
 
         <div class="mb-4 flex flex-col items-center gap-2 text-xs">
             <div class="flex items-center justify-center gap-2 flex-wrap">
-                <label for="max-capacity-input" class="text-zinc-500">Max capacity</label>
+                <label for="max-capacity-input" class="text-zinc-500">Ticket cap</label>
                 <input type="number"
                        id="max-capacity-input"
                        min="1"
@@ -52,6 +51,18 @@
                         onclick="saveMaxCapacity()"
                         class="text-zinc-400 hover:text-white transition-colors">
                     Save
+                </button>
+            </div>
+            <p id="sales-progress" class="hidden text-[10px] text-zinc-500 tabular-nums"></p>
+            <div class="flex items-center justify-center gap-2 flex-wrap">
+                <label for="door-event-select" class="text-zinc-500">Door event</label>
+                <select id="door-event-select"
+                        class="max-w-[220px] bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
+                </select>
+                <button type="button"
+                        onclick="saveDoorEvent()"
+                        class="text-zinc-400 hover:text-white transition-colors">
+                    Use
                 </button>
             </div>
             <div class="flex items-center justify-center gap-2 flex-wrap">
@@ -69,11 +80,13 @@
                     Save
                 </button>
             </div>
-            <button type="button"
-                    onclick="resetAdmissionTotals()"
-                    class="text-zinc-500 hover:text-red-400 transition-colors">
-                Reset counts
-            </button>
+            <div class="flex items-center justify-center gap-3 flex-wrap">
+                <button type="button"
+                        onclick="resetAdmissionTotals()"
+                        class="text-zinc-500 hover:text-red-400 transition-colors">
+                    Reset counts
+                </button>
+            </div>
         </div>
 
         <h1 class="text-3xl sm:text-4xl font-bold mb-2">🎟️ Door Scanner</h1>
@@ -97,7 +110,7 @@
 
         <div id="reset-history" class="hidden mt-8 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
             <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Count reset log</p>
-            <p class="text-[11px] text-zinc-500 mb-3">Resets zero the live counters only. Already-scanned tickets stay void.</p>
+            <p class="text-[11px] text-zinc-500 mb-3">Resets zero the live door counters only. Already-scanned tickets stay void. Create a new event in Admin to start the next sale.</p>
             <ul id="reset-history-list" class="space-y-2 text-xs text-zinc-400 max-h-48 overflow-y-auto"></ul>
         </div>
     </div>
@@ -125,12 +138,32 @@
         document.getElementById('total-vip').textContent = totals.vip;
         document.getElementById('total-all').textContent = totals.total;
 
-        const progressEl = document.getElementById('capacity-progress');
+        const salesProgressEl = document.getElementById('sales-progress');
         const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
         const vipBannerEl = document.getElementById('vip-capacity-banner');
         const maxInput = document.getElementById('max-capacity-input');
         const maxVipInput = document.getElementById('max-vip-capacity-input');
+        const doorSelect = document.getElementById('door-event-select');
+        if (doorSelect && document.activeElement !== doorSelect) {
+            const events = Array.isArray(totals.events) ? totals.events : [];
+            const selected = totals.door_event_id || totals.current_event_id || '';
+            doorSelect.innerHTML = '';
+            if (!events.length) {
+                const empty = document.createElement('option');
+                empty.value = '';
+                empty.textContent = 'No events';
+                doorSelect.appendChild(empty);
+            } else {
+                events.forEach(event => {
+                    const option = document.createElement('option');
+                    option.value = event.id;
+                    option.textContent = event.date ? `${event.name} · ${event.date}` : event.name;
+                    option.selected = event.id === selected;
+                    doorSelect.appendChild(option);
+                });
+            }
+        }
 
         if (maxInput && document.activeElement !== maxInput) {
             maxInput.value = totals.max_capacity || '';
@@ -139,12 +172,13 @@
             maxVipInput.value = totals.max_vip_capacity || '';
         }
 
-        if (progressEl) {
+        if (salesProgressEl) {
             if (totals.max_capacity) {
-                progressEl.textContent = `${totals.total} / ${totals.max_capacity}`;
-                progressEl.classList.remove('hidden');
+                const sold = totals.tickets_sold ?? 0;
+                salesProgressEl.textContent = `${sold} / ${totals.max_capacity} sold`;
+                salesProgressEl.classList.remove('hidden');
             } else {
-                progressEl.classList.add('hidden');
+                salesProgressEl.classList.add('hidden');
             }
         }
         if (vipProgressEl) {
@@ -299,7 +333,7 @@
             alert('Enter a whole number of 1 or higher, or leave blank for no limit.');
             return;
         }
-        const totals = await saveScannerSetting({ max_capacity: value }, 'max capacity');
+        const totals = await saveScannerSetting({ max_capacity: value }, 'ticket cap');
         if (totals && !totals.max_capacity) input.value = '';
     }
 
@@ -315,11 +349,22 @@
         if (totals && !totals.max_vip_capacity) input.value = '';
     }
 
+    async function saveDoorEvent() {
+        const select = document.getElementById('door-event-select');
+        const value = (select && select.value) || '';
+        if (!value) {
+            alert('Create an event in Admin first.');
+            return;
+        }
+        await saveScannerSetting({ door_event_id: value }, 'door event');
+    }
+
     async function resetAdmissionTotals() {
         const confirmed = window.confirm(
             'Reset admission counts?\n\n' +
             'GA, VIP, and Total go back to 0 for a new counting period.\n' +
             'Already-scanned tickets stay VOID and cannot be scanned again.\n' +
+            'This does not reset ticket sales or reopen the ticket cap.\n' +
             'This reset is saved in the log at the bottom of the page.'
         );
         if (!confirmed) return;
@@ -384,7 +429,7 @@
                 const typeColor = result.is_vip ? 'text-purple-400' : 'text-emerald-400';
                 const guestWord = result.quantity === 1 ? 'guest' : 'guests';
                 const soldOutNote = result.admission_totals && result.admission_totals.capacity_reached
-                    ? '<div class="text-amber-300 text-sm mt-4">Max capacity reached — congrats on selling this place out!</div>'
+                    ? '<div class="text-amber-300 text-sm mt-4">Ticket cap reached — congrats on selling this place out!</div>'
                     : '';
                 const vipNote = result.vip_overflow_note
                     ? `<div class="text-purple-300 text-sm mt-4">${result.vip_overflow_note}</div>`
@@ -399,13 +444,18 @@
             } else if (result.status === 'sold_out') {
                 resultEl.innerHTML = `
                     <div class="text-amber-300 text-2xl font-bold mb-2">🎉 Sold Out</div>
-                    <div class="text-zinc-200">Max capacity reached — congrats on selling this place out!</div>
+                    <div class="text-zinc-200">Ticket cap reached — congrats on selling this place out!</div>
                 `;
             } else if (result.status === 'used') {
                 const guestWord = result.quantity === 1 ? 'guest' : 'guests';
                 resultEl.innerHTML = `
                     <div class="text-red-400 text-2xl font-bold mb-2">❌ Already Used</div>
                     <div class="text-zinc-300">${result.quantity} ${guestWord} on this ticket</div>
+                `;
+            } else if (result.status === 'wrong_event') {
+                resultEl.innerHTML = `
+                    <div class="text-red-400 text-2xl font-bold mb-2">❌ Wrong Event</div>
+                    <div class="text-zinc-200">This ticket is for a previous event</div>
                 `;
             } else {
                 resultEl.innerHTML = `<span class="text-red-400 text-xl">Invalid ticket</span>`;
@@ -500,6 +550,11 @@
             max_vip_capacity: {{ admission_totals.max_vip_capacity if admission_totals.max_vip_capacity else 'null' }},
             capacity_reached: {{ 'true' if admission_totals.capacity_reached else 'false' }},
             vip_capacity_reached: {{ 'true' if admission_totals.vip_capacity_reached else 'false' }},
+            tickets_sold: {{ admission_totals.tickets_sold or 0 }},
+            tickets_remaining: {{ admission_totals.tickets_remaining if admission_totals.tickets_remaining is not none else 'null' }},
+            sold_out: {{ 'true' if admission_totals.sold_out else 'false' }},
+            door_event_id: {{ (admission_totals.door_event_id or admission_totals.current_event_id or none) | tojson }},
+            events: {{ (admission_totals.events or []) | tojson }},
             reset_history: {{ (admission_totals.reset_history or []) | tojson }},
         });
         refreshAdmissionTotals();

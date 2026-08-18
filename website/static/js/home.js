@@ -9,7 +9,71 @@ let memberStatus = {
 };
 let pricing = null;
 let memberDiscountApplied = false;
+let ticketAvailability = window.ticketAvailability || {
+    max_capacity: null,
+    sold: null,
+    remaining: null,
+    sold_out: false,
+};
 const MAX_TICKET_QUANTITY = 20;
+
+function maxPurchasableQuantity() {
+    const remaining = ticketAvailability && ticketAvailability.remaining;
+    if (remaining == null) return MAX_TICKET_QUANTITY;
+    return Math.max(0, Math.min(MAX_TICKET_QUANTITY, remaining));
+}
+
+function applyAvailabilityToUi() {
+    const soldOut = !!(ticketAvailability && ticketAvailability.sold_out);
+    const salesOpen = !ticketAvailability || ticketAvailability.sales_open !== false;
+    const remaining = ticketAvailability ? ticketAvailability.remaining : null;
+    const getTicketsBtn = document.getElementById('get-tickets-btn');
+    const soldOutPanel = document.getElementById('sold-out-panel');
+    const purchasePanel = document.getElementById('ticket-purchase-panel');
+    const subtitle = document.getElementById('tickets-modal-subtitle');
+
+    if (getTicketsBtn && getTicketsBtn.tagName === 'A') {
+        if (!salesOpen) {
+            getTicketsBtn.textContent = 'Tickets soon';
+        } else {
+            getTicketsBtn.textContent = soldOut ? 'Sold Out' : 'Get Tickets';
+        }
+    }
+    if (soldOutPanel) {
+        soldOutPanel.classList.toggle('hidden', !soldOut);
+    }
+    if (purchasePanel) {
+        purchasePanel.classList.toggle('hidden', soldOut);
+    }
+    if (subtitle) {
+        if (soldOut) {
+            subtitle.textContent = 'This event is sold out.';
+        } else if (remaining != null && remaining > 0 && remaining <= 10) {
+            subtitle.textContent = remaining === 1
+                ? 'Only 1 ticket left.'
+                : `Only ${remaining} tickets left.`;
+        } else {
+            subtitle.textContent = 'Limited tickets available.';
+        }
+    }
+
+    const cap = maxPurchasableQuantity();
+    if (cap > 0 && quantity > cap) {
+        quantity = cap;
+    }
+}
+
+async function loadTicketAvailability() {
+    try {
+        const response = await apiFetch('/api/ticket-availability');
+        if (!response.ok) return;
+        ticketAvailability = await response.json();
+        applyAvailabilityToUi();
+        updateModalQuantity();
+    } catch (err) {
+        console.error('Failed to load ticket availability', err);
+    }
+}
 
 function getCsrfToken() {
     return document.querySelector('meta[name="csrf-token"]')?.content || '';
@@ -353,7 +417,13 @@ function updateModalQuantity() {
 }
 
 function changeQuantity(change) {
-    quantity = Math.max(1, Math.min(MAX_TICKET_QUANTITY, quantity + change));
+    const cap = maxPurchasableQuantity();
+    if (cap < 1) {
+        quantity = 1;
+        applyAvailabilityToUi();
+        return;
+    }
+    quantity = Math.max(1, Math.min(cap, quantity + change));
     refreshPricing();
 }
 
@@ -375,6 +445,15 @@ async function redirectToLoginForCheckout() {
 }
 
 async function createCheckoutSession() {
+    if (ticketAvailability && ticketAvailability.sales_open === false) {
+        alert('Tickets are not on sale for this event yet.');
+        return;
+    }
+    if (ticketAvailability && ticketAvailability.sold_out) {
+        applyAvailabilityToUi();
+        alert('Tickets are sold out.');
+        return;
+    }
     if (!memberStatus.logged_in) {
         await redirectToLoginForCheckout();
         return;
@@ -393,6 +472,16 @@ async function createCheckoutSession() {
 
         const data = await response.json();
 
+        if (data.remaining != null || data.sold_out != null || data.max_capacity != null) {
+            ticketAvailability = {
+                max_capacity: data.max_capacity ?? ticketAvailability.max_capacity,
+                sold: data.sold ?? ticketAvailability.sold,
+                remaining: data.remaining ?? ticketAvailability.remaining,
+                sold_out: !!(data.sold_out),
+            };
+            applyAvailabilityToUi();
+        }
+
         if (data.url) {
             window.location.href = data.url;
         } else {
@@ -405,6 +494,9 @@ async function createCheckoutSession() {
 }
 
 async function showTicketsModal(options = {}) {
+    if (!window.featuredEvent || window.featuredEvent.sales_open === false) {
+        return;
+    }
     const modal = document.getElementById('tickets-modal');
     modal.classList.remove('hidden');
     modal.style.opacity = '0';
@@ -412,7 +504,11 @@ async function showTicketsModal(options = {}) {
         modal.style.transition = 'opacity 0.3s ease-out';
         modal.style.opacity = '1';
     }, 10);
-    await loadMemberStatus();
+    await Promise.all([loadMemberStatus(), loadTicketAvailability()]);
+    if (ticketAvailability && ticketAvailability.sold_out) {
+        applyAvailabilityToUi();
+        return;
+    }
     if (
         options.applyMemberDiscount
         && memberStatus.logged_in
@@ -477,7 +573,8 @@ function maybeOpenTicketsFromUrl() {
     }
 }
 
-loadMemberStatus().then(() => {
+applyAvailabilityToUi();
+Promise.all([loadMemberStatus(), loadTicketAvailability()]).then(() => {
     updateTypeButtons();
     refreshPricing();
     maybeOpenTicketsFromUrl();
@@ -488,7 +585,7 @@ loadMemberStatus().then(() => {
 window.addEventListener('pageshow', (event) => {
     if (event.persisted || (window.performance && performance.getEntriesByType &&
         performance.getEntriesByType('navigation')[0]?.type === 'back_forward')) {
-        loadMemberStatus().then(() => {
+        Promise.all([loadMemberStatus(), loadTicketAvailability()]).then(() => {
             updateTypeButtons();
             refreshPricing();
             updateDiscountCodeButton();
