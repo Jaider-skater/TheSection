@@ -112,6 +112,10 @@ full_mailing_list_file = os.getenv(
     'FULL_MAILING_LIST_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'full_mailing_list.json'),
 )
+exclusive_holds_file = os.getenv(
+    'EXCLUSIVE_HOLDS_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'exclusive_holds.json'),
+)
 events_file = os.getenv(
     'EVENTS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'events.json'),
@@ -131,8 +135,11 @@ def parse_discount_value(raw, default=0.15):
     except (TypeError, ValueError):
         return default
     if value > 1:
-        return value / 100.0
-    return value
+        value = value / 100.0
+    if value < 0:
+        return default
+    # Never allow 100%+ off (free or negative tickets) via a bad env value.
+    return min(value, 0.90)
 
 
 bundle_min = int(os.getenv('BUNDLE_MIN') or os.getenv('LEGACY_BUNDLE_MIN', '4'))
@@ -167,8 +174,11 @@ scanner_settings_lock = threading.Lock()
 events_lock = threading.Lock()
 invites_lock = threading.Lock()
 full_list_lock = threading.Lock()
+exclusive_holds_lock = threading.Lock()
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
+EXCLUSIVE_HOLD_TTL = timedelta(minutes=45)
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 HALLOWEEN_EVENT_SLUG = 'halloween-2026'
 HALLOWEEN_EVENT_DATE = '2026-10-24'
@@ -324,6 +334,11 @@ def clamp_quantity(raw, default=1):
     except (TypeError, ValueError):
         value = default
     return max(1, min(MAX_TICKET_QUANTITY, value))
+
+
+def is_valid_email(email):
+    value = (email or '').strip()
+    return bool(value) and len(value) <= 254 and EMAIL_RE.match(value) is not None
 
 
 def new_ticket_id():
@@ -764,6 +779,8 @@ def add_emails_to_invite_list(emails):
             existing.add(email)
             added.append(email)
         save_invites(invites)
+    for email in added:
+        grant_exclusive_member_features(email)
     return added, skipped
 
 
@@ -1224,6 +1241,114 @@ def resolve_member_discount_application(requested):
     return member_discount_active()
 
 
+def exclusive_hold_key(email, event_id):
+    return f'{(email or "").strip().lower()}|{(event_id or "").strip()}'
+
+
+def load_exclusive_holds():
+    if not ensure_data_dir(exclusive_holds_file):
+        return {}
+    data = _locked_json_read(exclusive_holds_file, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_exclusive_holds(holds):
+    if not ensure_data_dir(exclusive_holds_file):
+        return False
+    return _locked_json_write(exclusive_holds_file, holds)
+
+
+def prune_exclusive_holds(holds):
+    now = datetime.now(timezone.utc)
+    changed = False
+    for key, hold in list((holds or {}).items()):
+        expires_raw = (hold or {}).get('expires_at')
+        expired = True
+        if expires_raw:
+            try:
+                expires = datetime.fromisoformat(str(expires_raw).replace('Z', '+00:00'))
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                expired = now >= expires
+            except ValueError:
+                expired = True
+        if expired:
+            holds.pop(key, None)
+            changed = True
+    return changed
+
+
+def exclusive_hold_active(email, event_id):
+    email = (email or '').strip().lower()
+    event_id = (event_id or '').strip()
+    if not email or not event_id:
+        return False
+    with exclusive_holds_lock:
+        holds = load_exclusive_holds()
+        if prune_exclusive_holds(holds):
+            save_exclusive_holds(holds)
+        return exclusive_hold_key(email, event_id) in holds
+
+
+def reserve_exclusive_single_rate(email, event_id):
+    """Atomically claim the 20% single-ticket perk for this email + event."""
+    email = (email or '').strip().lower()
+    event_id = (event_id or '').strip()
+    if not email or not event_id:
+        return False
+    now = datetime.now(timezone.utc)
+    with exclusive_holds_lock:
+        holds = load_exclusive_holds()
+        prune_exclusive_holds(holds)
+        key = exclusive_hold_key(email, event_id)
+        if key in holds:
+            return False
+        member = get_legacy_member(email)
+        if exclusive_single_rate_used_for_event(member, event_id):
+            return False
+        holds[key] = {
+            'email': email,
+            'event_id': event_id,
+            'created_at': now.isoformat(),
+            'expires_at': (now + EXCLUSIVE_HOLD_TTL).isoformat(),
+            'checkout_session_id': None,
+        }
+        save_exclusive_holds(holds)
+        return True
+
+
+def bind_exclusive_hold(email, event_id, checkout_session_id):
+    email = (email or '').strip().lower()
+    event_id = (event_id or '').strip()
+    if not email or not event_id:
+        return False
+    with exclusive_holds_lock:
+        holds = load_exclusive_holds()
+        prune_exclusive_holds(holds)
+        hold = holds.get(exclusive_hold_key(email, event_id))
+        if not hold:
+            return False
+        hold['checkout_session_id'] = checkout_session_id
+        save_exclusive_holds(holds)
+        return True
+
+
+def release_exclusive_hold(email, event_id):
+    email = (email or '').strip().lower()
+    event_id = (event_id or '').strip()
+    if not email or not event_id:
+        return False
+    with exclusive_holds_lock:
+        holds = load_exclusive_holds()
+        prune_exclusive_holds(holds)
+        if holds.pop(exclusive_hold_key(email, event_id), None) is None:
+            if prune_exclusive_holds(holds):
+                save_exclusive_holds(holds)
+            return False
+        save_exclusive_holds(holds)
+        return True
+
+
 def exclusive_single_rate_used_for_event(member, event_id):
     """True when this exclusive member already used the 20% single-ticket rate on this event."""
     if not member:
@@ -1245,24 +1370,31 @@ def exclusive_single_rate_used_for_event(member, event_id):
     return False
 
 
-def exclusive_single_rate_available(member, event_id=None, quantity=1):
+def exclusive_single_rate_available(member, event_id=None, quantity=1, honor_holds=True):
     if not member_has_returning_guest_discount(member):
         return False
     if max(1, int(quantity or 1)) != 1:
         return False
     target = (event_id or '').strip() or get_sales_event_id()
     if not target:
-        return True
-    return not exclusive_single_rate_used_for_event(member, target)
+        return False
+    if exclusive_single_rate_used_for_event(member, target):
+        return False
+    if honor_holds:
+        email = (member.get('email') or '').strip().lower()
+        if exclusive_hold_active(email, target):
+            return False
+    return True
 
 
-def active_member_discount_rate(quantity=1, require_active=True, event_id=None):
+def active_member_discount_rate(quantity=1, require_active=True, event_id=None, exclusive_reserved=None):
     """Percent rate (0–1) for the logged-in member at this quantity.
 
     Exclusive-list members get 20% off one single ticket per event.
     After that, or for 2+ tickets, they use the standard member rate (10%).
 
     If require_active is False, returns the eligible rate even when the code is not applied.
+    exclusive_reserved=True forces the 20% single rate after this checkout claimed it.
     """
     member = get_logged_in_member()
     if member:
@@ -1272,7 +1404,10 @@ def active_member_discount_rate(quantity=1, require_active=True, event_id=None):
     if not member or not member_discount_eligible(member):
         return 0.0
     quantity = max(1, int(quantity or 1))
-    if exclusive_single_rate_available(member, event_id, quantity):
+    exclusive_ok = exclusive_reserved if exclusive_reserved is not None else exclusive_single_rate_available(
+        member, event_id, quantity
+    )
+    if exclusive_ok:
         rate = returning_guest_discount if returning_guest_discount > 0 else member_discount
         return rate if rate > 0 else 0.20
     rate = member_discount if member_discount > 0 else 0.0
@@ -1334,7 +1469,7 @@ def calculate_bulk_total_cents(ticket_type, quantity):
     return base_total
 
 
-def calculate_total_cents(ticket_type, quantity, apply_member_discount=False, event_id=None):
+def calculate_total_cents(ticket_type, quantity, apply_member_discount=False, event_id=None, exclusive_reserved=None):
     """Price with optional member/exclusive discount.
 
     Exclusive members: 20% off one single ticket per event.
@@ -1348,7 +1483,9 @@ def calculate_total_cents(ticket_type, quantity, apply_member_discount=False, ev
     if not apply_member_discount:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
-    rate = active_member_discount_rate(quantity, event_id=event_id)
+    rate = active_member_discount_rate(
+        quantity, event_id=event_id, exclusive_reserved=exclusive_reserved
+    )
     if rate <= 0:
         return calculate_bulk_total_cents(ticket_type, quantity)
 
@@ -1359,20 +1496,28 @@ def calculate_total_cents(ticket_type, quantity, apply_member_discount=False, ev
     return int(base_total * (1 - rate))
 
 
-def calculate_unit_price(ticket_type, quantity, apply_member_discount=False, event_id=None):
+def calculate_unit_price(ticket_type, quantity, apply_member_discount=False, event_id=None, exclusive_reserved=None):
     if quantity < 1:
         quantity = 1
-    return calculate_total_cents(ticket_type, quantity, apply_member_discount, event_id=event_id) // quantity
+    return calculate_total_cents(
+        ticket_type, quantity, apply_member_discount, event_id=event_id,
+        exclusive_reserved=exclusive_reserved,
+    ) // quantity
 
 
-def pricing_breakdown(ticket_type, quantity, apply_member_discount=False, event_id=None):
+def pricing_breakdown(ticket_type, quantity, apply_member_discount=False, event_id=None, exclusive_reserved=None):
     quantity = max(1, int(quantity or 1))
     base = TICKET_TYPES[ticket_type]['price_cents']
     base_total_cents = base * quantity
     bulk_only_total = calculate_bulk_total_cents(ticket_type, quantity)
-    eligible_rate = active_member_discount_rate(quantity, require_active=False, event_id=event_id)
+    eligible_rate = active_member_discount_rate(
+        quantity, require_active=False, event_id=event_id, exclusive_reserved=exclusive_reserved
+    )
     rate = eligible_rate if apply_member_discount else 0.0
-    total_cents = calculate_total_cents(ticket_type, quantity, apply_member_discount, event_id=event_id)
+    total_cents = calculate_total_cents(
+        ticket_type, quantity, apply_member_discount, event_id=event_id,
+        exclusive_reserved=exclusive_reserved,
+    )
     unit_price = total_cents // quantity
 
     bulk_savings_active = bulk_only_total < base_total_cents
@@ -1403,7 +1548,10 @@ def pricing_breakdown(ticket_type, quantity, apply_member_discount=False, event_
 
     member = get_logged_in_member()
     is_returning = bool(member and member_has_returning_guest_discount(member))
-    exclusive_single_available = exclusive_single_rate_available(member, event_id, quantity)
+    if exclusive_reserved:
+        exclusive_single_available = True
+    else:
+        exclusive_single_available = exclusive_single_rate_available(member, event_id, quantity)
     exclusive_single_applied = bool(
         apply_member_discount and exclusive_single_available and quantity == 1 and rate >= 0.20
     )
@@ -1897,8 +2045,8 @@ def fulfill_paid_checkout(checkout_session):
         event_id=metadata.get('event_id') or get_sales_event_id(),
         exclusive_single_rate=metadata.get('exclusive_single_rate') == 'true',
     )
-
     if delivery_email:
+        release_exclusive_hold(delivery_email, ticket.get('event_id'))
         purchased_member = get_legacy_member(delivery_email)
         if purchased_member:
             add_saved_ticket_for_member(delivery_email, ticket.get('ticket_id', ticket_id))
@@ -2160,6 +2308,28 @@ def parse_event_date(raw):
         return None
 
 
+def coerce_sales_open(value, default=True):
+    """Treat common falsey form/JSON values as coming-soon, not on sale."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ('0', 'false', 'no', 'off', 'closed', 'teaser', 'coming-soon', 'coming soon'):
+            return False
+        if normalized in ('1', 'true', 'yes', 'on', 'open'):
+            return True
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    return bool(value)
+
+
+def event_is_sales_open(event):
+    if not event:
+        return False
+    return coerce_sales_open(event.get('sales_open'), default=True)
+
+
 def _day_ordinal(day):
     if 10 <= day % 100 <= 20:
         suffix = 'th'
@@ -2261,9 +2431,7 @@ def normalize_event(raw):
         date_value = parsed_date.isoformat()
     ticket_cap = parse_max_capacity(data.get('ticket_cap'))
     vip_cap = parse_max_capacity(data.get('vip_cap'))
-    sales_open = data.get('sales_open')
-    if sales_open is None:
-        sales_open = True
+    sales_open = coerce_sales_open(data.get('sales_open'), default=True)
     return {
         'id': event_id,
         'name': (data.get('name') or '').strip() or 'Untitled event',
@@ -2278,7 +2446,7 @@ def normalize_event(raw):
         'flyer_static': (data.get('flyer_static') or '').strip(),
         'ticket_cap': ticket_cap,
         'vip_cap': vip_cap,
-        'sales_open': bool(sales_open),
+        'sales_open': sales_open,
         'created_at': data.get('created_at') or datetime.now(timezone.utc).isoformat(),
         'updated_at': data.get('updated_at') or data.get('created_at') or datetime.now(timezone.utc).isoformat(),
     }
@@ -2293,7 +2461,7 @@ def event_display(event):
     cap = parse_max_capacity(event.get('ticket_cap'))
     remaining = None if not cap else max(0, cap - sold)
     sold_out = bool(cap and remaining == 0)
-    sales_open = bool(event.get('sales_open', True))
+    sales_open = event_is_sales_open(event)
     return {
         **event,
         'headline_display': headline,
@@ -2319,17 +2487,42 @@ def today_iso():
     return datetime.now(get_display_timezone()).date().isoformat()
 
 
+def event_date_iso(event):
+    return ((event or {}).get('date') or '')[:10]
+
+
+def event_is_upcoming(event, today=None):
+    today = today or today_iso()
+    date_value = event_date_iso(event)
+    if not date_value:
+        return True
+    return date_value >= today
+
+
+def next_event_sort_key(event, today=None):
+    """Soonest upcoming dated night first. Past nights lose to future ones."""
+    today = today or today_iso()
+    date_value = event_date_iso(event)
+    name = ((event or {}).get('name') or '').lower()
+    if date_value and date_value >= today:
+        return (0, date_value, name)
+    if not date_value:
+        return (1, '9999-99-99', name)
+    return (2, date_value, name)
+
+
 def list_on_sale_events():
-    events = [event_display(event) for event in load_events() if event.get('sales_open', True)]
+    events = [event_display(event) for event in load_events() if event_is_sales_open(event)]
     events.sort(key=event_sort_key)
     return events
 
 
 def list_teaser_events():
+    """Coming-soon events for the homepage, shown under NEXT EVENT."""
     today = today_iso()
     teasers = []
     for event in load_events():
-        if event.get('sales_open', True):
+        if event_is_sales_open(event):
             continue
         date_value = (event.get('date') or '')[:10]
         if date_value and date_value < today:
@@ -2337,6 +2530,18 @@ def list_teaser_events():
         teasers.append(event_display(event))
     teasers.sort(key=event_sort_key)
     return teasers
+
+
+def pick_next_event(on_sale_events=None):
+    """The single homepage NEXT EVENT: soonest upcoming on-sale night.
+
+    A Halloween in October beats a Christmas / NYE in December, even if
+    Christmas was marked featured or created first.
+    """
+    on_sale = list(on_sale_events if on_sale_events is not None else list_on_sale_events())
+    if not on_sale:
+        return None
+    return sorted(on_sale, key=next_event_sort_key)[0]
 
 
 def get_event(event_id):
@@ -2363,13 +2568,9 @@ def get_door_event_id():
 
 
 def get_sales_event_id():
-    on_sale = list_on_sale_events()
-    if on_sale:
-        featured = get_featured_event_id()
-        for event in on_sale:
-            if event.get('id') == featured:
-                return featured
-        return on_sale[0]['id']
+    next_event = pick_next_event()
+    if next_event and next_event.get('id'):
+        return next_event['id']
     return get_door_event_id()
 
 
@@ -2715,7 +2916,7 @@ def get_ticket_availability(event_id=None):
     max_capacity = event_ticket_cap(event)
     sold = compute_ticket_sales_counts(event.get('id') if event else None)['sold']
     remaining = None if not max_capacity else max(0, max_capacity - sold)
-    sales_open = bool(event.get('sales_open', True)) if event else False
+    sales_open = event_is_sales_open(event) if event else False
     sold_out = bool(max_capacity and remaining == 0)
     return {
         'max_capacity': max_capacity,
@@ -2735,7 +2936,7 @@ def ensure_ticket_sales_available(quantity, event_id=None):
     event = get_event(event_id) if event_id else get_sales_event()
     if not event:
         raise TicketSalesError('No event is on sale right now.', remaining=0)
-    if not event.get('sales_open', True):
+    if not event_is_sales_open(event):
         raise TicketSalesError('Tickets are not on sale for this event yet.', remaining=0)
     remaining = ticket_sales_remaining(event.get('id'))
     if remaining is None:
@@ -3141,13 +3342,19 @@ def send_pending_member_invites():
 def home():
     on_sale_events = list_on_sale_events()
     teaser_events = list_teaser_events()
-    featured = on_sale_events[0] if on_sale_events else None
+    next_event = pick_next_event(on_sale_events)
+    more_on_sale_events = [
+        event for event in on_sale_events
+        if not next_event or event.get('id') != next_event.get('id')
+    ]
     return render_template(
         'home.html',
         show_scanner_link=is_scanner_admin_member(),
-        ticket_availability=get_ticket_availability(featured.get('id') if featured else None),
-        featured_event=featured,
+        ticket_availability=get_ticket_availability(next_event.get('id') if next_event else None),
+        featured_event=next_event,
+        next_event=next_event,
         on_sale_events=on_sale_events,
+        more_on_sale_events=more_on_sale_events,
         teaser_events=teaser_events,
     )
 
@@ -3225,7 +3432,44 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False, e
 
     legacy_member = is_legacy_member_logged_in()
     apply_member = resolve_member_discount_application(apply_member_discount)
-    breakdown = pricing_breakdown(ticket_type, quantity, apply_member, event_id=sales_event_id)
+    member = get_logged_in_member()
+    member_email = (member.get('email') or '').strip().lower() if member else ''
+    exclusive_reserved = False
+    if (
+        apply_member
+        and member
+        and exclusive_single_rate_available(member, sales_event_id, quantity)
+    ):
+        exclusive_reserved = reserve_exclusive_single_rate(member_email, sales_event_id)
+    try:
+        breakdown = pricing_breakdown(
+            ticket_type, quantity, apply_member, event_id=sales_event_id,
+            exclusive_reserved=exclusive_reserved if exclusive_reserved else None,
+        )
+        checkout_session = _create_stripe_checkout_session(
+            quantity=quantity,
+            ticket_type=ticket_type,
+            ticket_meta=TICKET_TYPES[ticket_type],
+            breakdown=breakdown,
+            sales_event=sales_event,
+            sales_event_id=sales_event_id,
+            legacy_member=legacy_member,
+            member_email=member_email,
+            exclusive_reserved=exclusive_reserved,
+        )
+    except Exception:
+        if exclusive_reserved:
+            release_exclusive_hold(member_email, sales_event_id)
+        raise
+    if exclusive_reserved:
+        bind_exclusive_hold(member_email, sales_event_id, checkout_session.id)
+    return checkout_session
+
+
+def _create_stripe_checkout_session(
+    quantity, ticket_type, ticket_meta, breakdown, sales_event, sales_event_id,
+    legacy_member, member_email, exclusive_reserved=False,
+):
     unit_price = breakdown['unit_price_cents']
     ticket_meta = TICKET_TYPES[ticket_type]
     if sales_event:
@@ -3255,9 +3499,6 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False, e
     elif breakdown['bundle_discount_applied']:
         bulk_min = breakdown['bundle_min']
         description += f' · {breakdown["bundle_discount_percent"]}% bulk discount ({bulk_min}+ tickets)'
-
-    member = get_logged_in_member()
-    member_email = (member.get('email') or '').strip().lower() if member else ''
 
     print(f"Creating {ticket_type} session for {quantity} tickets @ {unit_price}c")
 
@@ -3291,6 +3532,10 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False, e
     }
     if member_email:
         checkout_kwargs['customer_email'] = member_email
+    # Exclusive 20% sessions expire with the hold so a second 20% cannot be opened later
+    # and the first unpaid session paid after the hold lapses.
+    if exclusive_reserved:
+        checkout_kwargs['expires_at'] = int((datetime.now(timezone.utc) + EXCLUSIVE_HOLD_TTL).timestamp())
 
     return stripe.checkout.Session.create(**checkout_kwargs)
 
@@ -3823,10 +4068,18 @@ def legacy_portal():
             confirm_password = request.form.get('confirm_password', '')
             if not email or not password:
                 error = 'Email and password are required.'
+            elif not is_valid_email(email):
+                error = 'Enter a valid email address.'
             elif password != confirm_password:
                 error = 'Passwords do not match.'
             elif len(password) < 8:
                 error = 'Password must be at least 8 characters.'
+            elif is_on_exclusive_invite_list(email):
+                # Exclusive 20% accounts can only be created via the signed invite link.
+                error = (
+                    'That email has an exclusive invite. '
+                    'Use the link we emailed you to create your account.'
+                )
             elif get_legacy_member(email):
                 # Avoid confirming account existence with a distinct message
                 error = 'Could not create account. Try signing in or use a different email.'
@@ -4039,7 +4292,7 @@ def event_payload_from_form(form, existing=None):
         'details': form.get('details'),
         'ticket_cap': form.get('ticket_cap'),
         'vip_cap': form.get('vip_cap'),
-        'sales_open': form.get('sales_open') != '0',
+        'sales_open': coerce_sales_open(form.get('sales_open'), default=True),
     }
     if existing:
         payload['id'] = existing.get('id')

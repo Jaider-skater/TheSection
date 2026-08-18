@@ -29,14 +29,110 @@
 
     <main class="max-w-6xl mx-auto px-6 pt-10 pb-20">
 
-{% if on_sale_events %}
-<section class="max-w-2xl mx-auto mb-16 space-y-10">
-    {% for event in on_sale_events %}
+{% if next_event %}
+<section class="max-w-2xl mx-auto mb-16">
     <article class="border-4 border-white rounded-3xl overflow-hidden">
         <div class="bg-zinc-900 p-8 md:p-10">
-            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">
-                {% if loop.first %}NEXT EVENT{% else %}ALSO ON SALE{% endif %}
+            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">NEXT EVENT</div>
+            <div class="text-5xl font-bold tracking-tighter mb-6">{{ next_event.headline_display }}</div>
+
+            <div class="space-y-3 text-[15px] mb-8">
+                {% if next_event.date_display %}
+                <div><span class="font-medium">Date:</span> {{ next_event.date_display }}</div>
+                {% endif %}
+                {% if next_event.time_display %}
+                <div><span class="font-medium">Time:</span> {{ next_event.time_display }}</div>
+                {% endif %}
+                {% if next_event.venue %}
+                <div><span class="font-medium">Venue:</span> {{ next_event.venue }}</div>
+                {% endif %}
+                <div><span class="font-medium">Price:</span> {{ next_event.price_display }}</div>
             </div>
+
+            {% if next_event.description %}
+            <p class="text-[15px] text-zinc-300 whitespace-pre-line mb-8">{{ next_event.description }}</p>
+            {% endif %}
+
+            {% if next_event.sold_out %}
+            <div class="block w-full text-center py-4 mb-4 border-2 border-zinc-600 bg-zinc-950 text-zinc-400 text-xl font-semibold rounded-2xl">
+                Sold Out
+            </div>
+            {% else %}
+            <a href="#tickets"
+               class="get-tickets-btn block w-full text-center py-4 mb-4
+                      border-2 border-white
+                      bg-black text-white text-xl font-semibold rounded-2xl
+                      transition-all duration-500 ease-out
+                      hover:bg-white hover:text-black hover:border-white
+                      active:scale-[1.015] hover:scale-[1.015]
+                      hover:shadow-lg
+                      touch-manipulation select-none"
+               data-event-id="{{ next_event.id }}"
+               data-event-name="{{ next_event.name }}"
+               data-event-date="{{ next_event.date_display or '' }}">
+                Get Tickets
+            </a>
+            {% endif %}
+
+            {% if next_event.details %}
+            <div class="text-center text-sm text-zinc-400">{{ next_event.details }}</div>
+            {% endif %}
+        </div>
+        {% if next_event.flyer_url %}
+        <img src="{{ next_event.flyer_url }}"
+             alt="{{ next_event.name }} flyer"
+             class="w-full h-auto object-cover">
+        {% endif %}
+    </article>
+</section>
+{% elif not teaser_events %}
+<div class="max-w-2xl mx-auto border-4 border-zinc-800 rounded-3xl overflow-hidden mb-16 bg-zinc-900 p-10 text-center">
+    <div class="uppercase tracking-[2px] text-xs text-zinc-500 font-medium mb-3">NEXT EVENT</div>
+    <p class="text-2xl font-bold mb-2">Nothing announced yet</p>
+    <p class="text-zinc-400">Check back soon.</p>
+</div>
+{% endif %}
+
+{% if teaser_events %}
+<section id="coming-soon" class="max-w-2xl mx-auto mb-16">
+    <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-4 text-center">Coming soon</div>
+    <div class="space-y-6">
+        {% for event in teaser_events %}
+        <article class="border-2 border-zinc-700 rounded-3xl overflow-hidden bg-zinc-900">
+            <div class="p-6 md:p-8">
+                <div class="text-3xl font-bold tracking-tight mb-3">{{ event.headline_display }}</div>
+                <div class="space-y-2 text-sm text-zinc-300 mb-4">
+                    {% if event.date_display %}
+                    <div>{{ event.date_display }}{% if event.time_display %} · {{ event.time_display }}{% endif %}</div>
+                    {% endif %}
+                    {% if event.venue %}
+                    <div>{{ event.venue }}</div>
+                    {% endif %}
+                </div>
+                {% if event.description %}
+                <p class="text-sm text-zinc-400 whitespace-pre-line mb-4">{{ event.description }}</p>
+                {% endif %}
+                <div class="text-center py-3 border border-zinc-600 rounded-2xl text-zinc-400 font-semibold">
+                    Tickets soon
+                </div>
+            </div>
+            {% if event.flyer_url %}
+            <img src="{{ event.flyer_url }}"
+                 alt="{{ event.name }} flyer"
+                 class="w-full h-auto object-cover">
+            {% endif %}
+        </article>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if more_on_sale_events %}
+<section class="max-w-2xl mx-auto mb-16 space-y-10">
+    {% for event in more_on_sale_events %}
+    <article class="border-4 border-white rounded-3xl overflow-hidden">
+        <div class="bg-zinc-900 p-8 md:p-10">
+            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-1">ALSO ON SALE</div>
             <div class="text-5xl font-bold tracking-tighter mb-6">{{ event.headline_display }}</div>
 
             <div class="space-y-3 text-[15px] mb-8">
@@ -88,46 +184,6 @@
         {% endif %}
     </article>
     {% endfor %}
-</section>
-{% elif not teaser_events %}
-<div class="max-w-2xl mx-auto border-4 border-zinc-800 rounded-3xl overflow-hidden mb-16 bg-zinc-900 p-10 text-center">
-    <div class="uppercase tracking-[2px] text-xs text-zinc-500 font-medium mb-3">NEXT EVENT</div>
-    <p class="text-2xl font-bold mb-2">Nothing announced yet</p>
-    <p class="text-zinc-400">Check back soon.</p>
-</div>
-{% endif %}
-
-{% if teaser_events %}
-<section class="max-w-2xl mx-auto mb-16">
-    <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-4 text-center">Coming soon</div>
-    <div class="space-y-6">
-        {% for event in teaser_events %}
-        <article class="border-2 border-zinc-700 rounded-3xl overflow-hidden bg-zinc-900">
-            <div class="p-6 md:p-8">
-                <div class="text-3xl font-bold tracking-tight mb-3">{{ event.headline_display }}</div>
-                <div class="space-y-2 text-sm text-zinc-300 mb-4">
-                    {% if event.date_display %}
-                    <div>{{ event.date_display }}{% if event.time_display %} · {{ event.time_display }}{% endif %}</div>
-                    {% endif %}
-                    {% if event.venue %}
-                    <div>{{ event.venue }}</div>
-                    {% endif %}
-                </div>
-                {% if event.description %}
-                <p class="text-sm text-zinc-400 whitespace-pre-line mb-4">{{ event.description }}</p>
-                {% endif %}
-                <div class="text-center py-3 border border-zinc-600 rounded-2xl text-zinc-400 font-semibold">
-                    Tickets soon
-                </div>
-            </div>
-            {% if event.flyer_url %}
-            <img src="{{ event.flyer_url }}"
-                 alt="{{ event.name }} flyer"
-                 class="w-full h-auto object-cover">
-            {% endif %}
-        </article>
-        {% endfor %}
-    </div>
 </section>
 {% endif %}
 

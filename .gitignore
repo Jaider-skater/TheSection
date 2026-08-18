@@ -10,6 +10,9 @@ data/tickets.json
 data/legacy_members.json
 data/scanner_settings.json
 data/events.json
+data/exclusive_holds.json
+data/full_mailing_list.json
+data/member_invites.json
 data/flyers/
 data/*.tmp.*
 *.pkpass
