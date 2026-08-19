@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% if is_new %}New Event{% else %}Edit Event{% endif %} • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        input[type="date"],
+        input[type="time"] {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            display: block;
+            box-sizing: border-box;
+            -webkit-appearance: none;
+            appearance: none;
+            min-height: 2.75rem;
+        }
+    </style>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
     <div class="max-w-3xl mx-auto">
@@ -35,21 +48,21 @@
                 <p class="text-zinc-500 text-xs mt-1">Big title on the homepage. Leave blank to use the date.</p>
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-5 sm:gap-4">
+                <div class="min-w-0">
                     <label class="block text-sm text-zinc-400 mb-1" for="date">Date</label>
                     <input id="date" name="date" type="date" value="{{ event.date or '' }}"
-                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                           class="block w-full min-w-0 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-base text-white focus:outline-none focus:border-white">
                 </div>
-                <div>
+                <div class="min-w-0">
                     <label class="block text-sm text-zinc-400 mb-1" for="time_start">Doors / start</label>
                     <input id="time_start" name="time_start" type="time" value="{{ event.time_start or '' }}"
-                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                           class="block w-full min-w-0 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-base text-white focus:outline-none focus:border-white">
                 </div>
-                <div>
+                <div class="min-w-0">
                     <label class="block text-sm text-zinc-400 mb-1" for="time_end">End</label>
                     <input id="time_end" name="time_end" type="time" value="{{ event.time_end or '' }}"
-                           class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white">
+                           class="block w-full min-w-0 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-base text-white focus:outline-none focus:border-white">
                 </div>
             </div>
 
