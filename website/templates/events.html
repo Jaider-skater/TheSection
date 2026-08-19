@@ -51,7 +51,7 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Events</h1>
-                <p class="text-zinc-400 mt-1">On-sale events show on the homepage with Get Tickets. Coming-soon events appear as teasers.</p>
+                <p class="text-zinc-400 mt-1">On sale shows Get Tickets. Teaser is coming soon. Leave both off to keep an event stored for later.</p>
             </div>
             <a href="{{ url_for('admin_event_new') }}"
                class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm text-center">
@@ -92,6 +92,7 @@
                                     <input type="hidden" name="action" value="listing">
                                     <input type="hidden" name="event_id" value="{{ event.id }}">
                                     <input type="hidden" name="sales_open" value="{{ 1 if event.sales_open else 0 }}">
+                                    <input type="hidden" name="teaser" value="{{ 1 if event.teaser else 0 }}">
                                     <label class="listing-opt relative inline-flex items-center gap-2 cursor-pointer select-none">
                                         <input type="checkbox" class="js-listing-sale"
                                                {% if event.sales_open %}checked{% endif %}>
@@ -104,7 +105,7 @@
                                     </label>
                                     <label class="listing-opt relative inline-flex items-center gap-2 cursor-pointer select-none">
                                         <input type="checkbox" class="js-listing-teaser"
-                                               {% if not event.sales_open %}checked{% endif %}>
+                                               {% if event.teaser %}checked{% endif %}>
                                         <span class="listing-box" aria-hidden="true">
                                             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                                                 <path d="M3.2 8.3 6.4 11.4 12.8 4.4"/>
@@ -164,15 +165,15 @@
         document.querySelectorAll('.js-listing-form').forEach((form) => {
             const sale = form.querySelector('.js-listing-sale');
             const teaser = form.querySelector('.js-listing-teaser');
-            const hidden = form.querySelector('input[name="sales_open"]');
-            const sync = (pickedSale) => {
-                sale.checked = pickedSale;
-                teaser.checked = !pickedSale;
-                hidden.value = pickedSale ? '1' : '0';
+            const hiddenSale = form.querySelector('input[name="sales_open"]');
+            const hiddenTeaser = form.querySelector('input[name="teaser"]');
+            const sync = () => {
+                hiddenSale.value = sale.checked ? '1' : '0';
+                hiddenTeaser.value = teaser.checked ? '1' : '0';
                 form.requestSubmit();
             };
-            sale.addEventListener('change', () => sync(sale.checked));
-            teaser.addEventListener('change', () => sync(!teaser.checked));
+            sale.addEventListener('change', sync);
+            teaser.addEventListener('change', sync);
         });
     </script>
 </body>

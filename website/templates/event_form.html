@@ -60,7 +60,7 @@
         {% include 'staff_nav.html' %}
 
         <h1 class="text-3xl font-bold mb-2">{% if is_new %}New event{% else %}Edit event{% endif %}</h1>
-        <p class="text-zinc-400 mb-8">On-sale events appear on the homepage with Get Tickets. Coming-soon events show as teasers.</p>
+        <p class="text-zinc-400 mb-8">On sale appears on the homepage with Get Tickets. Teaser is coming soon. Leave both off to store it for later.</p>
 
         {% if error %}
         <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ error }}</div>
@@ -151,6 +151,7 @@
             <div>
                 <p class="block text-sm text-zinc-400 mb-2">Listing</p>
                 <input type="hidden" name="sales_open" value="{{ 1 if event.sales_open else 0 }}">
+                <input type="hidden" name="teaser" value="{{ 1 if event.teaser else 0 }}">
                 <div class="js-listing-form flex flex-wrap items-center gap-x-5 gap-y-2">
                     <label class="listing-opt relative inline-flex items-center gap-2 cursor-pointer select-none">
                         <input type="checkbox" class="js-listing-sale" {% if event.sales_open %}checked{% endif %}>
@@ -162,7 +163,7 @@
                         <span class="listing-label text-sm font-medium text-zinc-400">On sale</span>
                     </label>
                     <label class="listing-opt relative inline-flex items-center gap-2 cursor-pointer select-none">
-                        <input type="checkbox" class="js-listing-teaser" {% if not event.sales_open %}checked{% endif %}>
+                        <input type="checkbox" class="js-listing-teaser" {% if event.teaser %}checked{% endif %}>
                         <span class="listing-box" aria-hidden="true">
                             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M3.2 8.3 6.4 11.4 12.8 4.4"/>
@@ -171,7 +172,7 @@
                         <span class="listing-label text-sm font-medium text-zinc-400">Teaser</span>
                     </label>
                 </div>
-                <p class="text-zinc-500 text-xs mt-2">On sale shows Get Tickets. Teaser is coming soon only.</p>
+                <p class="text-zinc-500 text-xs mt-2">On sale shows Get Tickets. Teaser is coming soon. Neither keeps it stored for later.</p>
             </div>
 
             <div class="flex flex-wrap gap-3 pt-2">
@@ -189,14 +190,14 @@
             const form = group.closest('form');
             const sale = group.querySelector('.js-listing-sale');
             const teaser = group.querySelector('.js-listing-teaser');
-            const hidden = form.querySelector('input[name="sales_open"]');
-            const sync = (pickedSale) => {
-                sale.checked = pickedSale;
-                teaser.checked = !pickedSale;
-                hidden.value = pickedSale ? '1' : '0';
+            const hiddenSale = form.querySelector('input[name="sales_open"]');
+            const hiddenTeaser = form.querySelector('input[name="teaser"]');
+            const sync = () => {
+                hiddenSale.value = sale.checked ? '1' : '0';
+                hiddenTeaser.value = teaser.checked ? '1' : '0';
             };
-            sale.addEventListener('change', () => sync(sale.checked));
-            teaser.addEventListener('change', () => sync(!teaser.checked));
+            sale.addEventListener('change', sync);
+            teaser.addEventListener('change', sync);
         });
     </script>
 </body>

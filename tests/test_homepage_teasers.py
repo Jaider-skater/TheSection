@@ -164,6 +164,7 @@ class HomepageTeaserTests(unittest.TestCase):
                 'action': 'listing',
                 'event_id': 'halloween-2026',
                 'sales_open': '0',
+                'teaser': '1',
             },
             follow_redirects=True,
         )
@@ -186,6 +187,7 @@ class HomepageTeaserTests(unittest.TestCase):
                 'action': 'listing',
                 'event_id': 'nye-2026',
                 'sales_open': '1',
+                'teaser': '0',
             },
             follow_redirects=True,
         )
@@ -194,6 +196,45 @@ class HomepageTeaserTests(unittest.TestCase):
         self.assertEqual([event['id'] for event in thesection.list_on_sale_events()], ['nye-2026'])
         self.assertEqual(thesection.list_teaser_events(), [])
         self.assertIn(b'is on sale', resp.data)
+
+    def test_unlisted_event_is_stored_not_shown(self):
+        thesection.save_events([
+            thesection.normalize_event({
+                'id': 'held-2026',
+                'name': 'Held Night',
+                'headline': 'November 1st',
+                'date': '2026-11-01',
+                'sales_open': False,
+                'teaser': False,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            }),
+        ])
+
+        self.assertEqual(thesection.list_on_sale_events(), [])
+        self.assertEqual(thesection.list_teaser_events(), [])
+        html = self.app.test_client().get('/').get_data(as_text=True)
+        self.assertNotIn('November 1st', html)
+        self.assertNotIn('Held Night', html)
+
+        client = self._admin_client()
+        token = client.get('/admin/events').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/events',
+            data={
+                'csrf_token': token,
+                'action': 'listing',
+                'event_id': 'held-2026',
+                'sales_open': '0',
+                'teaser': '0',
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(resp.status_code, 200)
+        event = thesection.get_event('held-2026')
+        self.assertFalse(thesection.event_is_sales_open(event))
+        self.assertFalse(thesection.event_is_teaser(event))
+        self.assertIn(b'saved for later', resp.data)
+        self.assertIn(b'Held Night', resp.data)
 
 
 if __name__ == '__main__':

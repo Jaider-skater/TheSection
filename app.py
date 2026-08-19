@@ -2332,6 +2332,19 @@ def event_is_sales_open(event):
     return coerce_sales_open(event.get('sales_open'), default=True)
 
 
+def resolve_event_teaser(data, sales_open):
+    """Old events with no teaser field were coming-soon whenever they were not on sale."""
+    if isinstance(data, dict) and 'teaser' in data:
+        return coerce_sales_open(data.get('teaser'), default=False)
+    return not sales_open
+
+
+def event_is_teaser(event):
+    if not event:
+        return False
+    return coerce_sales_open(event.get('teaser'), default=False)
+
+
 def _day_ordinal(day):
     if 10 <= day % 100 <= 20:
         suffix = 'th'
@@ -2434,6 +2447,7 @@ def normalize_event(raw):
     ticket_cap = parse_max_capacity(data.get('ticket_cap'))
     vip_cap = parse_max_capacity(data.get('vip_cap'))
     sales_open = coerce_sales_open(data.get('sales_open'), default=True)
+    teaser = resolve_event_teaser(data, sales_open)
     return {
         'id': event_id,
         'name': (data.get('name') or '').strip() or 'Untitled event',
@@ -2449,6 +2463,7 @@ def normalize_event(raw):
         'ticket_cap': ticket_cap,
         'vip_cap': vip_cap,
         'sales_open': sales_open,
+        'teaser': teaser,
         'created_at': data.get('created_at') or datetime.now(timezone.utc).isoformat(),
         'updated_at': data.get('updated_at') or data.get('created_at') or datetime.now(timezone.utc).isoformat(),
     }
@@ -2464,6 +2479,7 @@ def event_display(event):
     remaining = None if not cap else max(0, cap - sold)
     sold_out = bool(cap and remaining == 0)
     sales_open = event_is_sales_open(event)
+    teaser = event_is_teaser(event)
     return {
         **event,
         'headline_display': headline,
@@ -2477,6 +2493,7 @@ def event_display(event):
         'tickets_remaining': remaining,
         'sold_out': sold_out,
         'sales_open': sales_open,
+        'teaser': teaser,
         'can_buy': sales_open and not sold_out,
     }
 
@@ -2524,7 +2541,7 @@ def list_teaser_events():
     today = today_iso()
     teasers = []
     for event in load_events():
-        if event_is_sales_open(event):
+        if event_is_sales_open(event) or not event_is_teaser(event):
             continue
         date_value = (event.get('date') or '')[:10]
         if date_value and date_value < today:
@@ -4357,7 +4374,8 @@ def event_payload_from_form(form, existing=None):
         'details': form.get('details'),
         'ticket_cap': form.get('ticket_cap'),
         'vip_cap': form.get('vip_cap'),
-        'sales_open': coerce_sales_open(form.get('sales_open'), default=True),
+        'sales_open': coerce_sales_open(form.get('sales_open'), default=False),
+        'teaser': coerce_sales_open(form.get('teaser'), default=False),
     }
     if existing:
         payload['id'] = existing.get('id')
@@ -4390,13 +4408,17 @@ def admin_events():
         elif action == 'listing' and event_id and get_event(event_id):
             event = get_event(event_id)
             sales_open = coerce_sales_open(request.form.get('sales_open'), default=False)
-            upsert_event({**event, 'sales_open': sales_open}, event_id=event_id)
+            teaser = coerce_sales_open(request.form.get('teaser'), default=False)
+            upsert_event({**event, 'sales_open': sales_open, 'teaser': teaser}, event_id=event_id)
+            name = event.get('name') or 'Event'
             if sales_open:
-                success = f'{event.get("name") or "Event"} is on sale.'
+                success = f'{name} is on sale.'
                 if not get_featured_event_id():
                     set_featured_event_id(event_id)
+            elif teaser:
+                success = f'{name} is a teaser.'
             else:
-                success = f'{event.get("name") or "Event"} is a teaser.'
+                success = f'{name} is saved for later.'
         elif action == 'delete' and event_id:
             event = get_event(event_id)
             if not event:
@@ -4482,6 +4504,7 @@ def admin_event_form(existing=None):
         'ticket_cap': '',
         'vip_cap': '',
         'sales_open': True,
+        'teaser': False,
         'flyer_url': None,
     }
     if existing:
