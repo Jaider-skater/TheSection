@@ -10,7 +10,9 @@
             </button>
             <div data-site-menu-dropdown
                  class="hidden absolute right-0 mt-2 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-lg py-2 text-left">
+                {% if request.endpoint != 'home' %}
                 <a href="/" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Home</a>
+                {% endif %}
                 <a href="{{ url_for('legacy_portal') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Member Portal</a>
                 {% if show_staff_nav %}
                 <a href="{{ url_for('verify_ticket') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Door Scanner</a>
