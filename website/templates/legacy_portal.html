@@ -180,17 +180,17 @@
             {% if saved_ticket_details %}
             <ul class="space-y-3">
                 {% for ticket in saved_ticket_details %}
-                <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3">
+                <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-950 border-2 rounded-xl px-4 py-3 {% if ticket.scanned %}border-red-500{% else %}border-emerald-500{% endif %}">
                     <div>
                         <span class="font-mono text-sm">{{ ticket.ticket_id }}</span>
                         <span class="text-zinc-500 text-xs ml-2">
                             {{ ticket.quantity }}× {{ 'VIP' if ticket.ticket_type == 'vip' else 'GA' }}
                             {% if ticket.event_name %} · {{ ticket.event_name }}{% endif %}
                         </span>
-                        {% if not ticket.current_event %}
-                        <span class="text-red-400/80 text-xs ml-2">· Previous event</span>
-                        {% elif ticket.scanned %}
-                        <span class="text-zinc-500 text-xs ml-2">· Used at door</span>
+                        {% if ticket.scanned %}
+                        <span class="text-red-400 text-xs ml-2">· Used at door</span>
+                        {% elif not ticket.current_event %}
+                        <span class="text-zinc-500 text-xs ml-2">· Previous event</span>
                         {% endif %}
                     </div>
                     <div class="flex items-center gap-3">

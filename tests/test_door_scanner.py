@@ -104,6 +104,18 @@ class DoorScannerTests(unittest.TestCase):
         # Second run is a no-op
         self.assertEqual(thesection.apply_one_time_unused_ticket_reset(), 0)
 
+    def test_sales_counter_reset_ignores_old_purchases(self):
+        thesection.save_tickets([{
+            **self._ticket('OLD3', 'halloween-2026'),
+            'purchased_at': '2026-01-01T00:00:00+00:00',
+            'quantity': 4,
+        }])
+        thesection.set_door_event_id('halloween-2026')
+        self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 4)
+        self.assertTrue(thesection.apply_one_time_sales_counter_reset())
+        self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 0)
+        self.assertFalse(thesection.apply_one_time_sales_counter_reset())
+
 
 if __name__ == '__main__':
     unittest.main()

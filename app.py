@@ -2857,6 +2857,7 @@ def set_max_vip_capacity(value):
 
 
 SCAN_RESET_TOKEN = 'unused-after-door-event-fix-1'
+SALES_RESET_TOKEN = 'sales-counter-zero-1'
 
 
 def apply_one_time_unused_ticket_reset():
@@ -2893,9 +2894,24 @@ def apply_one_time_unused_ticket_reset():
     return cleared
 
 
+def apply_one_time_sales_counter_reset():
+    """Zero the sold counter without deleting tickets. New sales still count."""
+    settings = load_scanner_settings()
+    if settings.get('sales_reset_applied') == SALES_RESET_TOKEN:
+        return False
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        settings['sales_epoch'] = datetime.now(timezone.utc).isoformat()
+        settings['sales_reset_applied'] = SALES_RESET_TOKEN
+        save_scanner_settings(settings)
+    print('Ticket sold counter reset to 0')
+    return True
+
+
 try:
     seed_default_event()
     apply_one_time_unused_ticket_reset()
+    apply_one_time_sales_counter_reset()
 except Exception as exc:
     print('Event seed skipped:', exc)
 
@@ -2933,6 +2949,8 @@ def compute_ticket_sales_counts(event_id=None):
             if not ticket_belongs_to_event(ticket, target):
                 continue
         elif not ticket_belongs_to_current_event(ticket):
+            continue
+        if not ticket_counts_for_current_sales_period(ticket.get('purchased_at')):
             continue
         qty = int(ticket.get('quantity') or 1)
         if ticket.get('ticket_type') == 'vip':
@@ -3882,22 +3900,12 @@ def scanner_settings():
 
     if request.method == 'POST':
         data = request.get_json() or {}
-        max_capacity = get_max_capacity()
-        max_vip_capacity = get_max_vip_capacity()
-        if 'max_capacity' in data:
-            max_capacity = set_max_capacity(data.get('max_capacity'))
-        if 'max_vip_capacity' in data:
-            max_vip_capacity = set_max_vip_capacity(data.get('max_vip_capacity'))
         if 'door_event_id' in data or 'current_event_id' in data:
             chosen = data.get('door_event_id', data.get('current_event_id'))
             if chosen and get_event(chosen):
                 set_door_event_id(chosen)
         totals = get_admission_totals()
-        return jsonify({
-            'max_capacity': max_capacity,
-            'max_vip_capacity': max_vip_capacity,
-            **totals,
-        })
+        return jsonify(totals)
 
     return jsonify({
         'max_capacity': get_max_capacity(),

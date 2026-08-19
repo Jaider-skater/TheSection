@@ -37,22 +37,6 @@
         </div>
 
         <div class="mb-4 flex flex-col items-center gap-2 text-xs">
-            <div class="flex items-center justify-center gap-2 flex-wrap">
-                <label for="max-capacity-input" class="text-zinc-500">Ticket cap</label>
-                <input type="number"
-                       id="max-capacity-input"
-                       min="1"
-                       step="1"
-                       placeholder="No limit"
-                       value="{{ admission_totals.max_capacity or '' }}"
-                       class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
-                <button type="button"
-                        onclick="saveMaxCapacity()"
-                        class="text-zinc-400 hover:text-white transition-colors">
-                    Save
-                </button>
-            </div>
-            <p id="sales-progress" class="hidden text-[10px] text-zinc-500 tabular-nums"></p>
             <div id="door-event-banner" class="w-full mb-1 rounded-2xl border-2 border-white bg-zinc-900 px-4 py-3">
                 <p class="text-[10px] uppercase tracking-[2px] text-zinc-400">Scanning for</p>
                 <p id="door-event-label" class="text-2xl font-bold leading-tight">Pick tonight’s event</p>
@@ -63,21 +47,6 @@
                         onchange="saveDoorEvent()"
                         class="max-w-[220px] bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
                 </select>
-            </div>
-            <div class="flex items-center justify-center gap-2 flex-wrap">
-                <label for="max-vip-capacity-input" class="text-zinc-500">VIP cap</label>
-                <input type="number"
-                       id="max-vip-capacity-input"
-                       min="1"
-                       step="1"
-                       placeholder="No limit"
-                       value="{{ admission_totals.max_vip_capacity or '' }}"
-                       class="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
-                <button type="button"
-                        onclick="saveMaxVipCapacity()"
-                        class="text-zinc-400 hover:text-white transition-colors">
-                    Save
-                </button>
             </div>
             <div class="flex items-center justify-center gap-3 flex-wrap">
                 <button type="button"
@@ -137,12 +106,9 @@
         document.getElementById('total-vip').textContent = totals.vip;
         document.getElementById('total-all').textContent = totals.total;
 
-        const salesProgressEl = document.getElementById('sales-progress');
         const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
         const vipBannerEl = document.getElementById('vip-capacity-banner');
-        const maxInput = document.getElementById('max-capacity-input');
-        const maxVipInput = document.getElementById('max-vip-capacity-input');
         const doorSelect = document.getElementById('door-event-select');
         if (doorSelect && document.activeElement !== doorSelect) {
             const events = Array.isArray(totals.events) ? totals.events : [];
@@ -168,22 +134,6 @@
             doorLabel.textContent = totals.door_event_name || 'Pick tonight’s event';
         }
 
-        if (maxInput && document.activeElement !== maxInput) {
-            maxInput.value = totals.max_capacity || '';
-        }
-        if (maxVipInput && document.activeElement !== maxVipInput) {
-            maxVipInput.value = totals.max_vip_capacity || '';
-        }
-
-        if (salesProgressEl) {
-            if (totals.max_capacity) {
-                const sold = totals.tickets_sold ?? 0;
-                salesProgressEl.textContent = `${sold} / ${totals.max_capacity} sold`;
-                salesProgressEl.classList.remove('hidden');
-            } else {
-                salesProgressEl.classList.add('hidden');
-            }
-        }
         if (vipProgressEl) {
             if (totals.max_vip_capacity) {
                 vipProgressEl.textContent = `${totals.vip} / ${totals.max_vip_capacity}`;
@@ -326,30 +276,6 @@
             alert(`Failed to save ${errorLabel}. Check your connection and try again.`);
             return null;
         }
-    }
-
-    async function saveMaxCapacity() {
-        const input = document.getElementById('max-capacity-input');
-        const raw = (input.value || '').trim();
-        const value = raw === '' ? null : Number(raw);
-        if (value !== null && (!Number.isFinite(value) || value < 1)) {
-            alert('Enter a whole number of 1 or higher, or leave blank for no limit.');
-            return;
-        }
-        const totals = await saveScannerSetting({ max_capacity: value }, 'ticket cap');
-        if (totals && !totals.max_capacity) input.value = '';
-    }
-
-    async function saveMaxVipCapacity() {
-        const input = document.getElementById('max-vip-capacity-input');
-        const raw = (input.value || '').trim();
-        const value = raw === '' ? null : Number(raw);
-        if (value !== null && (!Number.isFinite(value) || value < 1)) {
-            alert('Enter a whole number of 1 or higher for VIP cap, or leave blank for no limit.');
-            return;
-        }
-        const totals = await saveScannerSetting({ max_vip_capacity: value }, 'VIP cap');
-        if (totals && !totals.max_vip_capacity) input.value = '';
     }
 
     async function saveDoorEvent() {
