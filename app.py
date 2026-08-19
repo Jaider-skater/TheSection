@@ -4387,6 +4387,16 @@ def admin_events():
         if action == 'door' and event_id and get_event(event_id):
             set_door_event_id(event_id)
             success = 'Door scanner will check tickets for this event.'
+        elif action == 'listing' and event_id and get_event(event_id):
+            event = get_event(event_id)
+            sales_open = coerce_sales_open(request.form.get('sales_open'), default=False)
+            upsert_event({**event, 'sales_open': sales_open}, event_id=event_id)
+            if sales_open:
+                success = f'{event.get("name") or "Event"} is on sale.'
+                if not get_featured_event_id():
+                    set_featured_event_id(event_id)
+            else:
+                success = f'{event.get("name") or "Event"} is a teaser.'
         elif action == 'delete' and event_id:
             event = get_event(event_id)
             if not event:

@@ -128,6 +128,73 @@ class HomepageTeaserTests(unittest.TestCase):
         self.assertIn('sau', html)
         self.assertNotIn('Get Tickets', html)
 
+    def _admin_client(self):
+        client = self.app.test_client()
+        token = client.get('/admin/login').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/login',
+            data={'password': thesection.admin_key, 'csrf_token': token},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        return client
+
+    def test_events_page_shows_on_sale_and_teaser_checkboxes(self):
+        thesection.save_events([
+            self._event('halloween-2026', 'Halloween', '2026-10-24', True),
+            self._event('nye-2026', 'New Year', '2026-12-31', False),
+        ])
+        html = self._admin_client().get('/admin/events').get_data(as_text=True)
+        self.assertIn('js-listing-sale', html)
+        self.assertIn('js-listing-teaser', html)
+        self.assertGreaterEqual(html.count('On sale'), 1)
+        self.assertGreaterEqual(html.count('Teaser'), 1)
+        self.assertIn('listing-box', html)
+
+    def test_listing_checkbox_marks_event_as_teaser(self):
+        thesection.save_events([
+            self._event('halloween-2026', 'Halloween', '2026-10-24', True),
+        ])
+        client = self._admin_client()
+        token = client.get('/admin/events').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/events',
+            data={
+                'csrf_token': token,
+                'action': 'listing',
+                'event_id': 'halloween-2026',
+                'sales_open': '0',
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(thesection.event_is_sales_open(thesection.get_event('halloween-2026')))
+        self.assertEqual([event['id'] for event in thesection.list_teaser_events()], ['halloween-2026'])
+        self.assertEqual(thesection.list_on_sale_events(), [])
+        self.assertIn(b'is a teaser', resp.data)
+
+    def test_listing_checkbox_puts_teaser_on_sale(self):
+        thesection.save_events([
+            self._event('nye-2026', 'New Year', '2026-12-31', False),
+        ])
+        client = self._admin_client()
+        token = client.get('/admin/events').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/events',
+            data={
+                'csrf_token': token,
+                'action': 'listing',
+                'event_id': 'nye-2026',
+                'sales_open': '1',
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(thesection.event_is_sales_open(thesection.get_event('nye-2026')))
+        self.assertEqual([event['id'] for event in thesection.list_on_sale_events()], ['nye-2026'])
+        self.assertEqual(thesection.list_teaser_events(), [])
+        self.assertIn(b'is on sale', resp.data)
+
 
 if __name__ == '__main__':
     unittest.main()

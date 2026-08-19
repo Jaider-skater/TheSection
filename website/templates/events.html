@@ -5,6 +5,44 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Events • The Section</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .listing-opt input {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .listing-box {
+            width: 1.15rem;
+            height: 1.15rem;
+            border-radius: 0.3rem;
+            border: 2px solid #52525b;
+            background: #18181b;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: background-color .15s ease, border-color .15s ease;
+        }
+        .listing-box svg {
+            width: 0.7rem;
+            height: 0.7rem;
+            color: transparent;
+            transition: color .15s ease;
+        }
+        .listing-opt input:checked + .listing-box {
+            background: #22c55e;
+            border-color: #22c55e;
+        }
+        .listing-opt input:checked + .listing-box svg {
+            color: #fff;
+        }
+        .listing-opt:hover .listing-box {
+            border-color: #a1a1aa;
+        }
+        .listing-opt input:checked ~ .listing-label {
+            color: #86efac;
+        }
+    </style>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
     <div class="max-w-5xl mx-auto">
@@ -48,12 +86,33 @@
                                     {% if event.venue %} · {{ event.venue }}{% endif %}
                                 </p>
                             </div>
-                            <div class="flex flex-wrap gap-2">
-                                {% if event.sales_open %}
-                                <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-white text-black font-semibold">On sale</span>
-                                {% else %}
-                                <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-zinc-800 text-zinc-400">Coming soon</span>
-                                {% endif %}
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                                <form method="POST" class="flex flex-wrap items-center gap-x-4 gap-y-2 js-listing-form">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <input type="hidden" name="action" value="listing">
+                                    <input type="hidden" name="event_id" value="{{ event.id }}">
+                                    <input type="hidden" name="sales_open" value="{{ 1 if event.sales_open else 0 }}">
+                                    <label class="listing-opt relative inline-flex items-center gap-2 cursor-pointer select-none">
+                                        <input type="checkbox" class="js-listing-sale"
+                                               {% if event.sales_open %}checked{% endif %}>
+                                        <span class="listing-box" aria-hidden="true">
+                                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M3.2 8.3 6.4 11.4 12.8 4.4"/>
+                                            </svg>
+                                        </span>
+                                        <span class="listing-label text-[11px] uppercase tracking-wider font-semibold text-zinc-400">On sale</span>
+                                    </label>
+                                    <label class="listing-opt relative inline-flex items-center gap-2 cursor-pointer select-none">
+                                        <input type="checkbox" class="js-listing-teaser"
+                                               {% if not event.sales_open %}checked{% endif %}>
+                                        <span class="listing-box" aria-hidden="true">
+                                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M3.2 8.3 6.4 11.4 12.8 4.4"/>
+                                            </svg>
+                                        </span>
+                                        <span class="listing-label text-[11px] uppercase tracking-wider font-semibold text-zinc-400">Teaser</span>
+                                    </label>
+                                </form>
                                 {% if event.is_door %}
                                 <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full bg-emerald-400/20 text-emerald-300 font-semibold">Door</span>
                                 {% endif %}
@@ -101,5 +160,20 @@
         </div>
         {% endif %}
     </div>
+    <script>
+        document.querySelectorAll('.js-listing-form').forEach((form) => {
+            const sale = form.querySelector('.js-listing-sale');
+            const teaser = form.querySelector('.js-listing-teaser');
+            const hidden = form.querySelector('input[name="sales_open"]');
+            const sync = (pickedSale) => {
+                sale.checked = pickedSale;
+                teaser.checked = !pickedSale;
+                hidden.value = pickedSale ? '1' : '0';
+                form.requestSubmit();
+            };
+            sale.addEventListener('change', () => sync(sale.checked));
+            teaser.addEventListener('change', () => sync(!teaser.checked));
+        });
+    </script>
 </body>
 </html>
