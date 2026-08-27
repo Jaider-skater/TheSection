@@ -116,11 +116,14 @@
                                                                         <input type="hidden" name="action" value="edit_email">
                                     <input type="hidden" name="email" value="{{ invite.email }}">
                                     <input type="email" name="new_email" value="{{ invite.email }}" required
-                                           class="w-full min-w-0 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 py-1 font-mono text-xs text-white focus:outline-none">
+                                           {% if invite.protected %}readonly{% endif %}
+                                           class="w-full min-w-0 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 py-1 font-mono text-xs text-white focus:outline-none{% if invite.protected %} cursor-default{% endif %}">
+                                    {% if not invite.protected %}
                                     <button type="submit" title="Save"
                                             class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-400 hover:text-white px-1.5 py-1">
                                         Save
                                     </button>
+                                    {% endif %}
                                 </form>
                                 {% if invite.status == 'claimed' %}
                                 <span class="shrink-0 text-[10px] rounded-full bg-emerald-950 border border-emerald-800 px-1.5 py-0.5 text-emerald-300">Joined</span>
@@ -132,15 +135,19 @@
                                 <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400">Pending</span>
                                 {% endif %}
                                 <span class="shrink-0 hidden sm:inline text-[10px] text-zinc-600 tabular-nums" title="Added">{{ invite.added_at | local_time }}</span>
+                                {% if invite.protected %}
+                                <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400" title="This address cannot be removed">Locked</span>
+                                {% else %}
                                 <form method="POST" action="/admin/mailing-list"
                                       class="shrink-0"
-                                      onsubmit="return confirm('Remove {{ invite.email }} from exclusive list?');">
+                                      onsubmit="return confirm({{ ('Remove ' ~ invite.email ~ ' from exclusive list?')|tojson }});">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                                                         <input type="hidden" name="action" value="remove_email">
                                     <input type="hidden" name="email" value="{{ invite.email }}">
                                     <button type="submit" title="Delete"
                                             class="text-[10px] text-zinc-600 hover:text-red-400 px-1 py-1">✕</button>
                                 </form>
+                                {% endif %}
                             </div>
                         </li>
                         {% endfor %}
@@ -202,11 +209,14 @@
                                                                         <input type="hidden" name="action" value="edit_full_email">
                                     <input type="hidden" name="email" value="{{ row.email }}">
                                     <input type="email" name="new_email" value="{{ row.email }}" required
-                                           class="w-full min-w-0 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 py-1 font-mono text-xs text-white focus:outline-none">
+                                           {% if row.protected %}readonly{% endif %}
+                                           class="w-full min-w-0 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 py-1 font-mono text-xs text-white focus:outline-none{% if row.protected %} cursor-default{% endif %}">
+                                    {% if not row.protected %}
                                     <button type="submit" title="Save"
                                             class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-400 hover:text-white px-1.5 py-1">
                                         Save
                                     </button>
+                                    {% endif %}
                                 </form>
                                 <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400 capitalize">{{ row.source }}</span>
                                 {% if row.has_account %}
@@ -215,15 +225,19 @@
                                 <span class="shrink-0 text-[10px] text-zinc-600 hidden sm:inline">No acct</span>
                                 {% endif %}
                                 <span class="shrink-0 hidden md:inline text-[10px] text-zinc-600 tabular-nums">{{ row.added_at | local_time }}</span>
+                                {% if row.protected %}
+                                <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400" title="This address cannot be removed">Locked</span>
+                                {% else %}
                                 <form method="POST" action="/admin/mailing-list"
                                       class="shrink-0"
-                                      onsubmit="return confirm('Remove {{ row.email }} from full list?');">
+                                      onsubmit="return confirm({{ ('Remove ' ~ row.email ~ ' from full list?')|tojson }});">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                                                         <input type="hidden" name="action" value="remove_full_email">
                                     <input type="hidden" name="email" value="{{ row.email }}">
                                     <button type="submit" title="Delete"
                                             class="text-[10px] text-zinc-600 hover:text-red-400 px-1 py-1">✕</button>
                                 </form>
+                                {% endif %}
                             </div>
                         </li>
                         {% endfor %}

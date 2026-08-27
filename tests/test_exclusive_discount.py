@@ -255,8 +255,11 @@ class ExclusiveDiscountTests(unittest.TestCase):
 
     def test_is_valid_email(self):
         self.assertTrue(thesection.is_valid_email('a@b.co'))
+        self.assertTrue(thesection.is_valid_email('user.name+tag@sub.domain.co.uk'))
         self.assertFalse(thesection.is_valid_email(''))
         self.assertFalse(thesection.is_valid_email('nope'))
+        self.assertFalse(thesection.is_valid_email("foo@x.com');alert(1);//"))
+        self.assertFalse(thesection.is_valid_email('<a@b.co>'))
         self.assertFalse(thesection.is_valid_email('a@b'))
 
 

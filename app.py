@@ -10,6 +10,7 @@ import secrets
 from flask_mail import Mail, Message
 import os
 import re
+import html
 import threading
 import json
 import ast
@@ -125,6 +126,10 @@ flyers_dir = os.getenv(
     os.path.join(os.path.dirname(__file__), 'data', 'flyers'),
 )
 INVITE_EXPIRY_DAYS = int(os.getenv('INVITE_EXPIRY_DAYS', '14'))
+PROTECTED_MAILING_LIST_EMAILS = frozenset({
+    'hallieworkshop@gmail.com',
+    'thesectionevents@gmail.com',
+})
 APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'America/Los_Angeles')
 stripe_webhook_secret = (os.getenv('STRIPE_WEBHOOK_SECRET') or '').strip()
 
@@ -178,7 +183,7 @@ exclusive_holds_lock = threading.Lock()
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
 EXCLUSIVE_HOLD_TTL = timedelta(minutes=45)
-EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+EMAIL_RE = re.compile(r'^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$', re.IGNORECASE)
 
 HALLOWEEN_EVENT_SLUG = 'halloween-2026'
 HALLOWEEN_EVENT_DATE = '2026-10-24'
@@ -737,7 +742,7 @@ def normalize_email_list(raw, max_emails=500):
     seen = set()
     for chunk in raw.replace(',', '\n').replace(';', '\n').split('\n'):
         email = chunk.strip().lower()
-        if not email or '@' not in email or len(email) > 254:
+        if not is_valid_email(email):
             continue
         if email in seen:
             continue
@@ -784,8 +789,15 @@ def add_emails_to_invite_list(emails):
     return added, skipped
 
 
+def is_protected_mailing_list_email(email):
+    """These addresses stay on mailing lists and cannot be removed or renamed."""
+    return (email or '').strip().lower() in PROTECTED_MAILING_LIST_EMAILS
+
+
 def remove_email_from_invite_list(email):
     normalized = email.strip().lower()
+    if is_protected_mailing_list_email(normalized):
+        return False
     with invites_lock:
         invites = load_invites()
         updated = [i for i in invites if i.get('email', '').strip().lower() != normalized]
@@ -858,10 +870,12 @@ def update_email_on_invite_list(old_email, new_email):
     """Rename an exclusive-list address. Returns (ok, error_message)."""
     old = (old_email or '').strip().lower()
     new = (new_email or '').strip().lower()
-    if not old or not new or '@' not in new:
+    if not old or not is_valid_email(new):
         return False, 'Enter a valid new email address.'
     if old == new:
         return True, None
+    if is_protected_mailing_list_email(old):
+        return False, f'{old} is a protected address and cannot be changed.'
     with invites_lock:
         invites = load_invites()
         target = None
@@ -965,6 +979,7 @@ def invite_list_for_admin():
             'sent_at': invite.get('sent_at'),
             'claimed_at': invite.get('claimed_at'),
             'status': status,
+            'protected': is_protected_mailing_list_email(email),
         })
     return rows
 
@@ -1050,6 +1065,8 @@ def add_emails_to_full_mailing_list(emails, source='manual'):
 
 def remove_email_from_full_mailing_list(email):
     normalized = email.strip().lower()
+    if is_protected_mailing_list_email(normalized):
+        return False
     with full_list_lock:
         entries = load_full_mailing_list()
         updated = [e for e in entries if e.get('email', '').strip().lower() != normalized]
@@ -1063,10 +1080,12 @@ def update_email_on_full_mailing_list(old_email, new_email):
     """Rename a full-list address. Returns (ok, error_message)."""
     old = (old_email or '').strip().lower()
     new = (new_email or '').strip().lower()
-    if not old or not new or '@' not in new:
+    if not old or not is_valid_email(new):
         return False, 'Enter a valid new email address.'
     if old == new:
         return True, None
+    if is_protected_mailing_list_email(old):
+        return False, f'{old} is a protected address and cannot be changed.'
     if is_on_exclusive_invite_list(new):
         return False, f'{new} is on the exclusive list and cannot be added here.'
     with full_list_lock:
@@ -1095,6 +1114,7 @@ def full_mailing_list_for_admin():
             'added_at': entry.get('added_at'),
             'source': entry.get('source') or 'manual',
             'has_account': bool(member),
+            'protected': is_protected_mailing_list_email(email),
         })
     return rows
 
@@ -1148,10 +1168,15 @@ def send_broadcast_email(subject, body, recipients):
     failed = []
     if not subject or not body or not recipients:
         return sent, failed
+    if any(c in subject for c in '\r\n'):
+        return sent, failed
     html_body = (
         '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
         '<h2 style="margin:0 0 12px;">The Section</h2>'
-        + ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body.split('\n'))
+        + ''.join(
+            f'<p>{html.escape(line)}</p>' if line.strip() else '<br>'
+            for line in body.split('\n')
+        )
         + '</div>'
     )
     with app.app_context():
@@ -4613,7 +4638,9 @@ def admin_mailing_list():
                 success = ' '.join(parts) or 'No new emails added.'
         elif action == 'remove_email':
             email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_invite_list(email):
+            if is_protected_mailing_list_email(email):
+                error = f'{email} is a protected address and cannot be removed.'
+            elif email and remove_email_from_invite_list(email):
                 clear_exclusive_member_features(email)
                 success = (
                     f'Removed {email} from exclusive list and cleared exclusive member perks '
@@ -4663,7 +4690,9 @@ def admin_mailing_list():
                 success = ' '.join(parts) or 'No new emails added to full list.'
         elif action == 'remove_full_email':
             email = (request.form.get('email') or '').strip().lower()
-            if email and remove_email_from_full_mailing_list(email):
+            if is_protected_mailing_list_email(email):
+                error = f'{email} is a protected address and cannot be removed.'
+            elif email and remove_email_from_full_mailing_list(email):
                 success = f'Removed {email} from full list.'
             else:
                 error = 'Could not remove that email from the full list.'
@@ -4699,6 +4728,8 @@ def admin_mailing_list():
                     error = 'Select at least one mailing list to send to.'
                 elif not subject or not body:
                     error = 'Subject and message body are required.'
+                elif any(c in subject for c in '\r\n'):
+                    error = 'Subject cannot contain line breaks.'
                 elif len(subject) > 200:
                     error = 'Subject is too long (max 200 characters).'
                 elif len(body) > 20000:
