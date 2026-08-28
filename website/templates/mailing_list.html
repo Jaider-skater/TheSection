@@ -11,10 +11,131 @@
         .drawer-chevron { transition: transform 0.15s ease; }
         .drawer-header[aria-expanded="true"] .drawer-chevron { transform: rotate(180deg); }
         .email-row.hidden-by-search { display: none !important; }
+        .mail-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .mail-table th {
+            text-align: left;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #71717a;
+            padding: 8px 10px;
+            border-bottom: 1px solid #27272a;
+        }
+        .mail-table td {
+            padding: 8px 10px;
+            vertical-align: middle;
+            border-bottom: 1px solid #27272a;
+        }
+        .mail-table tr:last-child td { border-bottom: 0; }
+        .col-check { width: 28px; }
+        .col-status { width: 92px; }
+        .col-date { width: 148px; }
+        .col-actions { width: 118px; }
+        .col-type { width: 92px; }
+        dialog.confirm-dialog {
+            background: #18181b;
+            color: #fff;
+            border: 1px solid #3f3f46;
+            border-radius: 1rem;
+            padding: 0;
+            max-width: 28rem;
+            width: calc(100% - 2rem);
+        }
+        dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
     </style>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-4 sm:p-6">
-    <div class="max-w-3xl mx-auto">
+    {% macro status_pill(label, tone='zinc') %}
+        {% if tone == 'emerald' %}
+        <span class="shrink-0 text-[10px] rounded-full bg-emerald-950 border border-emerald-800 px-1.5 py-0.5 text-emerald-300">{{ label }}</span>
+        {% elif tone == 'amber' %}
+        <span class="shrink-0 text-[10px] rounded-full bg-amber-950 border border-amber-800 px-1.5 py-0.5 text-amber-200">{{ label }}</span>
+        {% elif tone == 'sky' %}
+        <span class="shrink-0 text-[10px] rounded-full bg-sky-950 border border-sky-800 px-1.5 py-0.5 text-sky-300">{{ label }}</span>
+        {% else %}
+        <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400">{{ label }}</span>
+        {% endif %}
+    {% endmacro %}
+
+    {% macro mailing_row(row, kind, index) %}
+        {% set edit_id = kind ~ '-edit-' ~ index %}
+        {% set bulk_id = 'bulk-' ~ kind %}
+        {% set edit_action = 'edit_email' if kind == 'exclusive' else 'edit_full_email' %}
+        {% set remove_action = 'remove_email' if kind == 'exclusive' else 'remove_full_email' %}
+        {% set list_label = 'exclusive list' if kind == 'exclusive' else 'full list' %}
+        <tr class="email-row hover:bg-zinc-900/80"
+            data-email="{{ row.email|lower }}"
+            data-protected="{{ '1' if row.protected else '0' }}">
+            <td class="col-check">
+                {% if row.protected %}
+                <span class="block w-4 h-4" title="Locked"></span>
+                {% else %}
+                <input type="checkbox" name="emails" value="{{ row.email }}" form="{{ bulk_id }}"
+                       class="row-check w-4 h-4 accent-white cursor-pointer"
+                       aria-label="Select {{ row.email }}">
+                {% endif %}
+            </td>
+            <td class="min-w-0">
+                <form id="{{ edit_id }}" method="POST" action="/admin/mailing-list">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="action" value="{{ edit_action }}">
+                    <input type="hidden" name="email" value="{{ row.email }}">
+                    <input type="email" name="new_email" value="{{ row.email }}" required
+                           data-original="{{ row.email }}"
+                           {% if row.protected %}readonly{% endif %}
+                           class="w-full min-w-0 h-8 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 font-mono text-xs text-white focus:outline-none{% if row.protected %} cursor-default text-zinc-300{% endif %}">
+                </form>
+            </td>
+            <td class="col-status">
+                {% if kind == 'exclusive' %}
+                    {% if row.protected %}
+                        {{ status_pill('Locked') }}
+                    {% elif row.status == 'claimed' %}
+                        {{ status_pill('Joined', 'emerald') }}
+                    {% elif row.status == 'account_exists' %}
+                        {{ status_pill('Account', 'amber') }}
+                    {% elif row.status == 'sent' %}
+                        {{ status_pill('Sent', 'sky') }}
+                    {% else %}
+                        {{ status_pill('Pending') }}
+                    {% endif %}
+                {% else %}
+                    {% if row.protected %}
+                        {{ status_pill('Locked') }}
+                    {% else %}
+                        {{ status_pill((row.source or 'manual')|capitalize) }}
+                    {% endif %}
+                {% endif %}
+            </td>
+            <td class="col-date hidden sm:table-cell text-[11px] text-zinc-500 tabular-nums whitespace-nowrap">
+                {{ row.added_at | local_time }}
+            </td>
+            <td class="col-actions">
+                {% if not row.protected %}
+                <div class="flex items-center justify-end gap-1">
+                    <button type="submit" form="{{ edit_id }}" data-save disabled
+                            class="text-[11px] font-semibold uppercase tracking-wide text-zinc-200 border border-zinc-700 rounded-md px-2 py-1 hover:border-white disabled:opacity-30 disabled:cursor-not-allowed">
+                        Save
+                    </button>
+                    <form method="POST" action="/admin/mailing-list"
+                          data-confirm-kind="remove"
+                          data-confirm-list="{{ list_label }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="{{ remove_action }}">
+                        <input type="hidden" name="email" value="{{ row.email }}">
+                        <button type="submit"
+                                class="text-[11px] text-zinc-500 hover:text-red-400 border border-transparent hover:border-red-900/70 rounded-md px-2 py-1">
+                            Remove
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+            </td>
+        </tr>
+    {% endmacro %}
+
+    <div class="max-w-4xl mx-auto">
         {% include 'staff_nav.html' %}
         <div class="mb-6">
             <h1 class="text-2xl font-bold">Mailing Lists</h1>
@@ -35,12 +156,14 @@
                    class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white">
         </div>
 
-        <!-- Broadcast -->
         <section class="bg-zinc-900 border border-white/10 rounded-2xl p-4 mb-6">
             <h2 class="text-base font-semibold mb-3">Send email</h2>
-            <form method="POST" action="/admin/mailing-list" id="broadcast-form" class="space-y-3">
+            <form method="POST" action="/admin/mailing-list" id="broadcast-form" class="space-y-3"
+                  data-confirm-kind="broadcast"
+                  data-exclusive-count="{{ invites|length }}"
+                  data-full-count="{{ full_list_count }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                <input type="hidden" name="action" value="send_broadcast">
+                <input type="hidden" name="action" value="send_broadcast">
                 <div class="flex flex-wrap gap-4 text-sm">
                     <label class="flex items-center gap-1.5 cursor-pointer">
                         <input type="checkbox" name="list_exclusive" value="1" class="accent-white">
@@ -62,8 +185,18 @@
             </form>
         </section>
 
-        <!-- Exclusive drawer -->
-        <div class="mb-3 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer>
+        <form id="bulk-exclusive" method="POST" action="/admin/mailing-list"
+              data-confirm-kind="remove-bulk" data-confirm-list="exclusive list">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="action" value="remove_emails">
+        </form>
+        <form id="bulk-full" method="POST" action="/admin/mailing-list"
+              data-confirm-kind="remove-bulk" data-confirm-list="full list">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="action" value="remove_full_emails">
+        </form>
+
+        <div class="mb-3 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="exclusive">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
                     aria-expanded="false"
@@ -86,16 +219,17 @@
                 <div class="p-3 space-y-3">
                     <div class="flex flex-col sm:flex-row gap-2">
                         <form method="POST" action="/admin/mailing-list" class="flex-1 flex flex-col sm:flex-row gap-2">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                        <input type="hidden" name="action" value="add_emails">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="add_emails">
                             <textarea name="emails" rows="2" required placeholder="Add emails (one per line)"
                                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-white"></textarea>
                             <button type="submit" class="shrink-0 px-3 py-1.5 bg-white text-black font-semibold rounded-lg text-xs hover:bg-zinc-200">Add</button>
                         </form>
                         {% if invites %}
-                        <form method="POST" action="/admin/mailing-list" class="shrink-0">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                        <input type="hidden" name="action" value="send_invites">
+                        <form method="POST" action="/admin/mailing-list" class="shrink-0"
+                              data-confirm-kind="invites" data-ready-count="{{ ready_count or 0 }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="send_invites">
                             <button type="submit"
                                     {% if ready_count is defined and ready_count == 0 %}disabled{% endif %}
                                     class="w-full sm:w-auto px-3 py-1.5 border border-zinc-500 text-zinc-200 font-semibold rounded-lg text-xs hover:border-white hover:text-white disabled:opacity-40 disabled:cursor-not-allowed">
@@ -106,52 +240,31 @@
                     </div>
 
                     {% if invites %}
-                    <ul class="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
-                        {% for invite in invites %}
-                        <li class="email-row bg-zinc-950/60 px-2.5 py-1.5" data-email="{{ invite.email|lower }}">
-                            <div class="flex items-center gap-2">
-                                <form method="POST" action="/admin/mailing-list"
-                                      class="flex flex-1 items-center gap-1.5 min-w-0">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                                        <input type="hidden" name="action" value="edit_email">
-                                    <input type="hidden" name="email" value="{{ invite.email }}">
-                                    <input type="email" name="new_email" value="{{ invite.email }}" required
-                                           {% if invite.protected %}readonly{% endif %}
-                                           class="w-full min-w-0 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 py-1 font-mono text-xs text-white focus:outline-none{% if invite.protected %} cursor-default{% endif %}">
-                                    {% if not invite.protected %}
-                                    <button type="submit" title="Save"
-                                            class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-400 hover:text-white px-1.5 py-1">
-                                        Save
-                                    </button>
-                                    {% endif %}
-                                </form>
-                                {% if invite.status == 'claimed' %}
-                                <span class="shrink-0 text-[10px] rounded-full bg-emerald-950 border border-emerald-800 px-1.5 py-0.5 text-emerald-300">Joined</span>
-                                {% elif invite.status == 'account_exists' %}
-                                <span class="shrink-0 text-[10px] rounded-full bg-amber-950 border border-amber-800 px-1.5 py-0.5 text-amber-200">Account</span>
-                                {% elif invite.status == 'sent' %}
-                                <span class="shrink-0 text-[10px] rounded-full bg-sky-950 border border-sky-800 px-1.5 py-0.5 text-sky-300">Sent</span>
-                                {% else %}
-                                <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400">Pending</span>
-                                {% endif %}
-                                <span class="shrink-0 hidden sm:inline text-[10px] text-zinc-600 tabular-nums" title="Added">{{ invite.added_at | local_time }}</span>
-                                {% if invite.protected %}
-                                <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400" title="This address cannot be removed">Locked</span>
-                                {% else %}
-                                <form method="POST" action="/admin/mailing-list"
-                                      class="shrink-0"
-                                      onsubmit="return confirm({{ ('Remove ' ~ invite.email ~ ' from exclusive list?')|tojson }});">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                                        <input type="hidden" name="action" value="remove_email">
-                                    <input type="hidden" name="email" value="{{ invite.email }}">
-                                    <button type="submit" title="Delete"
-                                            class="text-[10px] text-zinc-600 hover:text-red-400 px-1 py-1">✕</button>
-                                </form>
-                                {% endif %}
-                            </div>
-                        </li>
-                        {% endfor %}
-                    </ul>
+                    <div class="flex items-center justify-end gap-2 px-1">
+                        <span data-selected-count class="text-xs text-zinc-500"></span>
+                        <button type="submit" form="bulk-exclusive" data-bulk-remove disabled
+                                class="px-3 py-1.5 rounded-lg border border-zinc-600 text-xs font-semibold text-zinc-200 hover:border-red-400 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-600 disabled:hover:text-zinc-200">
+                            Remove selected
+                        </button>
+                    </div>
+                    <div class="border border-zinc-800 rounded-xl overflow-hidden max-h-[28rem] overflow-auto bg-zinc-950/40">
+                        <table class="mail-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-check"></th>
+                                    <th>Email</th>
+                                    <th class="col-status">Status</th>
+                                    <th class="col-date hidden sm:table-cell">Added</th>
+                                    <th class="col-actions"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for invite in invites %}
+                                {{ mailing_row(invite, 'exclusive', loop.index) }}
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                     {% if invite_days is defined %}
                     <p class="text-zinc-600 text-[10px] text-center">Invite links expire in {{ invite_days }} days</p>
                     {% endif %}
@@ -162,8 +275,7 @@
             </div>
         </div>
 
-        <!-- Full list drawer -->
-        <div class="mb-8 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer>
+        <div class="mb-8 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="full">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
                     aria-expanded="false"
@@ -182,15 +294,15 @@
                 <div class="p-3 space-y-3">
                     <div class="flex flex-col sm:flex-row gap-2">
                         <form method="POST" action="/admin/mailing-list" class="flex-1 flex flex-col sm:flex-row gap-2">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                        <input type="hidden" name="action" value="add_full_emails">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="add_full_emails">
                             <textarea name="emails" rows="2" required placeholder="Add emails (one per line)"
                                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-white"></textarea>
                             <button type="submit" class="shrink-0 px-3 py-1.5 bg-white text-black font-semibold rounded-lg text-xs hover:bg-zinc-200">Add</button>
                         </form>
                         <form method="POST" action="/admin/mailing-list" class="shrink-0">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                        <input type="hidden" name="action" value="sync_full_list">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="sync_full_list">
                             <button type="submit"
                                     class="w-full sm:w-auto px-3 py-1.5 border border-zinc-500 text-zinc-200 font-semibold rounded-lg text-xs hover:border-white hover:text-white">
                                 Sync members
@@ -199,56 +311,199 @@
                     </div>
 
                     {% if full_list %}
-                    <ul class="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
-                        {% for row in full_list %}
-                        <li class="email-row bg-zinc-950/60 px-2.5 py-1.5" data-email="{{ row.email|lower }}">
-                            <div class="flex items-center gap-2">
-                                <form method="POST" action="/admin/mailing-list"
-                                      class="flex flex-1 items-center gap-1.5 min-w-0">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                                        <input type="hidden" name="action" value="edit_full_email">
-                                    <input type="hidden" name="email" value="{{ row.email }}">
-                                    <input type="email" name="new_email" value="{{ row.email }}" required
-                                           {% if row.protected %}readonly{% endif %}
-                                           class="w-full min-w-0 bg-transparent border border-transparent hover:border-zinc-700 focus:border-zinc-500 rounded-md px-1.5 py-1 font-mono text-xs text-white focus:outline-none{% if row.protected %} cursor-default{% endif %}">
-                                    {% if not row.protected %}
-                                    <button type="submit" title="Save"
-                                            class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-400 hover:text-white px-1.5 py-1">
-                                        Save
-                                    </button>
-                                    {% endif %}
-                                </form>
-                                <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400 capitalize">{{ row.source }}</span>
-                                {% if row.has_account %}
-                                <span class="shrink-0 text-[10px] text-emerald-400 hidden sm:inline">Account</span>
-                                {% else %}
-                                <span class="shrink-0 text-[10px] text-zinc-600 hidden sm:inline">No acct</span>
-                                {% endif %}
-                                <span class="shrink-0 hidden md:inline text-[10px] text-zinc-600 tabular-nums">{{ row.added_at | local_time }}</span>
-                                {% if row.protected %}
-                                <span class="shrink-0 text-[10px] rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 text-zinc-400" title="This address cannot be removed">Locked</span>
-                                {% else %}
-                                <form method="POST" action="/admin/mailing-list"
-                                      class="shrink-0"
-                                      onsubmit="return confirm({{ ('Remove ' ~ row.email ~ ' from full list?')|tojson }});">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                                                        <input type="hidden" name="action" value="remove_full_email">
-                                    <input type="hidden" name="email" value="{{ row.email }}">
-                                    <button type="submit" title="Delete"
-                                            class="text-[10px] text-zinc-600 hover:text-red-400 px-1 py-1">✕</button>
-                                </form>
-                                {% endif %}
-                            </div>
-                        </li>
-                        {% endfor %}
-                    </ul>
+                    <div class="flex items-center justify-end gap-2 px-1">
+                        <span data-selected-count class="text-xs text-zinc-500"></span>
+                        <button type="submit" form="bulk-full" data-bulk-remove disabled
+                                class="px-3 py-1.5 rounded-lg border border-zinc-600 text-xs font-semibold text-zinc-200 hover:border-red-400 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-600 disabled:hover:text-zinc-200">
+                            Remove selected
+                        </button>
+                    </div>
+                    <div class="border border-zinc-800 rounded-xl overflow-hidden max-h-[28rem] overflow-auto bg-zinc-950/40">
+                        <table class="mail-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-check"></th>
+                                    <th>Email</th>
+                                    <th class="col-status">Source</th>
+                                    <th class="col-date hidden sm:table-cell">Added</th>
+                                    <th class="col-actions"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in full_list %}
+                                {{ mailing_row(row, 'full', loop.index) }}
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                     {% else %}
                     <p class="text-zinc-600 text-xs text-center py-4">Full list is empty.</p>
                     {% endif %}
                 </div>
             </div>
         </div>
+
+        <div class="mb-3 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="sent">
+            <button type="button"
+                    class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
+                    aria-expanded="false"
+                    data-drawer-toggle>
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="text-lg leading-none" aria-hidden="true">📤</span>
+                    <div class="min-w-0">
+                        <div class="font-semibold text-base">Sent log</div>
+                        <div class="text-zinc-500 text-xs truncate">
+                            {{ send_log_count|default(0) }} send{{ 's' if send_log_count|default(0) != 1 else '' }}
+                            · who got what
+                        </div>
+                    </div>
+                </div>
+                <span class="drawer-chevron text-zinc-400 text-sm shrink-0" aria-hidden="true">▼</span>
+            </button>
+
+            <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
+                <div class="p-3 space-y-3">
+                    {% if send_log %}
+                    <div class="border border-zinc-800 rounded-xl overflow-hidden max-h-[28rem] overflow-auto bg-zinc-950/40">
+                        <table class="mail-table">
+                            <thead>
+                                <tr>
+                                    <th>To</th>
+                                    <th class="col-type">Type</th>
+                                    <th>Subject</th>
+                                    <th class="col-date hidden sm:table-cell">Sent</th>
+                                    <th class="col-status">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for entry in send_log %}
+                                <tr class="email-row hover:bg-zinc-900/80"
+                                    data-email="{{ entry.emails|join(' ') }} {{ entry.subject|lower }}">
+                                    <td class="min-w-0">
+                                        {% for email in entry.emails %}
+                                        <div class="font-mono text-xs text-zinc-200 truncate">{{ email }}</div>
+                                        {% endfor %}
+                                    </td>
+                                    <td class="col-type text-xs text-zinc-300">
+                                        {{ 'Invite' if entry.kind == 'invite' else 'Broadcast' }}
+                                    </td>
+                                    <td class="min-w-0 text-xs text-zinc-300 truncate" title="{{ entry.subject }}">
+                                        {{ entry.subject or '—' }}
+                                    </td>
+                                    <td class="col-date hidden sm:table-cell text-[11px] text-zinc-500 tabular-nums whitespace-nowrap">
+                                        {{ entry.at | local_time }}
+                                    </td>
+                                    <td class="col-status">
+                                        {% if entry.status == 'failed' %}
+                                        {{ status_pill('Failed', 'amber') }}
+                                        {% else %}
+                                        {{ status_pill('Sent', 'sky') }}
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <p class="text-zinc-600 text-xs text-center py-4">No sends logged yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="mb-8 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="log">
+            <button type="button"
+                    class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
+                    aria-expanded="false"
+                    data-drawer-toggle>
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="text-lg leading-none" aria-hidden="true">🗂️</span>
+                    <div class="min-w-0">
+                        <div class="font-semibold text-base">Deletion log</div>
+                        <div class="text-zinc-500 text-xs truncate">
+                            {{ backup_log_count|default(0) }} removed address{{ 'es' if backup_log_count|default(0) != 1 else '' }}
+                            · email and time
+                        </div>
+                    </div>
+                </div>
+                <span class="drawer-chevron text-zinc-400 text-sm shrink-0" aria-hidden="true">▼</span>
+            </button>
+
+            <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
+                <div class="p-3 space-y-3">
+                    <div class="flex justify-end">
+                        <a href="{{ url_for('admin_mailing_list_log_download') }}"
+                           class="px-3 py-1.5 rounded-lg border border-zinc-500 text-xs font-semibold text-zinc-200 hover:border-white hover:text-white">
+                            Download log
+                        </a>
+                    </div>
+                    {% if backup_log %}
+                    <div class="border border-zinc-800 rounded-xl overflow-hidden max-h-[28rem] overflow-auto bg-zinc-950/40">
+                        <table class="mail-table">
+                            <thead>
+                                <tr>
+                                    <th>Email</th>
+                                    <th class="col-status">List</th>
+                                    <th class="col-date hidden sm:table-cell">Deleted</th>
+                                    <th class="col-actions"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for entry in backup_log %}
+                                <tr class="email-row hover:bg-zinc-900/80"
+                                    data-email="{{ entry.emails|join(' ') }}">
+                                    <td class="min-w-0">
+                                        {% for email in entry.emails %}
+                                        <div class="log-email font-mono text-xs text-zinc-200 truncate">{{ email }}</div>
+                                        {% endfor %}
+                                    </td>
+                                    <td class="col-status text-xs text-zinc-300">
+                                        {{ 'Exclusive' if entry.list == 'exclusive' else 'Full' }}
+                                    </td>
+                                    <td class="col-date hidden sm:table-cell text-[11px] text-zinc-500 tabular-nums whitespace-nowrap">
+                                        {{ entry.at | local_time }}
+                                    </td>
+                                    <td class="col-actions">
+                                        {% if entry.restored %}
+                                        <span class="text-[10px] rounded-full bg-emerald-950 border border-emerald-800 px-1.5 py-0.5 text-emerald-300">Restored</span>
+                                        {% elif entry.id %}
+                                        <form method="POST" action="/admin/mailing-list" class="flex justify-end"
+                                              data-confirm-kind="restore"
+                                              data-confirm-list="{{ 'exclusive list' if entry.list == 'exclusive' else 'full list' }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                            <input type="hidden" name="action" value="restore_log">
+                                            <input type="hidden" name="log_id" value="{{ entry.id }}">
+                                            <button type="submit"
+                                                    class="text-[11px] font-semibold uppercase tracking-wide text-zinc-200 border border-zinc-700 rounded-md px-2 py-1 hover:border-white">
+                                                Restore
+                                            </button>
+                                        </form>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <p class="text-zinc-600 text-xs text-center py-4">No removals logged yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
+
+    <dialog id="confirm-dialog" class="confirm-dialog">
+        <form method="dialog" class="p-5 space-y-4">
+            <p id="confirm-message" class="text-sm text-zinc-100 leading-relaxed"></p>
+            <ul id="confirm-emails" class="max-h-40 overflow-y-auto text-xs font-mono text-zinc-400 space-y-1 empty:hidden"></ul>
+            <div class="flex justify-end gap-2">
+                <button value="cancel" class="px-3 py-1.5 rounded-lg border border-zinc-600 text-xs font-semibold text-zinc-300 hover:border-white hover:text-white">Cancel</button>
+                <button value="ok" id="confirm-ok" class="px-3 py-1.5 rounded-lg bg-white text-black text-xs font-semibold hover:bg-amber-200">Confirm</button>
+            </div>
+        </form>
+    </dialog>
 
     <script>
         function setDrawerOpen(drawer, open) {
@@ -267,13 +522,147 @@
             });
         });
 
-        document.getElementById('broadcast-form').addEventListener('submit', function (e) {
-            const exclusive = this.querySelector('[name="list_exclusive"]').checked;
-            const full = this.querySelector('[name="list_full"]').checked;
-            if (!exclusive && !full) {
-                e.preventDefault();
-                alert('Select at least one mailing list.');
+        const confirmDialog = document.getElementById('confirm-dialog');
+        const confirmMessage = document.getElementById('confirm-message');
+        const confirmEmails = document.getElementById('confirm-emails');
+        const confirmOk = document.getElementById('confirm-ok');
+        let confirmCallback = null;
+
+        function openConfirm(message, emails, okLabel, onConfirm) {
+            confirmMessage.textContent = message;
+            confirmEmails.replaceChildren();
+            (emails || []).slice(0, 8).forEach(function (email) {
+                const li = document.createElement('li');
+                li.textContent = email;
+                confirmEmails.appendChild(li);
+            });
+            if ((emails || []).length > 8) {
+                const li = document.createElement('li');
+                li.textContent = 'and ' + (emails.length - 8) + ' more';
+                confirmEmails.appendChild(li);
             }
+            confirmOk.textContent = okLabel || 'Confirm';
+            confirmCallback = onConfirm;
+            confirmDialog.showModal();
+        }
+
+        confirmDialog.addEventListener('close', function () {
+            if (confirmDialog.returnValue === 'ok' && confirmCallback) {
+                const cb = confirmCallback;
+                confirmCallback = null;
+                cb();
+            } else {
+                confirmCallback = null;
+            }
+        });
+
+        function visibleChecks(root) {
+            return Array.from(root.querySelectorAll('.email-row:not(.hidden-by-search) .row-check'));
+        }
+
+        function selectedEmails(root) {
+            return visibleChecks(root).filter(function (box) { return box.checked; }).map(function (box) {
+                return box.value;
+            });
+        }
+
+        function updateBulkBar(drawer) {
+            const checks = visibleChecks(drawer);
+            const selected = checks.filter(function (box) { return box.checked; });
+            const countLabel = drawer.querySelector('[data-selected-count]');
+            const bulkBtn = drawer.querySelector('[data-bulk-remove]');
+            if (countLabel) {
+                countLabel.textContent = selected.length ? selected.length + ' selected' : '';
+            }
+            if (bulkBtn) bulkBtn.disabled = selected.length === 0;
+        }
+
+        document.querySelectorAll('[data-drawer]').forEach(function (drawer) {
+            drawer.querySelectorAll('.row-check').forEach(function (box) {
+                box.addEventListener('change', function () { updateBulkBar(drawer); });
+            });
+            updateBulkBar(drawer);
+        });
+
+        function submitConfirmed(form) {
+            form.dataset.confirmed = '1';
+            form.requestSubmit();
+        }
+
+        document.querySelectorAll('form[data-confirm-kind]').forEach(function (form) {
+            form.addEventListener('submit', function (e) {
+                if (form.dataset.confirmed === '1') {
+                    delete form.dataset.confirmed;
+                    return;
+                }
+                e.preventDefault();
+                const kind = form.getAttribute('data-confirm-kind');
+                if (kind === 'remove') {
+                    const email = (form.querySelector('[name="email"]') || {}).value || '';
+                    const list = form.getAttribute('data-confirm-list') || 'this list';
+                    openConfirm('Remove ' + email + ' from the ' + list + '?', [email], 'Remove', function () {
+                        submitConfirmed(form);
+                    });
+                    return;
+                }
+                if (kind === 'remove-bulk') {
+                    const listKey = form.id === 'bulk-full' ? 'full' : 'exclusive';
+                    const drawer = document.querySelector('[data-list="' + listKey + '"]');
+                    const emails = drawer ? selectedEmails(drawer) : [];
+                    if (!emails.length) return;
+                    const list = form.getAttribute('data-confirm-list') || 'this list';
+                    const noun = emails.length === 1 ? 'email' : 'emails';
+                    openConfirm('Remove ' + emails.length + ' ' + noun + ' from the ' + list + '?', emails, 'Remove', function () {
+                        submitConfirmed(form);
+                    });
+                    return;
+                }
+                if (kind === 'broadcast') {
+                    const exclusive = form.querySelector('[name="list_exclusive"]').checked;
+                    const full = form.querySelector('[name="list_full"]').checked;
+                    if (!exclusive && !full) {
+                        alert('Select at least one mailing list.');
+                        return;
+                    }
+                    const parts = [];
+                    if (exclusive) parts.push('Exclusive (' + (form.getAttribute('data-exclusive-count') || '0') + ')');
+                    if (full) parts.push('Full (' + (form.getAttribute('data-full-count') || '0') + ')');
+                    openConfirm('Send this email to ' + parts.join(' and ') + '?', [], 'Send', function () {
+                        submitConfirmed(form);
+                    });
+                    return;
+                }
+                if (kind === 'invites') {
+                    const ready = parseInt(form.getAttribute('data-ready-count') || '0', 10) || 0;
+                    const noun = ready === 1 ? 'invite' : 'invites';
+                    openConfirm('Send ' + ready + ' ' + noun + ' now?', [], 'Send', function () {
+                        submitConfirmed(form);
+                    });
+                    return;
+                }
+                if (kind === 'restore') {
+                    const row = form.closest('.email-row');
+                    const emails = row
+                        ? Array.from(row.querySelectorAll('.log-email')).map(function (el) { return el.textContent; })
+                        : [];
+                    const list = form.getAttribute('data-confirm-list') || 'mailing list';
+                    const noun = emails.length === 1 ? 'email' : 'emails';
+                    openConfirm('Restore ' + emails.length + ' ' + noun + ' to the ' + list + '?', emails, 'Restore', function () {
+                        submitConfirmed(form);
+                    });
+                }
+            });
+        });
+
+        document.querySelectorAll('input[name="new_email"][data-original]').forEach(function (input) {
+            const save = document.querySelector('button[data-save][form="' + (input.form && input.form.id) + '"]');
+            if (!save) return;
+            const original = (input.getAttribute('data-original') || '').toLowerCase();
+            function sync() {
+                save.disabled = input.value.trim().toLowerCase() === original;
+            }
+            input.addEventListener('input', sync);
+            sync();
         });
 
         document.getElementById('search').addEventListener('input', function (e) {
@@ -282,14 +671,18 @@
                 const email = (row.getAttribute('data-email') || '').toLowerCase();
                 const match = !term || email.includes(term);
                 row.classList.toggle('hidden-by-search', !match);
+                if (!match) {
+                    const box = row.querySelector('.row-check');
+                    if (box) box.checked = false;
+                }
             });
-            // Auto-open drawers that have visible matches when searching
-            if (term) {
-                document.querySelectorAll('[data-drawer]').forEach(function (drawer) {
+            document.querySelectorAll('[data-drawer]').forEach(function (drawer) {
+                updateBulkBar(drawer);
+                if (term) {
                     const hasVisible = drawer.querySelector('.email-row:not(.hidden-by-search)');
                     if (hasVisible) setDrawerOpen(drawer, true);
-                });
-            }
+                }
+            });
         });
     </script>
 </body>

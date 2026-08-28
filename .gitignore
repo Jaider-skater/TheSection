@@ -13,6 +13,7 @@ data/events.json
 data/exclusive_holds.json
 data/full_mailing_list.json
 data/member_invites.json
+data/mailing_list_log.json
 data/flyers/
 data/*.tmp.*
 *.pkpass

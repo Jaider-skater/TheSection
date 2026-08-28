@@ -113,6 +113,10 @@ full_mailing_list_file = os.getenv(
     'FULL_MAILING_LIST_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'full_mailing_list.json'),
 )
+mailing_list_log_file = os.getenv(
+    'MAILING_LIST_LOG_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'mailing_list_log.json'),
+)
 exclusive_holds_file = os.getenv(
     'EXCLUSIVE_HOLDS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'exclusive_holds.json'),
@@ -179,6 +183,7 @@ scanner_settings_lock = threading.Lock()
 events_lock = threading.Lock()
 invites_lock = threading.Lock()
 full_list_lock = threading.Lock()
+mailing_list_log_lock = threading.Lock()
 exclusive_holds_lock = threading.Lock()
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
@@ -794,17 +799,53 @@ def is_protected_mailing_list_email(email):
     return (email or '').strip().lower() in PROTECTED_MAILING_LIST_EMAILS
 
 
+def posted_mailing_list_emails():
+    """Emails from a single field or a multi-select checkbox list."""
+    chunks = [value for value in request.form.getlist('emails') if value]
+    single = request.form.get('email')
+    if single:
+        chunks.append(single)
+    return normalize_email_list('\n'.join(str(chunk) for chunk in chunks))
+
+
+def remove_emails_from_invite_list(emails):
+    """Remove exclusive-list addresses. Skips protected. Returns (removed, skipped_protected)."""
+    skipped_protected = []
+    wanted = []
+    seen = set()
+    for email in emails:
+        normalized = (email or '').strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if is_protected_mailing_list_email(normalized):
+            skipped_protected.append(normalized)
+        else:
+            wanted.append(normalized)
+    removed = []
+    removed_records = []
+    if wanted:
+        wanted_set = set(wanted)
+        with invites_lock:
+            invites = load_invites()
+            remaining = []
+            for invite in invites:
+                email = invite.get('email', '').strip().lower()
+                if email in wanted_set:
+                    removed.append(email)
+                    removed_records.append(dict(invite))
+                else:
+                    remaining.append(invite)
+            if removed:
+                save_invites(remaining)
+    if removed_records:
+        log_mailing_list_removal('exclusive', removed_records)
+    return removed, skipped_protected
+
+
 def remove_email_from_invite_list(email):
-    normalized = email.strip().lower()
-    if is_protected_mailing_list_email(normalized):
-        return False
-    with invites_lock:
-        invites = load_invites()
-        updated = [i for i in invites if i.get('email', '').strip().lower() != normalized]
-        if len(updated) == len(invites):
-            return False
-        save_invites(updated)
-        return True
+    removed, _skipped = remove_emails_from_invite_list([email])
+    return bool(removed)
 
 
 def clear_exclusive_member_features(email):
@@ -1063,17 +1104,237 @@ def add_emails_to_full_mailing_list(emails, source='manual'):
     return added, skipped
 
 
+def remove_emails_from_full_mailing_list(emails):
+    """Remove full-list addresses. Skips protected. Returns (removed, skipped_protected)."""
+    skipped_protected = []
+    wanted = []
+    seen = set()
+    for email in emails:
+        normalized = (email or '').strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if is_protected_mailing_list_email(normalized):
+            skipped_protected.append(normalized)
+        else:
+            wanted.append(normalized)
+    removed = []
+    removed_records = []
+    if wanted:
+        wanted_set = set(wanted)
+        with full_list_lock:
+            entries = load_full_mailing_list()
+            remaining = []
+            for entry in entries:
+                email = entry.get('email', '').strip().lower()
+                if email in wanted_set:
+                    removed.append(email)
+                    removed_records.append(dict(entry))
+                else:
+                    remaining.append(entry)
+            if removed:
+                save_full_mailing_list(remaining)
+    if removed_records:
+        log_mailing_list_removal('full', removed_records)
+    return removed, skipped_protected
+
+
 def remove_email_from_full_mailing_list(email):
-    normalized = email.strip().lower()
-    if is_protected_mailing_list_email(normalized):
+    removed, _skipped = remove_emails_from_full_mailing_list([email])
+    return bool(removed)
+
+
+MAILING_LIST_LOG_MAX = 2000
+
+
+def load_mailing_list_log():
+    if not ensure_data_dir(mailing_list_log_file):
+        return []
+    data = _locked_json_read(mailing_list_log_file, [])
+    return data if isinstance(data, list) else []
+
+
+def save_mailing_list_log(entries):
+    if not ensure_data_dir(mailing_list_log_file):
         return False
-    with full_list_lock:
-        entries = load_full_mailing_list()
-        updated = [e for e in entries if e.get('email', '').strip().lower() != normalized]
-        if len(updated) == len(entries):
-            return False
-        save_full_mailing_list(updated)
-        return True
+    return _locked_json_write(mailing_list_log_file, entries)
+
+
+def append_mailing_list_log(entry):
+    if not entry:
+        return False
+    return append_mailing_list_log_entries([entry])
+
+
+def append_mailing_list_log_entries(new_entries):
+    if not new_entries:
+        return False
+    with mailing_list_log_lock:
+        entries = load_mailing_list_log()
+        entries.extend(new_entries)
+        if len(entries) > MAILING_LIST_LOG_MAX:
+            entries = entries[-MAILING_LIST_LOG_MAX:]
+        return save_mailing_list_log(entries)
+
+
+def log_mailing_list_removal(list_kind, records):
+    """One log row per deleted address, with the time it was removed."""
+    now = datetime.now(timezone.utc).isoformat()
+    new_entries = []
+    for record in records or []:
+        email = (record.get('email') or '').strip().lower()
+        if not email:
+            continue
+        new_entries.append({
+            'id': secrets.token_hex(8),
+            'action': 'remove',
+            'list': list_kind,
+            'at': now,
+            'emails': [email],
+            'records': [record],
+        })
+    return append_mailing_list_log_entries(new_entries)
+
+
+def log_mailing_list_send(kind, subject, emails, status='sent'):
+    """One log row per recipient for a broadcast or invite send."""
+    now = datetime.now(timezone.utc).isoformat()
+    subject = (subject or '').replace('\r', ' ').replace('\n', ' ').strip()
+    if len(subject) > 200:
+        subject = subject[:200]
+    kind = (kind or 'broadcast').strip().lower()
+    status = 'failed' if status == 'failed' else 'sent'
+    new_entries = []
+    for email in emails or []:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            continue
+        new_entries.append({
+            'id': secrets.token_hex(8),
+            'action': 'send',
+            'kind': kind,
+            'subject': subject,
+            'status': status,
+            'at': now,
+            'emails': [normalized],
+        })
+    return append_mailing_list_log_entries(new_entries)
+
+
+def mailing_list_log_for_admin(action='remove'):
+    rows = []
+    for entry in reversed(load_mailing_list_log()):
+        entry_action = entry.get('action') or 'remove'
+        if action and entry_action != action:
+            continue
+        emails = [
+            (email or '').strip().lower()
+            for email in (entry.get('emails') or [])
+            if (email or '').strip()
+        ]
+        if not emails:
+            continue
+        rows.append({
+            'id': entry.get('id') or '',
+            'action': entry_action,
+            'list': entry.get('list') or '',
+            'kind': entry.get('kind') or '',
+            'subject': entry.get('subject') or '',
+            'status': entry.get('status') or '',
+            'at': entry.get('at'),
+            'emails': emails,
+            'restored': bool(entry.get('restored_at')),
+            'restored_at': entry.get('restored_at'),
+        })
+    return rows
+
+
+def restore_exclusive_invite_records(records):
+    """Put exclusive addresses back without sending a new invite email."""
+    added = []
+    skipped = []
+    with invites_lock:
+        invites = load_invites()
+        existing = {i.get('email', '').strip().lower() for i in invites}
+        for record in records or []:
+            email = (record.get('email') or '').strip().lower()
+            if not email or not is_valid_email(email):
+                continue
+            if email in existing:
+                skipped.append(email)
+                continue
+            invites.append({
+                'email': email,
+                'added_at': record.get('added_at') or datetime.now(timezone.utc).isoformat(),
+                'sent_at': record.get('sent_at'),
+                'claimed_at': record.get('claimed_at'),
+                'invite_token': record.get('invite_token'),
+                'invite_expires': record.get('invite_expires'),
+            })
+            existing.add(email)
+            added.append(email)
+        if added:
+            save_invites(invites)
+    for email in added:
+        grant_exclusive_member_features(email)
+    return added, skipped
+
+
+def restore_mailing_list_removal(entry_id):
+    """Put removed addresses back on the list they were taken from.
+
+    Never sends an invite email. Exclusive restores reuse the original
+    invite record (including sent_at) so they are not treated as new.
+    """
+    wanted_id = (entry_id or '').strip()
+    if not wanted_id or not re.fullmatch(r'[a-f0-9]{8,32}', wanted_id):
+        return False, 'That backup entry was not found.'
+    with mailing_list_log_lock:
+        entries = load_mailing_list_log()
+        target = None
+        for entry in entries:
+            if entry.get('id') == wanted_id:
+                target = entry
+                break
+        if not target:
+            return False, 'That backup entry was not found.'
+        if (target.get('action') or 'remove') != 'remove':
+            return False, 'Only removals can be restored.'
+        if target.get('restored_at'):
+            return False, 'That removal was already restored.'
+        list_kind = target.get('list')
+        emails = [
+            (email or '').strip().lower()
+            for email in (target.get('emails') or [])
+            if (email or '').strip()
+        ]
+        records = [dict(record) for record in (target.get('records') or [])]
+    if not emails:
+        return False, 'That backup entry has no addresses to restore.'
+    if not records:
+        records = [{'email': email} for email in emails]
+    if list_kind == 'exclusive':
+        added, skipped = restore_exclusive_invite_records(records)
+        list_label = 'exclusive list'
+    elif list_kind == 'full':
+        added, skipped = add_emails_to_full_mailing_list(emails, source='restore')
+        list_label = 'full list'
+    else:
+        return False, 'Unknown list in that backup entry.'
+    with mailing_list_log_lock:
+        entries = load_mailing_list_log()
+        for entry in entries:
+            if entry.get('id') == wanted_id:
+                entry['restored_at'] = datetime.now(timezone.utc).isoformat()
+                entry['restored_count'] = len(added)
+                break
+        save_mailing_list_log(entries)
+    parts = []
+    if added:
+        parts.append(f'Restored {len(added)} to the {list_label}.')
+    if skipped:
+        parts.append(f'{len(skipped)} already present.')
+    return True, ' '.join(parts) or 'Nothing to restore.'
 
 
 def update_email_on_full_mailing_list(old_email, new_email):
@@ -1194,6 +1455,10 @@ def send_broadcast_email(subject, body, recipients):
             except Exception as e:
                 print(f'Broadcast email failed for {email}:', e)
                 failed.append(email)
+    if sent:
+        log_mailing_list_send('broadcast', subject, sent, status='sent')
+    if failed:
+        log_mailing_list_send('broadcast', subject, failed, status='failed')
     return sent, failed
 
 
@@ -3421,9 +3686,21 @@ def send_member_invite_email(customer_email, token, invite_url=None):
             msg.html = html_body
             mail.send(msg)
             print(f"Member invite email sent to {customer_email}")
+            log_mailing_list_send(
+                'invite',
+                'The Section — welcome back (member invite)',
+                [customer_email],
+                status='sent',
+            )
             return True
         except Exception as e:
             print(f"Member invite email failed for {customer_email}:", str(e))
+            log_mailing_list_send(
+                'invite',
+                'The Section — welcome back (member invite)',
+                [customer_email],
+                status='failed',
+            )
             return False
 
 
@@ -4636,18 +4913,33 @@ def admin_mailing_list():
                 if skipped:
                     parts.append(f'{len(skipped)} already on exclusive list.')
                 success = ' '.join(parts) or 'No new emails added.'
-        elif action == 'remove_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if is_protected_mailing_list_email(email):
-                error = f'{email} is a protected address and cannot be removed.'
-            elif email and remove_email_from_invite_list(email):
-                clear_exclusive_member_features(email)
-                success = (
-                    f'Removed {email} from exclusive list and cleared exclusive member perks '
-                    f'(account/tickets kept if they exist).'
-                )
+        elif action in ('remove_email', 'remove_emails'):
+            emails = posted_mailing_list_emails()
+            if not emails:
+                error = 'Select at least one email to remove.'
             else:
-                error = 'Could not remove that email.'
+                removed, skipped = remove_emails_from_invite_list(emails)
+                for email in removed:
+                    clear_exclusive_member_features(email)
+                parts = []
+                if len(removed) == 1:
+                    parts.append(
+                        f'Removed {removed[0]} from exclusive list and cleared exclusive member perks '
+                        f'(account/tickets kept if they exist).'
+                    )
+                elif removed:
+                    parts.append(
+                        f'Removed {len(removed)} emails from exclusive list and cleared exclusive member perks '
+                        f'(accounts/tickets kept if they exist).'
+                    )
+                if skipped:
+                    parts.append(
+                        f'{len(skipped)} locked address{"es" if len(skipped) != 1 else ""} skipped.'
+                    )
+                if removed:
+                    success = ' '.join(parts)
+                else:
+                    error = ' '.join(parts) or 'Could not remove that email.'
         elif action == 'edit_email':
             old_email = (request.form.get('email') or '').strip().lower()
             new_email = (request.form.get('new_email') or '').strip().lower()
@@ -4688,14 +4980,25 @@ def admin_mailing_list():
                         f'{len(skipped)} skipped (already on full list or exclusive list).'
                     )
                 success = ' '.join(parts) or 'No new emails added to full list.'
-        elif action == 'remove_full_email':
-            email = (request.form.get('email') or '').strip().lower()
-            if is_protected_mailing_list_email(email):
-                error = f'{email} is a protected address and cannot be removed.'
-            elif email and remove_email_from_full_mailing_list(email):
-                success = f'Removed {email} from full list.'
+        elif action in ('remove_full_email', 'remove_full_emails'):
+            emails = posted_mailing_list_emails()
+            if not emails:
+                error = 'Select at least one email to remove.'
             else:
-                error = 'Could not remove that email from the full list.'
+                removed, skipped = remove_emails_from_full_mailing_list(emails)
+                parts = []
+                if len(removed) == 1:
+                    parts.append(f'Removed {removed[0]} from full list.')
+                elif removed:
+                    parts.append(f'Removed {len(removed)} emails from full list.')
+                if skipped:
+                    parts.append(
+                        f'{len(skipped)} locked address{"es" if len(skipped) != 1 else ""} skipped.'
+                    )
+                if removed:
+                    success = ' '.join(parts)
+                else:
+                    error = ' '.join(parts) or 'Could not remove that email from the full list.'
         elif action == 'edit_full_email':
             old_email = (request.form.get('email') or '').strip().lower()
             new_email = (request.form.get('new_email') or '').strip().lower()
@@ -4707,6 +5010,12 @@ def admin_mailing_list():
                 )
             else:
                 error = err or 'Could not update that email.'
+        elif action == 'restore_log':
+            ok, msg = restore_mailing_list_removal(request.form.get('log_id'))
+            if ok:
+                success = msg
+            else:
+                error = msg or 'Could not restore that backup entry.'
         elif action == 'sync_full_list':
             added, skipped = sync_members_into_full_mailing_list()
             success = (
@@ -4759,6 +5068,8 @@ def admin_mailing_list():
     ready_count = len(invites_ready_to_send())
     blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
     full_list = full_mailing_list_for_admin()
+    backup_log = mailing_list_log_for_admin('remove')
+    send_log = mailing_list_log_for_admin('send')
     return render_template(
         'mailing_list.html',
         invites=invites,
@@ -4766,6 +5077,10 @@ def admin_mailing_list():
         blocked_count=blocked_count,
         full_list=full_list,
         full_list_count=len(full_list),
+        backup_log=backup_log,
+        backup_log_count=len(backup_log),
+        send_log=send_log,
+        send_log_count=len(send_log),
         key='',
         error=error,
         success=success,
@@ -4773,6 +5088,17 @@ def admin_mailing_list():
         returning_guest_discount_percent=int(returning_guest_discount * 100),
         invite_days=INVITE_EXPIRY_DAYS,
         timezone_label=display_timezone_label(),
+    )
+
+
+@app.route('/admin/mailing-list/log.json')
+def admin_mailing_list_log_download():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    return Response(
+        json.dumps(load_mailing_list_log(), indent=2),
+        mimetype='application/json',
+        headers={'Content-Disposition': 'attachment; filename=mailing-list-backup-log.json'},
     )
 
 
