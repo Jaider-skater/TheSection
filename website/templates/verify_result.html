@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ticket Check • The Section</title>
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
@@ -26,7 +27,25 @@
             </div>
         </div>
 
-        {% if status == 'accepted' %}
+        {% if status == 'valid' %}
+            <div class="text-6xl mb-4">🎫</div>
+            <h1 class="text-3xl font-bold text-white mb-2">Valid ticket</h1>
+            <p class="text-6xl sm:text-7xl font-black mb-3 leading-none {% if is_vip %}text-purple-400{% else %}text-emerald-400{% endif %}">
+                {%- if is_vip %}VIP{%- else %}GA{%- endif %}
+            </p>
+            <p class="text-3xl sm:text-4xl font-bold text-white mb-4">
+                {{ quantity }} {% if quantity == 1 %}guest{% else %}guests{% endif %}
+            </p>
+            <p class="text-zinc-300 mb-6 text-lg">Not scanned yet — preview only</p>
+            <form method="POST" action="{{ request.path }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit"
+                        class="w-full py-4 bg-white text-black font-semibold rounded-2xl text-lg">
+                    Mark as used
+                </button>
+            </form>
+            <p class="text-zinc-500 text-xs mt-3 mb-8">GET is preview. This POST stamps the ticket at the door.</p>
+        {% elif status == 'accepted' %}
             <div class="text-6xl mb-4">✅</div>
             <h1 class="text-3xl font-bold text-white mb-2">You're In!</h1>
             <p class="text-6xl sm:text-7xl font-black mb-3 leading-none {% if is_vip %}text-purple-400{% else %}text-emerald-400{% endif %}">

@@ -54,6 +54,7 @@
                         <th class="p-4">Event</th>
                         <th class="p-4">Access</th>
                         <th class="p-4">Scanned</th>
+                        <th class="p-4">Oversold</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -78,6 +79,13 @@
                         <td class="p-4">
                             {% if ticket.scanned_at %}
                                 <span class="text-emerald-400">Yes</span>
+                            {% else %}
+                                <span class="text-zinc-500">No</span>
+                            {% endif %}
+                        </td>
+                        <td class="p-4">
+                            {% if ticket.oversold %}
+                                <span class="text-amber-300">Yes</span>
                             {% else %}
                                 <span class="text-zinc-500">No</span>
                             {% endif %}
