@@ -1,0 +1,324 @@
+--- a/app.py
++++ b/app.py
+@@ -229,8 +229,9 @@
+ 
+ 
+ def client_ip():
+-    forwarded = (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+-    return forwarded or (request.remote_addr or 'unknown')
++    # ProxyFix(x_for=1) already selected the trusted hop into remote_addr.
++    # Do not read X-Forwarded-For here — leftmost values are client-spoofable.
++    return (request.remote_addr or '').strip() or 'unknown'
+ 
+ 
+ def rate_limit_allow(scope, limit, window_seconds):
+@@ -429,6 +430,38 @@
+     return None
+ 
+ 
++# Production CSP allowlist (read from templates):
++#   script: 'self' + 'unsafe-inline' (inline JS in templates) + 'unsafe-eval'
++#           (Tailwind Play CDN JIT at cdn.tailwindcss.com)
++#           + cdn.tailwindcss.com + unpkg.com (html5-qrcode on the scanner)
++#           + js.stripe.com (Stripe.js; Checkout is a top-level redirect today)
++#   style:  'self' + 'unsafe-inline' (templates + Tailwind injected CSS)
++#           + cdn.tailwindcss.com
++#   img:    'self' + data: (QR PNG) + blob:
++#   font:   'self' + data: (system / inline; no Google Fonts in templates)
++#   connect:'self' + Stripe API/Checkout + Tailwind/unpkg CDN fetches
++#   frame:  js.stripe.com, hooks.stripe.com, checkout.stripe.com
++#   form:   'self' + checkout.stripe.com (hosted Checkout)
++#   worker: 'self' + blob: (html5-qrcode camera)
++#   media:  'self' + blob: (camera)
++#   object: none
++#   base:   'self'
++PRODUCTION_CSP = (
++    "default-src 'self'; "
++    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://js.stripe.com; "
++    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
++    "img-src 'self' data: blob:; "
++    "font-src 'self' data:; "
++    "connect-src 'self' https://api.stripe.com https://checkout.stripe.com https://m.stripe.com https://m.stripe.network https://js.stripe.com https://cdn.tailwindcss.com https://unpkg.com; "
++    "frame-src https://js.stripe.com https://hooks.stripe.com https://checkout.stripe.com; "
++    "form-action 'self' https://checkout.stripe.com; "
++    "base-uri 'self'; "
++    "object-src 'none'; "
++    "worker-src 'self' blob:; "
++    "media-src 'self' blob:"
++)
++
++
+ @app.after_request
+ def security_after_request(response):
+     response.headers['X-Content-Type-Options'] = 'nosniff'
+@@ -439,6 +472,7 @@
+     response.headers['X-Permitted-Cross-Domain-Policies'] = 'none'
+     if IS_PRODUCTION:
+         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
++        response.headers['Content-Security-Policy'] = PRODUCTION_CSP
+     # Expose CSRF token for JS clients
+     if session.get('csrf_token'):
+         response.headers['X-CSRF-Token'] = session['csrf_token']
+@@ -490,7 +524,7 @@
+     return None
+ 
+ 
+-def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None, exclusive_single_rate=False):
++def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None, exclusive_single_rate=False, oversold=False):
+     ticket_id = normalize_ticket_id(ticket_id)
+     if not ticket_id:
+         raise ValueError('Invalid ticket id')
+@@ -521,6 +555,7 @@
+             'email_sent_at': None,
+             'view_token': view_token,
+             'verify_url': f"{base_url}/verify/t/{ticket_id}",
++            'oversold': bool(oversold),
+         }
+         tickets.append(ticket)
+         save_tickets(tickets)
+@@ -615,7 +650,7 @@
+         members = load_members()
+         for member in members:
+             if member.get('email', '').lower() == bootstrap_email:
+-                print(f'Bootstrap member already present: {bootstrap_email}')
++                print('Bootstrap member already present')
+                 return
+         bootstrap_discount_code = normalize_discount_code(
+             os.getenv('LEGACY_BOOTSTRAP_DISCOUNT_CODE', '')
+@@ -630,7 +665,7 @@
+             'joined_at': datetime.now(timezone.utc).isoformat(),
+         })
+         save_members(members)
+-        print(f'Bootstrap member created after deploy: {bootstrap_email}')
++        print('Bootstrap member created after deploy')
+ 
+ 
+ def log_storage_state():
+@@ -1453,7 +1488,7 @@
+                 mail.send(msg)
+                 sent.append(email)
+             except Exception as e:
+-                print(f'Broadcast email failed for {email}:', e)
++                print('Broadcast email failed:', type(e).__name__)
+                 failed.append(email)
+     if sent:
+         log_mailing_list_send('broadcast', subject, sent, status='sent')
+@@ -2329,13 +2364,23 @@
+     legacy_discount = metadata.get('legacy_discount') == 'true'
+     delivery_email = ticket_recipient_email(stripe_email, metadata)
+     view_token = new_view_token()
++    event_id = metadata.get('event_id') or get_sales_event_id()
++    remaining = ticket_sales_remaining(event_id)
++    oversold = remaining is not None and quantity > remaining
++    if oversold:
++        # Paid sessions still get tickets. No auto-refund. Log opaque ids only.
++        print(
++            f'Oversell recorded event={event_id} qty={quantity} '
++            f'remaining_before={remaining}'
++        )
+ 
+     ticket = record_ticket(
+         session_id, ticket_id, delivery_email, quantity,
+         ticket_type=ticket_type, legacy_discount=legacy_discount,
+         view_token=view_token,
+-        event_id=metadata.get('event_id') or get_sales_event_id(),
++        event_id=event_id,
+         exclusive_single_rate=metadata.get('exclusive_single_rate') == 'true',
++        oversold=oversold,
+     )
+     if delivery_email:
+         release_exclusive_hold(delivery_email, ticket.get('event_id'))
+@@ -3371,7 +3416,8 @@
+     }
+ 
+ 
+-def check_ticket(ticket_id):
++def check_ticket(ticket_id, stamp=True):
++    """Inspect a ticket. stamp=True records scanned_at (POST). GET preview uses stamp=False."""
+     normalized = normalize_ticket_id(ticket_id)
+     if not normalized:
+         return {
+@@ -3410,6 +3456,9 @@
+ 
+     if record.get('scanned_at'):
+         return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
++
++    if not stamp:
++        return {'status': 'valid', 'ticket_id': display_id, 'quantity': quantity, **meta}
+ 
+     # VIP tickets: if VIP area is full, still admit but as GA (like before).
+     admission_as = 'vip' if ticket_type == 'vip' else 'ga'
+@@ -3501,10 +3550,10 @@
+             )
+             msg.attach("ticket-qr.png", "image/png", base64.b64decode(ticket_data))
+             mail.send(msg)
+-            print(f"Ticket email sent to {customer_email}")
++            print(f'Ticket email sent for ticket {ticket_id}')
+             return True
+         except Exception as e:
+-            print(f"Email failed for {customer_email}:", str(e))
++            print(f'Ticket email failed for ticket {ticket_id}:', type(e).__name__)
+             return False
+ 
+ 
+@@ -3579,17 +3628,17 @@
+             msg.body = plain_body
+             msg.html = html_body
+             mail.send(msg)
+-            print(f"Password reset email sent to {customer_email}")
++            print('Password reset email sent')
+             return True
+         except Exception as e:
+-            print(f"Password reset email failed for {customer_email}:", str(e))
++            print('Password reset email failed:', type(e).__name__)
+             return False
+ 
+ 
+ def deliver_password_reset_email(customer_email, token, reset_url=None):
+     sent = send_password_reset_email(customer_email, token, reset_url)
+     if not sent:
+-        print(f"Password reset email not confirmed for {customer_email}")
++        print('Password reset email not confirmed')
+     return sent
+ 
+ 
+@@ -3685,7 +3734,7 @@
+             msg.body = plain_body
+             msg.html = html_body
+             mail.send(msg)
+-            print(f"Member invite email sent to {customer_email}")
++            print('Member invite email sent')
+             log_mailing_list_send(
+                 'invite',
+                 'The Section — welcome back (member invite)',
+@@ -3694,7 +3743,7 @@
+             )
+             return True
+         except Exception as e:
+-            print(f"Member invite email failed for {customer_email}:", str(e))
++            print('Member invite email failed:', type(e).__name__)
+             log_mailing_list_send(
+                 'invite',
+                 'The Section — welcome back (member invite)',
+@@ -3996,7 +4045,7 @@
+             quantity, ticket_type, apply_member_discount=apply_member_discount,
+             event_id=event_id,
+         )
+-        print("Session created successfully:", checkout_session.url)
++        print('Checkout session created')
+         return jsonify({'url': checkout_session.url})
+     except TicketSalesError as e:
+         event_id = resolve_checkout_event_id((request.get_json() or {}).get('event_id'))
+@@ -4013,7 +4062,7 @@
+ @app.route('/success')
+ def success():
+     session_id = request.args.get('session_id')
+-    print("Success page called with session_id:", session_id)
++    print('Success page called')
+ 
+     if not session_id:
+         return render_template('success.html', error="Missing session ID")
+@@ -4274,17 +4323,22 @@
+ 
+ @app.route('/verify/logout', methods=['POST'])
+ def verify_logout():
++    session.pop('legacy_member_email', None)
++    session.pop('admin_authenticated', None)
+     session.pop('verify_authenticated', None)
++    session.pop('verify_login_email', None)
++    regenerate_session()
+     return redirect(url_for('verify_login'))
+ 
+ 
+-@app.route('/verify/t/<ticket_id>')
++@app.route('/verify/t/<ticket_id>', methods=['GET', 'POST'])
+ def verify_ticket_native(ticket_id):
+     guard = protect_scanner_response()
+     if guard:
+         return guard
+ 
+-    result = check_ticket(ticket_id)
++    # GET = preview (no scanned_at). POST = stamp. CSRF is required on POST.
++    result = check_ticket(ticket_id, stamp=(request.method == 'POST'))
+     return render_template(
+         'verify_result.html',
+         admission_totals=get_admission_totals(),
+@@ -4538,18 +4592,18 @@
+             sent = False
+             member = get_legacy_member(email)
+             if not member:
+-                print(f"Password reset skipped; no member account for {email}")
++                print('Password reset skipped; no member account')
+             else:
+                 token = set_password_reset_token(email)
+                 if not token:
+-                    print(f"Password reset token not saved for {email}")
++                    print('Password reset token not saved')
+                 else:
+                     reset_url = (
+                         f"{get_public_base_url()}/reset-password?"
+                         f"{urlencode({'email': email, 'token': token})}"
+                     )
+                     sent = deliver_password_reset_email(email, token, reset_url=reset_url)
+-                    print(f"Password reset delivery for {email}: sent={sent}")
++                    print(f'Password reset delivery sent={sent}')
+ 
+             # Always generic for anonymous users
+             if logged_in_member:
+@@ -4821,18 +4875,25 @@
+     )
+ 
+ 
++ADMIN_TICKET_EXPORT_HIDDEN = frozenset({'view_token', 'session_id'})
++
++
++def ticket_for_admin_export(ticket):
++    """Admin JSON/clipboard dump: hide view tokens and Stripe session ids."""
++    safe = {k: v for k, v in ticket.items() if k not in ADMIN_TICKET_EXPORT_HIDDEN}
++    safe['event_name'] = (ticket_event_record(ticket) or {}).get('name') or ''
++    safe['oversold'] = bool(ticket.get('oversold'))
++    return safe
++
++
+ @app.route('/admin')
+ def admin_dashboard():
+     if not require_admin():
+         return redirect(url_for('admin_login'))
+ 
+-    # Never include view_token secrets in admin JSON dump for clipboard sharing
++    # Never include view_token or Stripe session_id in admin JSON/clipboard dumps
+     tickets = sorted(load_tickets(), key=lambda t: t.get('purchased_at', ''), reverse=True)
+-    safe_tickets = []
+-    for ticket in tickets:
+-        safe = {k: v for k, v in ticket.items() if k != 'view_token'}
+-        safe['event_name'] = (ticket_event_record(ticket) or {}).get('name') or ''
+-        safe_tickets.append(safe)
++    safe_tickets = [ticket_for_admin_export(ticket) for ticket in tickets]
+     total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
+     return render_template(
+         'admin.html',
+@@ -4853,6 +4914,7 @@
+     writer.writerow([
+         'purchased_at', 'ticket_id', 'email', 'quantity', 'ticket_type', 'access',
+         'event_id', 'legacy_discount', 'scanned_at', 'email_sent_at', 'verify_url',
++        'oversold',
+     ])
+     for ticket in tickets:
+         writer.writerow([
+@@ -4867,6 +4929,7 @@
+             ticket.get('scanned_at', ''),
+             ticket.get('email_sent_at', ''),
+             ticket.get('verify_url', ''),
++            bool(ticket.get('oversold')),
+         ])
+ 
+     return Response(
+@@ -4882,7 +4945,7 @@
+         return redirect(url_for('admin_login'))
+ 
+     tickets = load_tickets()
+-    safe_tickets = [{k: v for k, v in t.items() if k != 'view_token'} for t in tickets]
++    safe_tickets = [ticket_for_admin_export(t) for t in tickets]
+     return Response(
+         json.dumps(safe_tickets, indent=2),
+         mimetype='application/json',
