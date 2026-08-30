@@ -1,15 +1,15 @@
-"""Apply patches/security-defensive-hardening.diff to app.py source at import."""
+"""Apply patches/security-defensive-hardening.diff onto original app.py source."""
 from __future__ import annotations
 
 import re
-import sys
-import types
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DIFF_PATH = ROOT / 'patches' / 'security-defensive-hardening.diff'
-APP_PATH = ROOT / 'app.py'
-SOURCE_PATH = ROOT / 'app_parts' / 'monolith_source.txt'
+# Blob SHA of app.py on main before this PR (995b9958).
+ORIG_BLOB = 'c4a69b8f826e5c9b38cc3574082331cad29cfaf4'
+ORIG_REF = '995b9958a7c5b94c7ea1ab8dfce9a3c26028e214:app.py'
 
 
 def apply_unified_diff(source: str, diff_text: str) -> str:
@@ -65,29 +65,29 @@ def apply_unified_diff(source: str, diff_text: str) -> str:
     return ''.join(out)
 
 
-def load_patched_app():
-    existing = sys.modules.get('app')
-    if existing is not None and getattr(existing, '_hardening_applied', False):
-        return existing
-
-    if SOURCE_PATH.exists():
-        source = SOURCE_PATH.read_text()
-    else:
-        source = APP_PATH.read_text()
-    already = (
-        'PRODUCTION_CSP =' in source
-        and 'def check_ticket(ticket_id, stamp=True)' in source
+def original_source() -> str:
+    """Prefer git object for main's app.py; never fetch the live site."""
+    for args in (
+        ['git', 'cat-file', '-p', ORIG_BLOB],
+        ['git', 'show', ORIG_REF],
+        ['git', 'show', 'origin/main:app.py'],
+        ['git', 'show', 'main:app.py'],
+    ):
+        try:
+            text = subprocess.check_output(args, cwd=ROOT, text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            continue
+        if text and 'def check_ticket(' in text:
+            return text
+    raise RuntimeError(
+        'Could not load original app.py. Apply patches/security-defensive-hardening.diff '
+        'onto main app.py in place, then replace this loader. GitHub MCP could not upload '
+        'the 191KB monolith.'
     )
-    if already:
-        patched = source
-    else:
-        patched = apply_unified_diff(source, DIFF_PATH.read_text())
 
-    module = types.ModuleType('app')
-    module.__file__ = str(APP_PATH)
-    module.__name__ = 'app'
-    module._hardening_applied = True
-    sys.modules['app'] = module
-    exec(compile(patched, str(APP_PATH), 'exec'), module.__dict__)
-    module._hardening_applied = True
-    return module
+
+def patched_source() -> str:
+    source = original_source()
+    if 'PRODUCTION_CSP =' in source and 'def check_ticket(ticket_id, stamp=True)' in source:
+        return source
+    return apply_unified_diff(source, DIFF_PATH.read_text())
