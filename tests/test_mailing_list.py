@@ -24,6 +24,7 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.full_list = []
         self.members = []
         self.log = []
+        self.tickets = []
         self.mail_sent = []
         self.patches = [
             mock.patch.object(thesection, 'load_invites', side_effect=lambda: list(self.invites)),
@@ -34,7 +35,7 @@ class ProtectedMailingListTests(unittest.TestCase):
             mock.patch.object(thesection, 'save_mailing_list_log', side_effect=self._save_log),
             mock.patch.object(thesection, 'load_members', side_effect=lambda: list(self.members)),
             mock.patch.object(thesection, 'save_members', side_effect=lambda members: True),
-            mock.patch.object(thesection, 'load_tickets', return_value=[]),
+            mock.patch.object(thesection, 'load_tickets', side_effect=lambda: list(self.tickets)),
             mock.patch.object(thesection, 'get_display_timezone', return_value=timezone.utc),
             mock.patch.object(thesection.mail, 'send', side_effect=self._capture_mail_send),
         ]
@@ -543,6 +544,24 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn("form.dataset.submitting === '1'", html)
         self.assertIn('form.requestSubmit()', html)
         self.assertNotIn('confirmOk.disabled = true', html)
+
+    def test_mailing_list_shows_ticket_purchase_counts(self):
+        self.invites = [self._invite('guest@example.com'), self._invite('none@example.com')]
+        self.full_list = [self._full_entry('full@example.com')]
+        self.tickets = [
+            {'email': 'guest@example.com', 'quantity': 2},
+            {'email': 'Guest@example.com', 'quantity': 1},
+            {'email': 'full@example.com', 'quantity': 4},
+        ]
+        html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn('Tickets', html)
+        self.assertIn('data-tickets="3"', html)
+        self.assertIn('data-tickets="4"', html)
+        self.assertIn('data-tickets="0"', html)
+        self.assertEqual(
+            thesection.ticket_quantities_by_email(self.tickets),
+            {'guest@example.com': 3, 'full@example.com': 4},
+        )
 
 
 if __name__ == '__main__':

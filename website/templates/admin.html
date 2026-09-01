@@ -12,7 +12,7 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
-                <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions</p>
+                <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}</p>
             </div>
             <div class="flex flex-wrap gap-3 items-center">
                 <a href="/admin/tickets.csv"
@@ -50,6 +50,7 @@
                         <th class="p-4">Ticket ID</th>
                         <th class="p-4">Email</th>
                         <th class="p-4">Qty</th>
+                        <th class="p-4">Total</th>
                         <th class="p-4">Type</th>
                         <th class="p-4">Event</th>
                         <th class="p-4">Access</th>
@@ -63,6 +64,7 @@
                         <td class="p-4 font-mono">{{ ticket.ticket_id }}</td>
                         <td class="p-4">{{ ticket.email or '—' }}</td>
                         <td class="p-4">{{ ticket.quantity }}</td>
+                        <td class="p-4 text-zinc-300 tabular-nums">{{ ticket.tickets_purchased or 0 }}</td>
                         <td class="p-4">
                             {% if ticket.ticket_type == 'vip' %}
                                 <span class="text-white font-medium">VIP</span>

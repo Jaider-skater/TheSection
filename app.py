@@ -8,6 +8,7 @@ from io import BytesIO, StringIO
 import base64
 import secrets
 from flask_mail import Mail, Message
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 import os
 import re
 import html
@@ -188,6 +189,9 @@ app.config.update(
     SESSION_COOKIE_NAME='thesection_session',
     MAX_CONTENT_LENGTH=10 * 1024 * 1024,
 )
+MEMBER_LOGIN_COOKIE = 'thesection_member'
+MEMBER_LOGIN_SALT = 'thesection-member-login'
+MEMBER_LOGIN_MAX_AGE = int(timedelta(days=31).total_seconds())
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
 scanner_settings_lock = threading.Lock()
@@ -324,6 +328,73 @@ def mark_member_session(email):
     session.modified = True
 
 
+def _member_login_serializer():
+    return URLSafeTimedSerializer(app.secret_key, salt=MEMBER_LOGIN_SALT)
+
+
+def member_login_cookie_samesite():
+    # None so the cookie is sent on the top-level return from Stripe Checkout.
+    # Secure is required with None; local HTTP keeps Lax.
+    return 'None' if IS_PRODUCTION else 'Lax'
+
+
+def set_member_login_cookie(response, email):
+    normalized = (email or '').strip().lower()
+    if not normalized or not response:
+        return response
+    try:
+        token = _member_login_serializer().dumps(normalized)
+    except Exception as e:
+        print('Failed to sign member login cookie:', e)
+        return response
+    response.set_cookie(
+        MEMBER_LOGIN_COOKIE,
+        token,
+        max_age=MEMBER_LOGIN_MAX_AGE,
+        httponly=True,
+        secure=IS_PRODUCTION,
+        samesite=member_login_cookie_samesite(),
+        path='/',
+    )
+    return response
+
+
+def clear_member_login_cookie(response):
+    if not response:
+        return response
+    response.delete_cookie(
+        MEMBER_LOGIN_COOKIE,
+        path='/',
+        samesite=member_login_cookie_samesite(),
+        secure=IS_PRODUCTION,
+        httponly=True,
+    )
+    return response
+
+
+def read_member_login_cookie():
+    raw = request.cookies.get(MEMBER_LOGIN_COOKIE)
+    if not raw:
+        return None
+    try:
+        email = _member_login_serializer().loads(raw, max_age=MEMBER_LOGIN_MAX_AGE)
+    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return None
+    email = (email or '').strip().lower()
+    if email and get_legacy_member(email):
+        return email
+    return None
+
+
+def restore_member_session_from_cookie():
+    """Re-attach member login if Stripe/browser dropped the Flask session cookie."""
+    if session.get('legacy_member_email'):
+        return
+    email = read_member_login_cookie()
+    if email:
+        mark_member_session(email)
+
+
 def ensure_csrf_token():
     token = session.get('csrf_token')
     if not token:
@@ -439,6 +510,7 @@ def _locked_json_write(path, data):
 
 @app.before_request
 def security_before_request():
+    restore_member_session_from_cookie()
     ensure_csrf_token()
     touch_auth_session()
     # CSRF for state-changing requests (except Stripe webhook)
@@ -468,6 +540,11 @@ def security_after_request(response):
     # Never cache authenticated HTML responses in shared caches
     if session.get('legacy_member_email') or session.get('admin_authenticated') or session.get('verify_authenticated'):
         response.headers['Cache-Control'] = 'private, no-store'
+    member_email = (session.get('legacy_member_email') or '').strip().lower()
+    if member_email:
+        set_member_login_cookie(response, member_email)
+    elif request.cookies.get(MEMBER_LOGIN_COOKIE):
+        clear_member_login_cookie(response)
     return response
 
 
@@ -504,6 +581,31 @@ def save_tickets(tickets):
     if not ensure_data_dir(tickets_file):
         return False
     return _locked_json_write(tickets_file, tickets)
+
+
+def ticket_quantity(ticket):
+    if not isinstance(ticket, dict):
+        return 0
+    raw = ticket.get('quantity')
+    if raw is None or raw == '':
+        return 1
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def ticket_quantities_by_email(tickets=None):
+    """Total admissions purchased per buyer email."""
+    counts = {}
+    for ticket in tickets if tickets is not None else load_tickets():
+        if not isinstance(ticket, dict):
+            continue
+        email = (ticket.get('email') or '').strip().lower()
+        if not email:
+            continue
+        counts[email] = counts.get(email, 0) + ticket_quantity(ticket)
+    return counts
 
 
 def get_ticket_by_session(session_id):
@@ -1027,6 +1129,7 @@ def mark_member_invite_sent(email):
 
 def invite_list_for_admin():
     rows = []
+    ticket_counts = ticket_quantities_by_email()
     invites = [invite for invite in load_invites() if isinstance(invite, dict)]
     for invite in sorted(invites, key=lambda i: i.get('added_at') or '', reverse=True):
         email = (invite.get('email') or '').strip().lower()
@@ -1047,6 +1150,7 @@ def invite_list_for_admin():
             'claimed_at': invite.get('claimed_at'),
             'status': status,
             'protected': is_protected_mailing_list_email(email),
+            'tickets_purchased': ticket_counts.get(email, 0),
         })
     return rows
 
@@ -1462,6 +1566,7 @@ def update_email_on_full_mailing_list(old_email, new_email):
 
 def full_mailing_list_for_admin():
     rows = []
+    ticket_counts = ticket_quantities_by_email()
     entries = [entry for entry in load_full_mailing_list() if isinstance(entry, dict)]
     for entry in sorted(entries, key=lambda e: e.get('added_at') or '', reverse=True):
         email = (entry.get('email') or '').strip().lower()
@@ -1474,6 +1579,7 @@ def full_mailing_list_for_admin():
             'source': entry.get('source') or 'manual',
             'has_account': bool(member),
             'protected': is_protected_mailing_list_email(email),
+            'tickets_purchased': ticket_counts.get(email, 0),
         })
     return rows
 
@@ -4183,6 +4289,9 @@ def success():
             )
 
         ticket = fulfill_paid_checkout(checkout_session)
+        session_email = (session.get('legacy_member_email') or '').strip().lower()
+        if session_email:
+            mark_member_session(session_email)
         ticket_id = ticket['ticket_id']
         quantity = ticket['quantity']
         ticket_type = ticket.get('ticket_type', 'general')
@@ -4515,6 +4624,10 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'success': success,
         'member': logged_in,
         'saved_ticket_details': saved_ticket_details or [],
+        'tickets_purchased': (
+            ticket_quantities_by_email().get((logged_in.get('email') or '').strip().lower(), 0)
+            if logged_in else 0
+        ),
         'has_past_purchases': member_has_past_purchases(logged_in) if logged_in else False,
         'has_returning_guest_discount': has_returning,
         'discount_eligible': discount_eligible,
@@ -4984,12 +5097,18 @@ def admin_dashboard():
         safe = {k: v for k, v in ticket.items() if k != 'view_token'}
         safe['event_name'] = (ticket_event_record(ticket) or {}).get('name') or ''
         safe_tickets.append(safe)
-    total_admissions = sum(ticket.get('quantity', 0) for ticket in tickets)
+    total_admissions = sum(ticket_quantity(ticket) for ticket in tickets)
+    ticket_counts = ticket_quantities_by_email(tickets)
+    unique_buyers = len(ticket_counts)
+    for ticket in safe_tickets:
+        email = (ticket.get('email') or '').strip().lower()
+        ticket['tickets_purchased'] = ticket_counts.get(email, 0)
     return render_template(
         'admin.html',
         tickets=safe_tickets,
         tickets_json=json.dumps(safe_tickets, indent=2),
         total_admissions=total_admissions,
+        unique_buyers=unique_buyers,
     )
 
 

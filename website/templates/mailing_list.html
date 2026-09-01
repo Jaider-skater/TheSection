@@ -43,6 +43,7 @@
         }
         .col-check { width: 28px; }
         .col-status { width: 92px; }
+        .col-tickets { width: 72px; }
         .col-date { width: 148px; }
         .col-actions { width: 118px; }
         .col-type { width: 92px; }
@@ -79,6 +80,7 @@
         {% set list_label = 'exclusive list' if kind == 'exclusive' else 'full list' %}
         <tr class="email-row hover:bg-zinc-900/80"
             data-email="{{ row.email|lower }}"
+            data-tickets="{{ row.tickets_purchased|default(0) }}"
             data-protected="{{ '1' if row.protected else '0' }}">
             <td class="col-check">
                 {% if row.protected %}
@@ -120,6 +122,9 @@
                         {{ status_pill((row.source or 'manual')|capitalize) }}
                     {% endif %}
                 {% endif %}
+            </td>
+            <td class="col-tickets tabular-nums text-xs {% if row.tickets_purchased %}text-zinc-200{% else %}text-zinc-600{% endif %}">
+                {{ row.tickets_purchased|default(0) }}
             </td>
             <td class="col-date hidden sm:table-cell text-[11px] text-zinc-500 tabular-nums whitespace-nowrap">
                 {{ row.added_at | local_time }}
@@ -267,6 +272,7 @@
                                     <th class="col-check"></th>
                                     <th>Email</th>
                                     <th class="col-status">Status</th>
+                                    <th class="col-tickets">Tickets</th>
                                     <th class="col-date hidden sm:table-cell">Added</th>
                                     <th class="col-actions"></th>
                                 </tr>
@@ -338,6 +344,7 @@
                                     <th class="col-check"></th>
                                     <th>Email</th>
                                     <th class="col-status">Source</th>
+                                    <th class="col-tickets">Tickets</th>
                                     <th class="col-date hidden sm:table-cell">Added</th>
                                     <th class="col-actions"></th>
                                 </tr>
