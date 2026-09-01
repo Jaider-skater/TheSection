@@ -551,19 +551,9 @@
             });
             confirmOk.textContent = okLabel || 'Confirm';
             confirmOk.disabled = false;
-            delete confirmOk.dataset.clicked;
             confirmCallback = onConfirm;
             confirmDialog.showModal();
         }
-
-        confirmOk.addEventListener('click', function (e) {
-            if (confirmOk.dataset.clicked === '1') {
-                e.preventDefault();
-                return;
-            }
-            confirmOk.dataset.clicked = '1';
-            confirmOk.disabled = true;
-        });
 
         confirmDialog.addEventListener('close', function () {
             if (confirmDialog.returnValue === 'ok' && confirmCallback) {
@@ -607,13 +597,11 @@
             if (form.dataset.submitting === '1') return;
             form.dataset.submitting = '1';
             form.dataset.confirmed = '1';
-            form.querySelectorAll('button').forEach(function (btn) { btn.disabled = true; });
-            if (form.id) {
-                document.querySelectorAll('button[form="' + form.id + '"]').forEach(function (btn) {
-                    btn.disabled = true;
-                });
+            try {
+                form.requestSubmit();
+            } catch (err) {
+                form.submit();
             }
-            form.requestSubmit();
         }
 
         document.querySelectorAll('form[data-confirm-kind]').forEach(function (form) {

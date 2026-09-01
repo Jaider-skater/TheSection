@@ -541,7 +541,8 @@ class ProtectedMailingListTests(unittest.TestCase):
     def test_page_blocks_double_submit(self):
         html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
         self.assertIn("form.dataset.submitting === '1'", html)
-        self.assertIn('confirmOk.dataset.clicked', html)
+        self.assertIn('form.requestSubmit()', html)
+        self.assertNotIn('confirmOk.disabled = true', html)
 
 
 if __name__ == '__main__':
