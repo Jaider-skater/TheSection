@@ -12,6 +12,7 @@ import os
 import re
 import html
 import threading
+from contextlib import contextmanager
 import json
 import ast
 import csv
@@ -20,7 +21,17 @@ import zipfile
 import subprocess
 import tempfile
 import time
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows
+    class fcntl:
+        LOCK_SH = 1
+        LOCK_EX = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(_fd, _op):
+            return None
 from datetime import datetime, timezone, timedelta
 try:
     from zoneinfo import ZoneInfo
@@ -184,7 +195,19 @@ events_lock = threading.Lock()
 invites_lock = threading.Lock()
 full_list_lock = threading.Lock()
 mailing_list_log_lock = threading.Lock()
+_mailing_send_lock = threading.Lock()
 exclusive_holds_lock = threading.Lock()
+
+
+@contextmanager
+def mailing_send_guard():
+    """Only one broadcast/invite send at a time so a double-click cannot resend."""
+    acquired = _mailing_send_lock.acquire(blocking=False)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            _mailing_send_lock.release()
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
 EXCLUSIVE_HOLD_TTL = timedelta(minutes=45)
@@ -391,7 +414,7 @@ def _locked_json_write(path, data):
     tmp_path = f'{path}.tmp.{os.getpid()}.{secrets.token_hex(4)}'
     try:
         with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, default=str)
             f.flush()
             os.fsync(f.fileno())
         # Exclusive lock on destination while replacing
@@ -404,7 +427,7 @@ def _locked_json_write(path, data):
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
         return True
-    except OSError as e:
+    except (OSError, TypeError, ValueError) as e:
         print(f'Failed to save JSON ({path}):', e)
         try:
             if os.path.exists(tmp_path):
@@ -830,7 +853,7 @@ def remove_emails_from_invite_list(emails):
             invites = load_invites()
             remaining = []
             for invite in invites:
-                email = invite.get('email', '').strip().lower()
+                email = (invite.get('email') or '').strip().lower()
                 if email in wanted_set:
                     removed.append(email)
                     removed_records.append(dict(invite))
@@ -1004,8 +1027,11 @@ def mark_member_invite_sent(email):
 
 def invite_list_for_admin():
     rows = []
-    for invite in sorted(load_invites(), key=lambda i: i.get('added_at', ''), reverse=True):
-        email = invite.get('email', '').strip().lower()
+    invites = [invite for invite in load_invites() if isinstance(invite, dict)]
+    for invite in sorted(invites, key=lambda i: i.get('added_at') or '', reverse=True):
+        email = (invite.get('email') or '').strip().lower()
+        if not email:
+            continue
         member = get_legacy_member(email)
         status = 'pending'
         if member:
@@ -1026,10 +1052,14 @@ def invite_list_for_admin():
 
 
 def invites_ready_to_send():
+    already = emails_already_sent_invites()
     ready = []
     for row in invite_list_for_admin():
-        if row['status'] in ('pending', 'sent'):
-            ready.append(row['email'])
+        if row['status'] != 'pending':
+            continue
+        if row['email'] in already:
+            continue
+        ready.append(row['email'])
     return ready
 
 
@@ -1126,7 +1156,7 @@ def remove_emails_from_full_mailing_list(emails):
             entries = load_full_mailing_list()
             remaining = []
             for entry in entries:
-                email = entry.get('email', '').strip().lower()
+                email = (entry.get('email') or '').strip().lower()
                 if email in wanted_set:
                     removed.append(email)
                     removed_records.append(dict(entry))
@@ -1169,12 +1199,16 @@ def append_mailing_list_log(entry):
 def append_mailing_list_log_entries(new_entries):
     if not new_entries:
         return False
-    with mailing_list_log_lock:
-        entries = load_mailing_list_log()
-        entries.extend(new_entries)
-        if len(entries) > MAILING_LIST_LOG_MAX:
-            entries = entries[-MAILING_LIST_LOG_MAX:]
-        return save_mailing_list_log(entries)
+    try:
+        with mailing_list_log_lock:
+            entries = load_mailing_list_log()
+            entries.extend(new_entries)
+            if len(entries) > MAILING_LIST_LOG_MAX:
+                entries = entries[-MAILING_LIST_LOG_MAX:]
+            return save_mailing_list_log(entries)
+    except Exception as e:
+        print('Failed to append mailing list log:', e)
+        return False
 
 
 def log_mailing_list_removal(list_kind, records):
@@ -1196,7 +1230,55 @@ def log_mailing_list_removal(list_kind, records):
     return append_mailing_list_log_entries(new_entries)
 
 
-def log_mailing_list_send(kind, subject, emails, status='sent'):
+def mailing_message_fingerprint(kind, subject, body=''):
+    payload = f'{(kind or "").strip().lower()}\n{(subject or "").strip()}\n{body or ""}'
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+
+
+def emails_already_sent_message(kind, subject, body=''):
+    """Addresses that already got this exact message successfully."""
+    fingerprint = mailing_message_fingerprint(kind, subject, body)
+    subject = (subject or '').strip()
+    found = set()
+    for entry in load_mailing_list_log():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('action') != 'send' or entry.get('status') != 'sent':
+            continue
+        if (entry.get('kind') or '') != kind:
+            continue
+        entry_fp = entry.get('fingerprint') or ''
+        if entry_fp:
+            if entry_fp != fingerprint:
+                continue
+        elif (entry.get('subject') or '') != subject:
+            continue
+        for email in entry.get('emails') or []:
+            normalized = (email or '').strip().lower()
+            if normalized:
+                found.add(normalized)
+    return found
+
+
+def emails_already_sent_invites():
+    found = set()
+    for entry in load_mailing_list_log():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('action') != 'send':
+            continue
+        if entry.get('kind') != 'invite':
+            continue
+        if entry.get('status') != 'sent':
+            continue
+        for email in entry.get('emails') or []:
+            normalized = (email or '').strip().lower()
+            if normalized:
+                found.add(normalized)
+    return found
+
+
+def log_mailing_list_send(kind, subject, emails, status='sent', fingerprint=''):
     """One log row per recipient for a broadcast or invite send."""
     now = datetime.now(timezone.utc).isoformat()
     subject = (subject or '').replace('\r', ' ').replace('\n', ' ').strip()
@@ -1209,7 +1291,7 @@ def log_mailing_list_send(kind, subject, emails, status='sent'):
         normalized = (email or '').strip().lower()
         if not normalized:
             continue
-        new_entries.append({
+        entry = {
             'id': secrets.token_hex(8),
             'action': 'send',
             'kind': kind,
@@ -1217,19 +1299,32 @@ def log_mailing_list_send(kind, subject, emails, status='sent'):
             'status': status,
             'at': now,
             'emails': [normalized],
-        })
+        }
+        if fingerprint:
+            entry['fingerprint'] = fingerprint
+        new_entries.append(entry)
     return append_mailing_list_log_entries(new_entries)
 
 
 def mailing_list_log_for_admin(action='remove'):
     rows = []
-    for entry in reversed(load_mailing_list_log()):
+    try:
+        log_entries = load_mailing_list_log()
+    except Exception as e:
+        print('Failed to load mailing list log:', e)
+        return rows
+    for entry in reversed(log_entries):
+        if not isinstance(entry, dict):
+            continue
         entry_action = entry.get('action') or 'remove'
         if action and entry_action != action:
             continue
+        raw_emails = entry.get('emails') or []
+        if isinstance(raw_emails, str):
+            raw_emails = [raw_emails]
         emails = [
             (email or '').strip().lower()
-            for email in (entry.get('emails') or [])
+            for email in raw_emails
             if (email or '').strip()
         ]
         if not emails:
@@ -1367,8 +1462,11 @@ def update_email_on_full_mailing_list(old_email, new_email):
 
 def full_mailing_list_for_admin():
     rows = []
-    for entry in sorted(load_full_mailing_list(), key=lambda e: e.get('added_at', ''), reverse=True):
-        email = entry.get('email', '').strip().lower()
+    entries = [entry for entry in load_full_mailing_list() if isinstance(entry, dict)]
+    for entry in sorted(entries, key=lambda e: e.get('added_at') or '', reverse=True):
+        email = (entry.get('email') or '').strip().lower()
+        if not email:
+            continue
         member = get_legacy_member(email)
         rows.append({
             'email': email,
@@ -1421,16 +1519,40 @@ def resolve_broadcast_recipients(lists):
     return sorted(emails)
 
 
+def mail_is_configured():
+    sender = (app.config.get('MAIL_DEFAULT_SENDER') or app.config.get('MAIL_USERNAME') or '').strip()
+    password = (app.config.get('MAIL_PASSWORD') or '').strip()
+    server = (app.config.get('MAIL_SERVER') or '').strip()
+    return bool(sender and password and server)
+
+
 def send_broadcast_email(subject, body, recipients):
-    """Send plain/html broadcast to many recipients. Returns sent, failed lists."""
+    """Send plain/html broadcast to many recipients. Returns sent, failed, skipped."""
     subject = (subject or '').strip()
     body = (body or '').strip()
     sent = []
     failed = []
+    skipped = []
     if not subject or not body or not recipients:
-        return sent, failed
+        return sent, failed, skipped
     if any(c in subject for c in '\r\n'):
-        return sent, failed
+        return sent, failed, skipped
+    if not app.config.get('TESTING') and not mail_is_configured():
+        print('Broadcast skipped: mail is not configured')
+        return sent, list(recipients), skipped
+    fingerprint = mailing_message_fingerprint('broadcast', subject, body)
+    already = emails_already_sent_message('broadcast', subject, body)
+    to_send = []
+    for email in recipients:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            continue
+        if normalized in already:
+            skipped.append(normalized)
+        else:
+            to_send.append(normalized)
+    if not to_send:
+        return sent, failed, skipped
     html_body = (
         '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
         '<h2 style="margin:0 0 12px;">The Section</h2>'
@@ -1440,8 +1562,18 @@ def send_broadcast_email(subject, body, recipients):
         )
         + '</div>'
     )
+    budget = float(os.getenv('BROADCAST_REQUEST_BUDGET', '20'))
+    deadline = time.monotonic() + max(5.0, budget)
     with app.app_context():
-        for email in recipients:
+        for email in to_send:
+            if time.monotonic() >= deadline:
+                leftover = [
+                    remaining for remaining in to_send
+                    if remaining not in sent and remaining not in failed
+                ]
+                print(f'Broadcast stopped early to avoid request timeout; {len(leftover)} not sent')
+                failed.extend(leftover)
+                break
             try:
                 msg = Message(
                     subject,
@@ -1456,10 +1588,14 @@ def send_broadcast_email(subject, body, recipients):
                 print(f'Broadcast email failed for {email}:', e)
                 failed.append(email)
     if sent:
-        log_mailing_list_send('broadcast', subject, sent, status='sent')
+        log_mailing_list_send(
+            'broadcast', subject, sent, status='sent', fingerprint=fingerprint
+        )
     if failed:
-        log_mailing_list_send('broadcast', subject, failed, status='failed')
-    return sent, failed
+        log_mailing_list_send(
+            'broadcast', subject, failed, status='failed', fingerprint=fingerprint
+        )
+    return sent, failed, skipped
 
 
 
@@ -3649,6 +3785,10 @@ def build_member_invite_url(email, token):
 
 
 def send_member_invite_email(customer_email, token, invite_url=None):
+    normalized = (customer_email or '').strip().lower()
+    if normalized and normalized in emails_already_sent_invites():
+        print(f"Member invite already sent to {customer_email}; skipping duplicate")
+        return True
     invite_url = invite_url or build_member_invite_url(customer_email, token)
     days_label = f'{INVITE_EXPIRY_DAYS} day{"s" if INVITE_EXPIRY_DAYS != 1 else ""}'
     welcome_pct = int(returning_guest_discount * 100)
@@ -3675,6 +3815,15 @@ def send_member_invite_email(customer_email, token, invite_url=None):
         f'<span style="word-break:break-all;">{invite_url}</span></p>'
         '</div>'
     )
+    if not app.config.get('TESTING') and not mail_is_configured():
+        print(f"Member invite email skipped for {customer_email}: mail is not configured")
+        log_mailing_list_send(
+            'invite',
+            'The Section — welcome back (member invite)',
+            [customer_email],
+            status='failed',
+        )
+        return False
     with app.app_context():
         try:
             msg = Message(
@@ -3712,8 +3861,9 @@ def send_pending_member_invites():
     sent = []
     failed = []
     skipped = []
+    already = emails_already_sent_invites()
     for email in invites_ready_to_send():
-        if get_legacy_member(email):
+        if get_legacy_member(email) or email in already:
             skipped.append(email)
             continue
         token = set_member_invite_token(email)
@@ -3723,6 +3873,7 @@ def send_pending_member_invites():
         invite_url = build_member_invite_url(email, token)
         if deliver_member_invite_email(email, token, invite_url=invite_url):
             mark_member_invite_sent(email)
+            already.add(email)
             sent.append(email)
         else:
             failed.append(email)
@@ -4900,130 +5051,184 @@ def admin_mailing_list():
     success = None
 
     if request.method == 'POST':
-        action = request.form.get('action')
-        if action == 'add_emails':
-            emails = normalize_email_list(request.form.get('emails', ''))
-            if not emails:
-                error = 'Add at least one valid email address.'
-            else:
-                added, skipped = add_emails_to_invite_list(emails)
-                parts = []
-                if added:
-                    parts.append(f'Added {len(added)} exclusive email{"s" if len(added) != 1 else ""}.')
-                if skipped:
-                    parts.append(f'{len(skipped)} already on exclusive list.')
-                success = ' '.join(parts) or 'No new emails added.'
-        elif action in ('remove_email', 'remove_emails'):
-            emails = posted_mailing_list_emails()
-            if not emails:
-                error = 'Select at least one email to remove.'
-            else:
-                removed, skipped = remove_emails_from_invite_list(emails)
-                for email in removed:
-                    clear_exclusive_member_features(email)
-                parts = []
-                if len(removed) == 1:
-                    parts.append(
-                        f'Removed {removed[0]} from exclusive list and cleared exclusive member perks '
-                        f'(account/tickets kept if they exist).'
-                    )
-                elif removed:
-                    parts.append(
-                        f'Removed {len(removed)} emails from exclusive list and cleared exclusive member perks '
-                        f'(accounts/tickets kept if they exist).'
-                    )
-                if skipped:
-                    parts.append(
-                        f'{len(skipped)} locked address{"es" if len(skipped) != 1 else ""} skipped.'
-                    )
-                if removed:
-                    success = ' '.join(parts)
-                else:
-                    error = ' '.join(parts) or 'Could not remove that email.'
-        elif action == 'edit_email':
-            old_email = (request.form.get('email') or '').strip().lower()
-            new_email = (request.form.get('new_email') or '').strip().lower()
-            ok, err = update_email_on_invite_list(old_email, new_email)
-            if ok:
-                success = (
-                    f'Updated exclusive email {old_email} → {new_email}.'
-                    if old_email != new_email else 'No change.'
+        try:
+            error, success = _admin_mailing_list_post()
+        except Exception as e:
+            error = public_error_message(
+                e, 'Could not complete that mailing-list action. Please try again.'
+            )
+            success = None
+
+    try:
+        invites = invite_list_for_admin()
+        ready_count = len(invites_ready_to_send())
+        blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
+        full_list = full_mailing_list_for_admin()
+        backup_log = mailing_list_log_for_admin('remove')
+        send_log = mailing_list_log_for_admin('send')
+    except Exception as e:
+        error = public_error_message(
+            e, 'Could not load mailing lists. Please try again.'
+        )
+        invites, ready_count, blocked_count = [], 0, 0
+        full_list, backup_log, send_log = [], [], []
+    return render_template(
+        'mailing_list.html',
+        invites=invites,
+        ready_count=ready_count,
+        blocked_count=blocked_count,
+        full_list=full_list,
+        full_list_count=len(full_list),
+        backup_log=backup_log,
+        backup_log_count=len(backup_log),
+        send_log=send_log,
+        send_log_count=len(send_log),
+        key='',
+        error=error,
+        success=success,
+        member_discount_percent=int(member_discount * 100),
+        returning_guest_discount_percent=int(returning_guest_discount * 100),
+        invite_days=INVITE_EXPIRY_DAYS,
+        timezone_label=display_timezone_label(),
+    )
+
+
+def _admin_mailing_list_post():
+    error = None
+    success = None
+    action = request.form.get('action')
+    if action == 'add_emails':
+        emails = normalize_email_list(request.form.get('emails', ''))
+        if not emails:
+            error = 'Add at least one valid email address.'
+        else:
+            added, skipped = add_emails_to_invite_list(emails)
+            parts = []
+            if added:
+                parts.append(f'Added {len(added)} exclusive email{"s" if len(added) != 1 else ""}.')
+            if skipped:
+                parts.append(f'{len(skipped)} already on exclusive list.')
+            success = ' '.join(parts) or 'No new emails added.'
+    elif action in ('remove_email', 'remove_emails'):
+        emails = posted_mailing_list_emails()
+        if not emails:
+            error = 'Select at least one email to remove.'
+        else:
+            removed, skipped = remove_emails_from_invite_list(emails)
+            for email in removed:
+                clear_exclusive_member_features(email)
+            parts = []
+            if len(removed) == 1:
+                parts.append(
+                    f'Removed {removed[0]} from exclusive list and cleared exclusive member perks '
+                    f'(account/tickets kept if they exist).'
                 )
+            elif removed:
+                parts.append(
+                    f'Removed {len(removed)} emails from exclusive list and cleared exclusive member perks '
+                    f'(accounts/tickets kept if they exist).'
+                )
+            if skipped:
+                parts.append(
+                    f'{len(skipped)} locked address{"es" if len(skipped) != 1 else ""} skipped.'
+                )
+            if removed:
+                success = ' '.join(parts)
             else:
-                error = err or 'Could not update that email.'
-        elif action == 'send_invites':
-            if not rate_limit_allow('send_invites', 5, 3600):
+                error = ' '.join(parts) or 'Could not remove that email.'
+    elif action == 'edit_email':
+        old_email = (request.form.get('email') or '').strip().lower()
+        new_email = (request.form.get('new_email') or '').strip().lower()
+        ok, err = update_email_on_invite_list(old_email, new_email)
+        if ok:
+            success = (
+                f'Updated exclusive email {old_email} → {new_email}.'
+                if old_email != new_email else 'No change.'
+            )
+        else:
+            error = err or 'Could not update that email.'
+    elif action == 'send_invites':
+        with mailing_send_guard() as got_lock:
+            if not got_lock:
+                error = 'A send is already in progress. Wait for it to finish.'
+            elif not rate_limit_allow('send_invites', 5, 3600):
                 error = 'Invite send limit reached (5 per hour). Wait before sending again.'
             else:
                 result = send_pending_member_invites()
                 sent_count = len(result['sent'])
                 failed_count = len(result['failed'])
+                skipped_count = len(result.get('skipped') or [])
                 if sent_count:
                     success = f'Sent {sent_count} invite email{"s" if sent_count != 1 else ""}.'
                     if failed_count:
                         success += f' {failed_count} failed to send.'
+                    if skipped_count:
+                        success += f' {skipped_count} already sent.'
                 elif failed_count:
                     error = f'Could not send invites ({failed_count} failed). Check mail settings.'
                 else:
                     success = 'No pending invites to send.'
-        elif action == 'add_full_emails':
-            emails = normalize_email_list(request.form.get('emails', ''))
-            if not emails:
-                error = 'Add at least one valid email address for the full list.'
-            else:
-                added, skipped = add_emails_to_full_mailing_list(emails, source='manual')
-                parts = []
-                if added:
-                    parts.append(f'Added {len(added)} to full list.')
-                if skipped:
-                    parts.append(
-                        f'{len(skipped)} skipped (already on full list or exclusive list).'
-                    )
-                success = ' '.join(parts) or 'No new emails added to full list.'
-        elif action in ('remove_full_email', 'remove_full_emails'):
-            emails = posted_mailing_list_emails()
-            if not emails:
-                error = 'Select at least one email to remove.'
-            else:
-                removed, skipped = remove_emails_from_full_mailing_list(emails)
-                parts = []
-                if len(removed) == 1:
-                    parts.append(f'Removed {removed[0]} from full list.')
-                elif removed:
-                    parts.append(f'Removed {len(removed)} emails from full list.')
-                if skipped:
-                    parts.append(
-                        f'{len(skipped)} locked address{"es" if len(skipped) != 1 else ""} skipped.'
-                    )
-                if removed:
-                    success = ' '.join(parts)
-                else:
-                    error = ' '.join(parts) or 'Could not remove that email from the full list.'
-        elif action == 'edit_full_email':
-            old_email = (request.form.get('email') or '').strip().lower()
-            new_email = (request.form.get('new_email') or '').strip().lower()
-            ok, err = update_email_on_full_mailing_list(old_email, new_email)
-            if ok:
-                success = (
-                    f'Updated full-list email to {new_email}.'
-                    if old_email != new_email else 'No change.'
+    elif action == 'add_full_emails':
+        emails = normalize_email_list(request.form.get('emails', ''))
+        if not emails:
+            error = 'Add at least one valid email address for the full list.'
+        else:
+            added, skipped = add_emails_to_full_mailing_list(emails, source='manual')
+            parts = []
+            if added:
+                parts.append(f'Added {len(added)} to full list.')
+            if skipped:
+                parts.append(
+                    f'{len(skipped)} skipped (already on full list or exclusive list).'
                 )
+            success = ' '.join(parts) or 'No new emails added to full list.'
+    elif action in ('remove_full_email', 'remove_full_emails'):
+        emails = posted_mailing_list_emails()
+        if not emails:
+            error = 'Select at least one email to remove.'
+        else:
+            removed, skipped = remove_emails_from_full_mailing_list(emails)
+            parts = []
+            if len(removed) == 1:
+                parts.append(f'Removed {removed[0]} from full list.')
+            elif removed:
+                parts.append(f'Removed {len(removed)} emails from full list.')
+            if skipped:
+                parts.append(
+                    f'{len(skipped)} locked address{"es" if len(skipped) != 1 else ""} skipped.'
+                )
+            if removed:
+                success = ' '.join(parts)
             else:
-                error = err or 'Could not update that email.'
-        elif action == 'restore_log':
-            ok, msg = restore_mailing_list_removal(request.form.get('log_id'))
-            if ok:
-                success = msg
-            else:
-                error = msg or 'Could not restore that backup entry.'
-        elif action == 'sync_full_list':
-            added, skipped = sync_members_into_full_mailing_list()
+                error = ' '.join(parts) or 'Could not remove that email from the full list.'
+    elif action == 'edit_full_email':
+        old_email = (request.form.get('email') or '').strip().lower()
+        new_email = (request.form.get('new_email') or '').strip().lower()
+        ok, err = update_email_on_full_mailing_list(old_email, new_email)
+        if ok:
             success = (
-                f'Synced members into full list: {len(added)} added, '
-                f'{len(skipped)} already present or exclusive.'
+                f'Updated full-list email to {new_email}.'
+                if old_email != new_email else 'No change.'
             )
-        elif action == 'send_broadcast':
-            if not rate_limit_allow('broadcast_email', 3, 3600):
+        else:
+            error = err or 'Could not update that email.'
+    elif action == 'restore_log':
+        ok, msg = restore_mailing_list_removal(request.form.get('log_id'))
+        if ok:
+            success = msg
+        else:
+            error = msg or 'Could not restore that backup entry.'
+    elif action == 'sync_full_list':
+        added, skipped = sync_members_into_full_mailing_list()
+        success = (
+            f'Synced members into full list: {len(added)} added, '
+            f'{len(skipped)} already present or exclusive.'
+        )
+    elif action == 'send_broadcast':
+        with mailing_send_guard() as got_lock:
+            if not got_lock:
+                error = 'A send is already in progress. Wait for it to finish.'
+            elif not rate_limit_allow('broadcast_email', 3, 3600):
                 error = 'Broadcast limit reached (3 per hour). Wait before sending again.'
             else:
                 subject = (request.form.get('subject') or '').strip()
@@ -5054,41 +5259,25 @@ def admin_mailing_list():
                             f'Max is {max_recipients}. Split the send or raise BROADCAST_MAX_RECIPIENTS.'
                         )
                     else:
-                        sent, failed = send_broadcast_email(subject, body, recipients)
+                        sent, failed, skipped = send_broadcast_email(subject, body, recipients)
+                        parts = []
                         if sent:
-                            success = f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
-                            if failed:
-                                success += f' {len(failed)} failed.'
+                            parts.append(
+                                f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
+                            )
+                        if skipped:
+                            parts.append(
+                                f'Skipped {len(skipped)} already sent this message.'
+                            )
+                        if failed:
+                            parts.append(f'{len(failed)} failed.')
+                        if sent or skipped:
+                            success = ' '.join(parts)
                         elif failed:
                             error = f'All {len(failed)} sends failed. Check mail settings.'
                         else:
                             error = 'Nothing was sent.'
-
-    invites = invite_list_for_admin()
-    ready_count = len(invites_ready_to_send())
-    blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
-    full_list = full_mailing_list_for_admin()
-    backup_log = mailing_list_log_for_admin('remove')
-    send_log = mailing_list_log_for_admin('send')
-    return render_template(
-        'mailing_list.html',
-        invites=invites,
-        ready_count=ready_count,
-        blocked_count=blocked_count,
-        full_list=full_list,
-        full_list_count=len(full_list),
-        backup_log=backup_log,
-        backup_log_count=len(backup_log),
-        send_log=send_log,
-        send_log_count=len(send_log),
-        key='',
-        error=error,
-        success=success,
-        member_discount_percent=int(member_discount * 100),
-        returning_guest_discount_percent=int(returning_guest_discount * 100),
-        invite_days=INVITE_EXPIRY_DAYS,
-        timezone_label=display_timezone_label(),
-    )
+    return error, success
 
 
 @app.route('/admin/mailing-list/log.json')

@@ -305,35 +305,38 @@ class ProtectedMailingListTests(unittest.TestCase):
             captured.append(msg)
 
         with mock.patch.object(thesection.mail, 'send', side_effect=fake_send):
-            sent, failed = thesection.send_broadcast_email(
+            sent, failed, skipped = thesection.send_broadcast_email(
                 'Hello',
                 '<script>alert(1)</script>\nsee you',
                 ['a@b.co'],
             )
         self.assertEqual(sent, ['a@b.co'])
         self.assertEqual(failed, [])
+        self.assertEqual(skipped, [])
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', captured[0].html)
         self.assertNotIn('<script>', captured[0].html)
 
         captured.clear()
         with mock.patch.object(thesection.mail, 'send', side_effect=fake_send):
-            sent, failed = thesection.send_broadcast_email(
+            sent, failed, skipped = thesection.send_broadcast_email(
                 'Hello\nBcc: evil@example.com',
                 'Hi',
                 ['a@b.co'],
             )
         self.assertEqual(sent, [])
         self.assertEqual(failed, [])
+        self.assertEqual(skipped, [])
         self.assertEqual(captured, [])
 
     def test_broadcast_and_invite_are_written_to_send_log(self):
-        sent, failed = thesection.send_broadcast_email(
+        sent, failed, skipped = thesection.send_broadcast_email(
             'Halloween is on',
             'See you there',
             ['a@b.co', 'c@d.co'],
         )
         self.assertEqual(sent, ['a@b.co', 'c@d.co'])
         self.assertEqual(failed, [])
+        self.assertEqual(skipped, [])
 
         self.assertTrue(
             thesection.send_member_invite_email('guest@example.com', 'token')
@@ -354,6 +357,191 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn('guest@example.com', html)
         self.assertIn('Broadcast', html)
         self.assertIn('Invite', html)
+
+    def test_page_email_lists_are_scrollable(self):
+        self.invites = [self._invite('guest@example.com')]
+        self.full_list = [self._full_entry('full@example.com')]
+        html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn('mail-scroll', html)
+        self.assertNotIn('max-h-[28rem] overflow-auto', html)
+        self.assertIn('aria-expanded="true"', html)
+        self.assertIn('drawer-panel open', html)
+
+    def test_send_broadcast_mail_failure_does_not_500(self):
+        self.invites = [self._invite('guest@example.com')]
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        with mock.patch.object(thesection.mail, 'send', side_effect=RuntimeError('smtp down')):
+            resp = client.post(
+                '/admin/mailing-list',
+                data={
+                    'action': 'send_broadcast',
+                    'list_exclusive': '1',
+                    'subject': 'Hello',
+                    'body': 'There',
+                    'csrf_token': token,
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_data(as_text=True)
+        self.assertNotIn('Internal Server Error', html)
+        self.assertIn('failed', html.lower())
+
+    def test_delete_still_works_when_log_write_raises(self):
+        self.invites = [self._invite('guest@example.com')]
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        with mock.patch.object(thesection, 'save_mailing_list_log', side_effect=RuntimeError('disk')):
+            resp = client.post(
+                '/admin/mailing-list',
+                data={
+                    'action': 'remove_email',
+                    'email': 'guest@example.com',
+                    'csrf_token': token,
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_data(as_text=True)
+        self.assertNotIn('Internal Server Error', html)
+        self.assertIn('Removed guest@example.com', html)
+        self.assertEqual(self.invites, [])
+
+    def test_delete_and_send_exceptions_render_error_not_500(self):
+        self.invites = [self._invite('guest@example.com')]
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        with mock.patch.object(
+            thesection, 'remove_emails_from_invite_list', side_effect=RuntimeError('boom')
+        ):
+            resp = client.post(
+                '/admin/mailing-list',
+                data={
+                    'action': 'remove_email',
+                    'email': 'guest@example.com',
+                    'csrf_token': token,
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('try again', resp.get_data(as_text=True).lower())
+
+        with mock.patch.object(
+            thesection, 'send_broadcast_email', side_effect=RuntimeError('boom')
+        ):
+            resp = client.post(
+                '/admin/mailing-list',
+                data={
+                    'action': 'send_broadcast',
+                    'list_exclusive': '1',
+                    'subject': 'Hello',
+                    'body': 'There',
+                    'csrf_token': token,
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('try again', resp.get_data(as_text=True).lower())
+
+    def test_remove_survives_null_email_records(self):
+        self.invites = [
+            {'email': None, 'added_at': '2026-01-01T00:00:00+00:00'},
+            self._invite('guest@example.com'),
+        ]
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        resp = client.get('/admin/mailing-list')
+        self.assertEqual(resp.status_code, 200)
+        resp = client.post(
+            '/admin/mailing-list',
+            data={
+                'action': 'remove_email',
+                'email': 'guest@example.com',
+                'csrf_token': token,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('Internal Server Error', resp.get_data(as_text=True))
+        remaining = {i.get('email') for i in self.invites}
+        self.assertEqual(remaining, {None})
+
+    def test_same_broadcast_does_not_send_twice(self):
+        captured = []
+
+        def fake_send(msg):
+            captured.append(msg)
+
+        with mock.patch.object(thesection.mail, 'send', side_effect=fake_send):
+            sent, failed, skipped = thesection.send_broadcast_email(
+                'Halloween is on',
+                'See you there',
+                ['a@b.co', 'c@d.co'],
+            )
+            self.assertEqual(sent, ['a@b.co', 'c@d.co'])
+            self.assertEqual(failed, [])
+            self.assertEqual(skipped, [])
+            self.assertEqual(len(captured), 2)
+
+            sent, failed, skipped = thesection.send_broadcast_email(
+                'Halloween is on',
+                'See you there',
+                ['a@b.co', 'c@d.co', 'new@e.co'],
+            )
+        self.assertEqual(sent, ['new@e.co'])
+        self.assertEqual(failed, [])
+        self.assertEqual(set(skipped), {'a@b.co', 'c@d.co'})
+        self.assertEqual(len(captured), 3)
+
+        sent, failed, skipped = thesection.send_broadcast_email(
+            'Different night',
+            'See you there',
+            ['a@b.co'],
+        )
+        self.assertEqual(sent, ['a@b.co'])
+        self.assertEqual(skipped, [])
+
+    def test_invite_is_not_resent_after_success(self):
+        self.invites = [self._invite('guest@example.com')]
+        self.assertEqual(thesection.invites_ready_to_send(), ['guest@example.com'])
+
+        self.assertTrue(thesection.send_member_invite_email('guest@example.com', 'token'))
+        self.assertTrue(thesection.mark_member_invite_sent('guest@example.com'))
+        self.assertEqual(thesection.invites_ready_to_send(), [])
+
+        before = len(self.mail_sent)
+        result = thesection.send_pending_member_invites()
+        self.assertEqual(result['sent'], [])
+        self.assertEqual(self.mail_sent[before:], [])
+
+        self.assertTrue(thesection.send_member_invite_email('guest@example.com', 'token-2'))
+        self.assertEqual(len(self.mail_sent), before)
+
+    def test_admin_broadcast_repeat_skips_already_sent(self):
+        self.invites = [self._invite('guest@example.com')]
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        data = {
+            'action': 'send_broadcast',
+            'list_exclusive': '1',
+            'subject': 'Doors at 9',
+            'body': 'Come through',
+            'csrf_token': token,
+        }
+        first = client.post('/admin/mailing-list', data=data)
+        self.assertEqual(first.status_code, 200)
+        self.assertIn('Sent broadcast to 1 address', first.get_data(as_text=True))
+        self.assertEqual(len(self.mail_sent), 1)
+
+        second = client.post('/admin/mailing-list', data=data)
+        self.assertEqual(second.status_code, 200)
+        html = second.get_data(as_text=True)
+        self.assertIn('already sent', html.lower())
+        self.assertEqual(len(self.mail_sent), 1)
+
+    def test_page_blocks_double_submit(self):
+        html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn("form.dataset.submitting === '1'", html)
+        self.assertIn('confirmOk.dataset.clicked', html)
 
 
 if __name__ == '__main__':
