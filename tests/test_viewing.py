@@ -83,11 +83,20 @@ class PublicViewingCountTests(unittest.TestCase):
         data = admin.get('/admin/viewing.json').get_json()
         self.assertEqual(data['viewing'], 1)
 
-    def test_admin_page_shows_viewing_label(self):
+    def test_admin_page_starts_at_zero(self):
+        guest = self.app.test_client()
+        guest.get('/api/viewing')
         html = self._admin_client().get('/admin').get_data(as_text=True)
-        self.assertIn('live-viewing', html)
-        self.assertIn('/admin/viewing.json', html)
+        self.assertIn('id="live-viewing">0</span>', html)
         self.assertIn('people viewing', html)
+        self.assertIn('/admin/viewing.json', html)
+
+    def test_staff_heartbeat_is_not_counted(self):
+        admin = self._admin_client()
+        admin.get('/api/viewing')
+        self.assertEqual(thesection.count_public_viewers(), 0)
+        data = admin.get('/admin/viewing.json').get_json()
+        self.assertEqual(data['viewing'], 0)
 
     def test_heartbeat_failure_is_not_500(self):
         with mock.patch.object(thesection, 'bump_public_viewer', side_effect=RuntimeError('boom')):

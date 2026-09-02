@@ -4052,7 +4052,8 @@ def public_viewing_heartbeat():
         vid = (request.cookies.get(VISITOR_COOKIE) or '').strip().lower()
         if not VISITOR_ID_RE.fullmatch(vid):
             vid = secrets.token_hex(16)
-        bump_public_viewer(vid)
+        if not (admin_authenticated() or is_staff_user()):
+            bump_public_viewer(vid)
         resp = jsonify({'ok': True})
         resp.set_cookie(
             VISITOR_COOKIE,
@@ -5177,18 +5178,12 @@ def admin_dashboard():
     for ticket in safe_tickets:
         email = (ticket.get('email') or '').strip().lower()
         ticket['tickets_purchased'] = ticket_counts.get(email, 0)
-    try:
-        viewing_now = count_public_viewers()
-    except Exception as e:
-        print('Viewing count failed:', e)
-        viewing_now = 0
     return render_template(
         'admin.html',
         tickets=safe_tickets,
         tickets_json=json.dumps(safe_tickets, indent=2),
         total_admissions=total_admissions,
         unique_buyers=unique_buyers,
-        viewing_now=viewing_now,
     )
 
 
