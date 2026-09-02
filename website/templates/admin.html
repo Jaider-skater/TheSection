@@ -14,6 +14,7 @@
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
                 <p class="text-zinc-400 mt-1">
                     {{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}
+                    · {{ signup_count|default(0) }} signup{{ '' if signup_count|default(0) == 1 else 's' }} vs {{ invite_count|default(0) }} invite{{ '' if invite_count|default(0) == 1 else 's' }}
                     · <span id="live-viewing">0</span>
                     <span id="live-viewing-label">people viewing</span>
                 </p>

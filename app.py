@@ -1191,6 +1191,31 @@ def invite_list_for_admin():
     return rows
 
 
+def count_signups_and_invites():
+    """Exclusive-list people who signed up vs total invites.
+
+    Signup = claimed invite or an account already exists for that email.
+    """
+    member_emails = {
+        (member.get('email') or '').strip().lower()
+        for member in load_members()
+        if isinstance(member, dict)
+    }
+    member_emails.discard('')
+    signups = 0
+    invites = 0
+    for invite in load_invites():
+        if not isinstance(invite, dict):
+            continue
+        email = (invite.get('email') or '').strip().lower()
+        if not email:
+            continue
+        invites += 1
+        if invite.get('claimed_at') or email in member_emails:
+            signups += 1
+    return signups, invites
+
+
 def invites_ready_to_send():
     already = emails_already_sent_invites()
     ready = []
@@ -5178,12 +5203,19 @@ def admin_dashboard():
     for ticket in safe_tickets:
         email = (ticket.get('email') or '').strip().lower()
         ticket['tickets_purchased'] = ticket_counts.get(email, 0)
+    try:
+        signup_count, invite_count = count_signups_and_invites()
+    except Exception as e:
+        print('Signup/invite count failed:', e)
+        signup_count, invite_count = 0, 0
     return render_template(
         'admin.html',
         tickets=safe_tickets,
         tickets_json=json.dumps(safe_tickets, indent=2),
         total_admissions=total_admissions,
         unique_buyers=unique_buyers,
+        signup_count=signup_count,
+        invite_count=invite_count,
     )
 
 
@@ -5257,6 +5289,8 @@ def admin_mailing_list():
         invites = invite_list_for_admin()
         ready_count = len(invites_ready_to_send())
         blocked_count = sum(1 for row in invites if row['status'] == 'account_exists')
+        signup_count = sum(1 for row in invites if row['status'] in ('claimed', 'account_exists'))
+        invite_count = len(invites)
         full_list = full_mailing_list_for_admin()
         backup_log = mailing_list_log_for_admin('remove')
         send_log = mailing_list_log_for_admin('send')
@@ -5265,12 +5299,15 @@ def admin_mailing_list():
             e, 'Could not load mailing lists. Please try again.'
         )
         invites, ready_count, blocked_count = [], 0, 0
+        signup_count, invite_count = 0, 0
         full_list, backup_log, send_log = [], [], []
     return render_template(
         'mailing_list.html',
         invites=invites,
         ready_count=ready_count,
         blocked_count=blocked_count,
+        signup_count=signup_count,
+        invite_count=invite_count,
         full_list=full_list,
         full_list_count=len(full_list),
         backup_log=backup_log,

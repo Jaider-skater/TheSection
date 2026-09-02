@@ -158,7 +158,8 @@
         <div class="mb-6">
             <h1 class="text-2xl font-bold">Mailing Lists</h1>
             <p class="text-zinc-500 text-xs mt-0.5">
-                Exclusive {{ returning_guest_discount_percent }}% perk · full list (signups + founding + manual)
+                {{ signup_count|default(0) }} signup{{ '' if signup_count|default(0) == 1 else 's' }} vs {{ invite_count|default(0) }} invite{{ '' if invite_count|default(0) == 1 else 's' }}
+                · Exclusive {{ returning_guest_discount_percent }}% perk · full list (signups + founding + manual)
             </p>
         </div>
 

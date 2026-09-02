@@ -563,6 +563,29 @@ class ProtectedMailingListTests(unittest.TestCase):
             {'guest@example.com': 3, 'full@example.com': 4},
         )
 
+    def test_count_signups_and_invites(self):
+        claimed = self._invite('joined@example.com')
+        claimed['claimed_at'] = datetime.now(timezone.utc).isoformat()
+        self.invites = [
+            self._invite('pending@example.com'),
+            claimed,
+            self._invite('member@example.com'),
+        ]
+        self.members = [{'email': 'member@example.com'}]
+        signups, invites = thesection.count_signups_and_invites()
+        self.assertEqual(signups, 2)
+        self.assertEqual(invites, 3)
+
+    def test_admin_and_mailing_list_show_signups_vs_invites(self):
+        claimed = self._invite('joined@example.com')
+        claimed['claimed_at'] = datetime.now(timezone.utc).isoformat()
+        self.invites = [self._invite('pending@example.com'), claimed]
+        client = self._admin_client()
+        admin_html = client.get('/admin').get_data(as_text=True)
+        self.assertIn('1 signup vs 2 invites', admin_html)
+        mailing_html = client.get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn('1 signup vs 2 invites', mailing_html)
+
 
 if __name__ == '__main__':
     unittest.main()
