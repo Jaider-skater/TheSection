@@ -12,7 +12,11 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <div>
                 <h1 class="text-3xl font-bold">Ticket Sales</h1>
-                <p class="text-zinc-400 mt-1">{{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}</p>
+                <p class="text-zinc-400 mt-1">
+                    {{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}
+                    · <span id="live-viewing">{{ viewing_now|default(0) }}</span>
+                    <span id="live-viewing-label">{{ 'person viewing' if viewing_now|default(0) == 1 else 'people viewing' }}</span>
+                </p>
             </div>
             <div class="flex flex-wrap gap-3 items-center">
                 <a href="/admin/tickets.csv"
@@ -103,6 +107,29 @@
             alert('JSON copied to clipboard');
         });
     }
+
+    (function () {
+        const countEl = document.getElementById('live-viewing');
+        const labelEl = document.getElementById('live-viewing-label');
+        if (!countEl) return;
+        function applyCount(n) {
+            const value = Math.max(0, parseInt(n, 10) || 0);
+            countEl.textContent = String(value);
+            if (labelEl) {
+                labelEl.textContent = value === 1 ? 'person viewing' : 'people viewing';
+            }
+        }
+        function refresh() {
+            fetch('/admin/viewing.json', { credentials: 'same-origin', cache: 'no-store' })
+                .then(function (resp) { return resp.ok ? resp.json() : null; })
+                .then(function (data) {
+                    if (data && data.viewing != null) applyCount(data.viewing);
+                })
+                .catch(function () {});
+        }
+        refresh();
+        setInterval(refresh, 15000);
+    })();
 </script>
 </body>
 </html>

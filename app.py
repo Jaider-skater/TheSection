@@ -201,6 +201,12 @@ full_list_lock = threading.Lock()
 mailing_list_log_lock = threading.Lock()
 _mailing_send_lock = threading.Lock()
 exclusive_holds_lock = threading.Lock()
+_presence_lock = threading.Lock()
+_presence_seen = {}
+PRESENCE_TTL_SECONDS = 90
+PRESENCE_MAX_IDS = 5000
+VISITOR_ID_RE = re.compile(r'^[a-f0-9]{16,64}$')
+VISITOR_COOKIE = 'thesection_vid'
 
 
 @contextmanager
@@ -253,6 +259,36 @@ app.config['MAIL_PASSWORD'] = (os.getenv('MAIL_PASSWORD') or '').strip()
 app.config['MAIL_DEFAULT_SENDER'] = mail_sender
 app.config['MAIL_TIMEOUT'] = int(os.getenv('MAIL_TIMEOUT', '10'))
 mail = Mail(app)
+
+
+def _prune_presence(now=None):
+    now = time.time() if now is None else now
+    cutoff = now - PRESENCE_TTL_SECONDS
+    stale = [vid for vid, ts in _presence_seen.items() if ts < cutoff]
+    for vid in stale:
+        _presence_seen.pop(vid, None)
+    if len(_presence_seen) > PRESENCE_MAX_IDS:
+        newest = sorted(_presence_seen.items(), key=lambda item: item[1], reverse=True)[:PRESENCE_MAX_IDS]
+        _presence_seen.clear()
+        _presence_seen.update(newest)
+
+
+def bump_public_viewer(visitor_id):
+    vid = (visitor_id or '').strip().lower()
+    if not VISITOR_ID_RE.fullmatch(vid):
+        return False
+    now = time.time()
+    with _presence_lock:
+        _presence_seen[vid] = now
+        _prune_presence(now)
+    return True
+
+
+def count_public_viewers():
+    now = time.time()
+    with _presence_lock:
+        _prune_presence(now)
+        return sum(1 for ts in _presence_seen.values() if now - ts <= PRESENCE_TTL_SECONDS)
 
 
 def client_ip():
@@ -4007,6 +4043,44 @@ def home():
     )
 
 
+@app.route('/api/viewing')
+def public_viewing_heartbeat():
+    """Homepage heartbeat. Never returns the live count (admin-only)."""
+    try:
+        if not rate_limit_allow('viewing', 30, 60):
+            return jsonify({'ok': True})
+        vid = (request.cookies.get(VISITOR_COOKIE) or '').strip().lower()
+        if not VISITOR_ID_RE.fullmatch(vid):
+            vid = secrets.token_hex(16)
+        bump_public_viewer(vid)
+        resp = jsonify({'ok': True})
+        resp.set_cookie(
+            VISITOR_COOKIE,
+            vid,
+            max_age=int(timedelta(days=31).total_seconds()),
+            httponly=True,
+            secure=IS_PRODUCTION,
+            samesite='Lax',
+            path='/',
+        )
+        return resp
+    except Exception as e:
+        print('Viewing heartbeat failed:', e)
+        return jsonify({'ok': True})
+
+
+@app.route('/admin/viewing.json')
+def admin_viewing_count():
+    if not require_admin():
+        return jsonify({'error': 'auth'}), 401
+    try:
+        viewing = count_public_viewers()
+    except Exception as e:
+        print('Viewing count failed:', e)
+        viewing = 0
+    return jsonify({'viewing': int(viewing)})
+
+
 @app.route('/api/member-status')
 def member_status():
     member = get_logged_in_member()
@@ -5103,12 +5177,18 @@ def admin_dashboard():
     for ticket in safe_tickets:
         email = (ticket.get('email') or '').strip().lower()
         ticket['tickets_purchased'] = ticket_counts.get(email, 0)
+    try:
+        viewing_now = count_public_viewers()
+    except Exception as e:
+        print('Viewing count failed:', e)
+        viewing_now = 0
     return render_template(
         'admin.html',
         tickets=safe_tickets,
         tickets_json=json.dumps(safe_tickets, indent=2),
         total_admissions=total_admissions,
         unique_buyers=unique_buyers,
+        viewing_now=viewing_now,
     )
 
 

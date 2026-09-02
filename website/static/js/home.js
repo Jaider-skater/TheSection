@@ -622,3 +622,14 @@ window.addEventListener('pageshow', (event) => {
         });
     }
 });
+
+(function heartbeatViewing() {
+    function ping() {
+        fetch('/api/viewing', { credentials: 'same-origin', cache: 'no-store' }).catch(function () {});
+    }
+    ping();
+    setInterval(ping, 20000);
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) ping();
+    });
+})();
