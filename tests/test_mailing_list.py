@@ -371,7 +371,9 @@ class ProtectedMailingListTests(unittest.TestCase):
         html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
         self.assertIn('mail-scroll', html)
         self.assertNotIn('max-h-[28rem] overflow-auto', html)
-        self.assertIn('aria-expanded="true"', html)
+        self.assertIn('data-list="exclusive"', html)
+        self.assertIn('data-list="full"', html)
+        self.assertIn('aria-expanded="false"', html)
         self.assertIn('drawer-panel open', html)
 
     def test_send_broadcast_mail_failure_does_not_500(self):

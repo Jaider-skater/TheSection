@@ -208,7 +208,7 @@
                     </button>
                 </div>
                 <p class="text-zinc-500 text-xs">
-                    Click a sent email below to load it here. Send to remaining only goes to people who have not received this exact subject and message.
+                    Click a sent email to load it, then Send to remaining.
                 </p>
             </form>
         </section>
@@ -224,10 +224,10 @@
             <input type="hidden" name="action" value="remove_full_emails">
         </form>
 
-        <div class="mb-3 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="exclusive">
+        <div class="mb-2 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="exclusive">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
-                    aria-expanded="true"
+                    aria-expanded="false"
                     data-drawer-toggle>
                 <div class="flex items-center gap-2.5 min-w-0">
                     <span class="text-lg leading-none" aria-hidden="true">🔒</span>
@@ -243,7 +243,7 @@
                 <span class="drawer-chevron text-zinc-400 text-sm shrink-0" aria-hidden="true">▼</span>
             </button>
 
-            <div class="drawer-panel open border-t border-zinc-800" data-drawer-panel>
+            <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
                 <div class="p-3 space-y-3">
                     <div class="flex flex-col sm:flex-row gap-2">
                         <form method="POST" action="/admin/mailing-list" class="flex-1 flex flex-col sm:flex-row gap-2">
@@ -304,10 +304,10 @@
             </div>
         </div>
 
-        <div class="mb-8 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="full">
+        <div class="mb-2 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="full">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
-                    aria-expanded="true"
+                    aria-expanded="false"
                     data-drawer-toggle>
                 <div class="flex items-center gap-2.5 min-w-0">
                     <span class="text-lg leading-none" aria-hidden="true">📬</span>
@@ -319,7 +319,7 @@
                 <span class="drawer-chevron text-zinc-400 text-sm shrink-0" aria-hidden="true">▼</span>
             </button>
 
-            <div class="drawer-panel open border-t border-zinc-800" data-drawer-panel>
+            <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
                 <div class="p-3 space-y-3">
                     <div class="flex flex-col sm:flex-row gap-2">
                         <form method="POST" action="/admin/mailing-list" class="flex-1 flex flex-col sm:flex-row gap-2">
@@ -373,7 +373,7 @@
             </div>
         </div>
 
-        <div class="mb-3 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="sent">
+        <div class="mb-2 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="sent">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
                     aria-expanded="true"
@@ -425,23 +425,32 @@
                                 Click to load the subject, paste the same message, then Send to remaining.
                             </p>
                             {% endif %}
-                            {% if entry.sent_count %}
-                            <p class="text-[11px] text-zinc-500 font-mono">
-                                Sent:
-                                {{ entry.sent|join(', ') }}{% if entry.sent_more %} +{{ entry.sent_more }} more{% endif %}
-                            </p>
-                            {% endif %}
-                            {% if entry.failed_count %}
-                            <p class="text-[11px] text-amber-200/80 font-mono">
-                                Failed:
-                                {{ entry.failed|join(', ') }}{% if entry.failed_more %} +{{ entry.failed_more }} more{% endif %}
-                            </p>
+                            {% if entry.sent_count or entry.failed_count or entry.remaining_count %}
+                            <details class="text-[11px] text-zinc-500">
+                                <summary class="cursor-pointer select-none hover:text-zinc-300">Addresses</summary>
+                                <div class="mt-2 space-y-1.5 font-mono">
+                                    {% if entry.sent_count %}
+                                    <p>
+                                        Sent:
+                                        {{ entry.sent|join(', ') }}{% if entry.sent_more %} +{{ entry.sent_more }} more{% endif %}
+                                    </p>
+                                    {% endif %}
+                                    {% if entry.failed_count %}
+                                    <p class="text-amber-200/80">
+                                        Failed:
+                                        {{ entry.failed|join(', ') }}{% if entry.failed_more %} +{{ entry.failed_more }} more{% endif %}
+                                    </p>
+                                    {% endif %}
+                                    {% if entry.remaining_count %}
+                                    <p>
+                                        Missed:
+                                        {{ entry.remaining|join(', ') }}{% if entry.remaining_more %} +{{ entry.remaining_more }} more{% endif %}
+                                    </p>
+                                    {% endif %}
+                                </div>
+                            </details>
                             {% endif %}
                             {% if entry.has_body and entry.remaining_count %}
-                            <p class="text-[11px] text-zinc-500 font-mono">
-                                Missed:
-                                {{ entry.remaining|join(', ') }}{% if entry.remaining_more %} +{{ entry.remaining_more }} more{% endif %}
-                            </p>
                             <form method="POST" action="/admin/mailing-list" class="flex justify-end"
                                   data-confirm-kind="retry-broadcast"
                                   data-remaining-count="{{ entry.remaining_count }}">
