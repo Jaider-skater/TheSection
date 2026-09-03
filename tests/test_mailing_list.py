@@ -623,6 +623,8 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn("form.dataset.submitting === '1'", html)
         self.assertIn('form.requestSubmit()', html)
         self.assertNotIn('confirmOk.disabled = true', html)
+        self.assertIn('fillBroadcastForm', html)
+        self.assertIn('data-send-mode="remaining"', html)
 
     def test_mailing_list_shows_ticket_purchase_counts(self):
         self.invites = [self._invite('guest@example.com'), self._invite('none@example.com')]
@@ -861,8 +863,9 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn('Doors at 9', html)
         self.assertIn('got@example.com', html)
         self.assertIn('missed@example.com', html)
-        self.assertIn('before the message body was saved', html)
-        self.assertNotIn('Send to remaining', html)
+        self.assertIn('Click to load the subject', html)
+        self.assertIn('fill-email-card', html)
+        self.assertNotIn('name="message_id"', html)
 
     def test_broadcast_saves_message_and_retry_sends_remaining(self):
         self.invites = [

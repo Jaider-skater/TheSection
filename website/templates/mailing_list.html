@@ -197,13 +197,18 @@
                        class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white">
                 <textarea name="body" rows="3" required placeholder="Message…"
                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white"></textarea>
-                <button type="submit"
-                        class="w-full bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-amber-200 transition-colors">
-                    Send to selected lists
-                </button>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button type="submit" data-send-mode="all"
+                            class="w-full bg-zinc-800 text-white font-semibold py-2.5 rounded-xl text-sm border border-zinc-600 hover:border-white transition-colors">
+                        Send to selected lists
+                    </button>
+                    <button type="submit" data-send-mode="remaining"
+                            class="w-full bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-amber-200 transition-colors">
+                        Send to remaining
+                    </button>
+                </div>
                 <p class="text-zinc-500 text-xs">
-                    Large lists keep sending in the background after this page returns.
-                    Send the same subject and message again to resume — addresses that already got it are skipped.
+                    Click a sent email below to load it here. Send to remaining only goes to people who have not received this exact subject and message.
                 </p>
             </form>
         </section>
@@ -391,8 +396,10 @@
                     {% if message_log %}
                     <div class="mail-scroll space-y-3 pr-1">
                         {% for entry in message_log %}
-                        <article class="email-row rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 space-y-2"
-                                 data-email="{{ entry.subject|lower }} {{ entry.body|lower }} {{ entry.sent|join(' ') }} {{ entry.failed|join(' ') }} {{ entry.remaining|join(' ') }}">
+                        <article class="email-row fill-email-card rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 space-y-2 cursor-pointer hover:border-zinc-500"
+                                 data-email="{{ entry.subject|lower }} {{ entry.body|lower }} {{ entry.sent|join(' ') }} {{ entry.failed|join(' ') }} {{ entry.remaining|join(' ') }}"
+                                 title="Load this email into the form">
+                            <script type="application/json" class="fill-email-payload">{{ {'subject': entry.subject, 'body': entry.body, 'lists': entry.lists}|tojson }}</script>
                             <div class="flex flex-wrap items-start justify-between gap-2">
                                 <div class="min-w-0">
                                     <h3 class="text-sm font-semibold text-white truncate">{{ entry.subject or '—' }}</h3>
@@ -415,8 +422,7 @@
                             <pre class="whitespace-pre-wrap break-words text-sm text-zinc-200 bg-zinc-900/80 border border-zinc-800 rounded-lg px-3 py-2 max-h-40 overflow-auto">{{ entry.body }}</pre>
                             {% else %}
                             <p class="text-xs text-zinc-400">
-                                This send was logged before the message body was saved.
-                                Send the same subject and message from the form above — people who already got it will be skipped.
+                                Click to load the subject, paste the same message, then Send to remaining.
                             </p>
                             {% endif %}
                             {% if entry.sent_count %}
@@ -628,6 +634,45 @@
             updateBulkBar(drawer);
         });
 
+        const broadcastForm = document.getElementById('broadcast-form');
+        if (broadcastForm) {
+            broadcastForm.querySelectorAll('[data-send-mode]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    broadcastForm.dataset.sendMode = btn.getAttribute('data-send-mode') || 'all';
+                });
+            });
+        }
+
+        function fillBroadcastForm(card) {
+            if (!broadcastForm) return;
+            const payloadEl = card.querySelector('.fill-email-payload');
+            if (!payloadEl) return;
+            let payload = {};
+            try {
+                payload = JSON.parse(payloadEl.textContent || '{}');
+            } catch (err) {
+                return;
+            }
+            const subject = broadcastForm.querySelector('[name="subject"]');
+            const body = broadcastForm.querySelector('[name="body"]');
+            const exclusive = broadcastForm.querySelector('[name="list_exclusive"]');
+            const full = broadcastForm.querySelector('[name="list_full"]');
+            if (subject) subject.value = payload.subject || '';
+            if (body) body.value = payload.body || '';
+            const lists = payload.lists || [];
+            if (exclusive) exclusive.checked = !lists.length || lists.indexOf('exclusive') !== -1;
+            if (full) full.checked = !lists.length || lists.indexOf('full') !== -1;
+            broadcastForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (body) body.focus();
+        }
+
+        document.querySelectorAll('.fill-email-card').forEach(function (card) {
+            card.addEventListener('click', function (e) {
+                if (e.target.closest('form, button, a, input, textarea')) return;
+                fillBroadcastForm(card);
+            });
+        });
+
         function submitConfirmed(form) {
             if (form.dataset.submitting === '1') return;
             form.dataset.submitting = '1';
@@ -672,6 +717,13 @@
                     const full = form.querySelector('[name="list_full"]').checked;
                     if (!exclusive && !full) {
                         alert('Select at least one mailing list.');
+                        return;
+                    }
+                    const remainingOnly = form.dataset.sendMode === 'remaining';
+                    if (remainingOnly) {
+                        openConfirm('Send this email only to people who have not received it yet?', [], 'Send', function () {
+                            submitConfirmed(form);
+                        });
                         return;
                     }
                     const parts = [];
