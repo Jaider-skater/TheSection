@@ -41,6 +41,8 @@ class ProtectedMailingListTests(unittest.TestCase):
         ]
         for patcher in self.patches:
             patcher.start()
+        thesection._delivered_broadcasts.clear()
+        thesection._inflight_broadcasts.clear()
         self.app = thesection.app
         self.app.config['TESTING'] = True
 
@@ -306,7 +308,7 @@ class ProtectedMailingListTests(unittest.TestCase):
             captured.append(msg)
 
         with mock.patch.object(thesection.mail, 'send', side_effect=fake_send):
-            sent, failed, skipped = thesection.send_broadcast_email(
+            sent, failed, skipped, pending = thesection.send_broadcast_email(
                 'Hello',
                 '<script>alert(1)</script>\nsee you',
                 ['a@b.co'],
@@ -314,12 +316,13 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertEqual(sent, ['a@b.co'])
         self.assertEqual(failed, [])
         self.assertEqual(skipped, [])
+        self.assertEqual(pending, [])
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', captured[0].html)
         self.assertNotIn('<script>', captured[0].html)
 
         captured.clear()
         with mock.patch.object(thesection.mail, 'send', side_effect=fake_send):
-            sent, failed, skipped = thesection.send_broadcast_email(
+            sent, failed, skipped, pending = thesection.send_broadcast_email(
                 'Hello\nBcc: evil@example.com',
                 'Hi',
                 ['a@b.co'],
@@ -327,10 +330,11 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertEqual(sent, [])
         self.assertEqual(failed, [])
         self.assertEqual(skipped, [])
+        self.assertEqual(pending, [])
         self.assertEqual(captured, [])
 
     def test_broadcast_and_invite_are_written_to_send_log(self):
-        sent, failed, skipped = thesection.send_broadcast_email(
+        sent, failed, skipped, pending = thesection.send_broadcast_email(
             'Halloween is on',
             'See you there',
             ['a@b.co', 'c@d.co'],
@@ -338,6 +342,7 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertEqual(sent, ['a@b.co', 'c@d.co'])
         self.assertEqual(failed, [])
         self.assertEqual(skipped, [])
+        self.assertEqual(pending, [])
 
         self.assertTrue(
             thesection.send_member_invite_email('guest@example.com', 'token')
@@ -472,7 +477,7 @@ class ProtectedMailingListTests(unittest.TestCase):
             captured.append(msg)
 
         with mock.patch.object(thesection.mail, 'send', side_effect=fake_send):
-            sent, failed, skipped = thesection.send_broadcast_email(
+            sent, failed, skipped, pending = thesection.send_broadcast_email(
                 'Halloween is on',
                 'See you there',
                 ['a@b.co', 'c@d.co'],
@@ -480,9 +485,10 @@ class ProtectedMailingListTests(unittest.TestCase):
             self.assertEqual(sent, ['a@b.co', 'c@d.co'])
             self.assertEqual(failed, [])
             self.assertEqual(skipped, [])
+            self.assertEqual(pending, [])
             self.assertEqual(len(captured), 2)
 
-            sent, failed, skipped = thesection.send_broadcast_email(
+            sent, failed, skipped, pending = thesection.send_broadcast_email(
                 'Halloween is on',
                 'See you there',
                 ['a@b.co', 'c@d.co', 'new@e.co'],
@@ -490,15 +496,87 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertEqual(sent, ['new@e.co'])
         self.assertEqual(failed, [])
         self.assertEqual(set(skipped), {'a@b.co', 'c@d.co'})
+        self.assertEqual(pending, [])
         self.assertEqual(len(captured), 3)
 
-        sent, failed, skipped = thesection.send_broadcast_email(
+        sent, failed, skipped, pending = thesection.send_broadcast_email(
             'Different night',
             'See you there',
             ['a@b.co'],
         )
         self.assertEqual(sent, ['a@b.co'])
         self.assertEqual(skipped, [])
+        self.assertEqual(pending, [])
+
+    def test_duplicate_recipients_are_only_sent_once(self):
+        sent, failed, skipped, pending = thesection.send_broadcast_email(
+            'Hello',
+            'There',
+            ['A@b.co', 'a@b.co', 'a@b.co'],
+        )
+        self.assertEqual(sent, ['a@b.co'])
+        self.assertEqual(failed, [])
+        self.assertEqual(skipped, [])
+        self.assertEqual(pending, [])
+        self.assertEqual(len(self.mail_sent), 1)
+
+    def test_address_on_both_lists_is_only_sent_once(self):
+        self.invites = [self._invite('both@example.com')]
+        self.full_list = [self._full_entry('both@example.com')]
+        recipients = thesection.resolve_broadcast_recipients({'exclusive', 'full'})
+        self.assertEqual(recipients, ['both@example.com'])
+        sent, failed, skipped, pending = thesection.send_broadcast_email(
+            'Hello', 'There', recipients
+        )
+        self.assertEqual(sent, ['both@example.com'])
+        self.assertEqual(len(self.mail_sent), 1)
+
+        sent2, failed2, skipped2, pending2 = thesection.send_broadcast_email(
+            'Hello', 'There', recipients
+        )
+        self.assertEqual(sent2, [])
+        self.assertEqual(skipped2, ['both@example.com'])
+        self.assertEqual(len(self.mail_sent), 1)
+
+    def test_failed_broadcast_can_be_retried_once_it_succeeds_it_cannot(self):
+        with mock.patch.object(
+            thesection.mail, 'send', side_effect=RuntimeError('smtp down')
+        ):
+            sent, failed, skipped, pending = thesection.send_broadcast_email(
+                'Hello', 'There', ['a@b.co']
+            )
+        self.assertEqual(sent, [])
+        self.assertEqual(failed, ['a@b.co'])
+        self.assertEqual(self.mail_sent, [])
+
+        sent2, failed2, skipped2, pending2 = thesection.send_broadcast_email(
+            'Hello', 'There', ['a@b.co']
+        )
+        self.assertEqual(sent2, ['a@b.co'])
+        self.assertEqual(failed2, [])
+        self.assertEqual(skipped2, [])
+        self.assertEqual(len(self.mail_sent), 1)
+
+        sent3, failed3, skipped3, pending3 = thesection.send_broadcast_email(
+            'Hello', 'There', ['a@b.co']
+        )
+        self.assertEqual(sent3, [])
+        self.assertEqual(skipped3, ['a@b.co'])
+        self.assertEqual(len(self.mail_sent), 1)
+
+    def test_successful_send_is_not_resent_if_log_write_fails(self):
+        with mock.patch.object(thesection, 'log_mailing_list_send', return_value=False):
+            sent, failed, skipped, pending = thesection.send_broadcast_email(
+                'Hello', 'There', ['a@b.co']
+            )
+        self.assertEqual(sent, ['a@b.co'])
+        self.assertEqual(failed, [])
+        sent2, failed2, skipped2, pending2 = thesection.send_broadcast_email(
+            'Hello', 'There', ['a@b.co']
+        )
+        self.assertEqual(sent2, [])
+        self.assertEqual(skipped2, ['a@b.co'])
+        self.assertEqual(len(self.mail_sent), 1)
 
     def test_invite_is_not_resent_after_success(self):
         self.invites = [self._invite('guest@example.com')]
@@ -575,6 +653,179 @@ class ProtectedMailingListTests(unittest.TestCase):
         signups, invites = thesection.count_signups_and_invites()
         self.assertEqual(signups, 2)
         self.assertEqual(invites, 3)
+
+    def test_broadcast_timeout_does_not_mark_leftovers_failed(self):
+        recipients = [f'user{i}@example.com' for i in range(6)]
+        clock = {'t': 0}
+
+        def fake_monotonic():
+            return clock['t']
+
+        def tick_send(msg):
+            clock['t'] += 0.03
+
+        with mock.patch.object(thesection.time, 'monotonic', side_effect=fake_monotonic):
+            with mock.patch.object(thesection.mail, 'send', side_effect=tick_send):
+                sent, failed, skipped, pending = thesection.send_broadcast_email(
+                    'Tonight',
+                    'Doors at 9',
+                    recipients,
+                    continue_in_background=False,
+                    request_budget=0.05,
+                )
+        self.assertEqual(failed, [])
+        self.assertEqual(skipped, [])
+        self.assertTrue(pending)
+        self.assertEqual(len(sent) + len(pending), 6)
+        self.assertLess(len(sent), 6)
+        failed_logged = [
+            entry for entry in self.log
+            if entry.get('action') == 'send' and entry.get('status') == 'failed'
+        ]
+        self.assertEqual(failed_logged, [])
+
+        sent2, failed2, skipped2, pending2 = thesection.send_broadcast_email(
+            'Tonight',
+            'Doors at 9',
+            recipients,
+            continue_in_background=False,
+        )
+        self.assertEqual(failed2, [])
+        self.assertEqual(pending2, [])
+        self.assertEqual(set(skipped2), set(sent))
+        self.assertEqual(set(sent2), set(pending))
+
+    def test_inflight_addresses_are_not_sent_again(self):
+        recipients = [f'user{i}@example.com' for i in range(6)]
+        clock = {'t': 0}
+
+        def fake_monotonic():
+            return clock['t']
+
+        def tick_send(msg):
+            clock['t'] += 0.03
+
+        with mock.patch.object(thesection.time, 'monotonic', side_effect=fake_monotonic):
+            with mock.patch.object(thesection.mail, 'send', side_effect=tick_send):
+                with mock.patch.object(thesection, '_continue_broadcast_in_background'):
+                    sent, failed, skipped, pending = thesection.send_broadcast_email(
+                        'Tonight',
+                        'Doors at 9',
+                        recipients,
+                        request_budget=0.05,
+                    )
+        self.assertTrue(pending)
+        before = len(self.mail_sent)
+        sent2, failed2, skipped2, pending2 = thesection.send_broadcast_email(
+            'Tonight',
+            'Doors at 9',
+            recipients,
+            continue_in_background=False,
+        )
+        self.assertEqual(sent2, [])
+        self.assertTrue(set(pending) <= set(skipped2))
+        self.assertEqual(len(self.mail_sent), before)
+
+    def test_broadcast_timeout_continues_in_background(self):
+        recipients = [f'user{i}@example.com' for i in range(6)]
+        clock = {'t': 0}
+
+        def fake_monotonic():
+            return clock['t']
+
+        def tick_send(msg):
+            clock['t'] += 0.03
+
+        with mock.patch.dict(os.environ, {'BROADCAST_REQUEST_BUDGET': '0.05'}):
+            with mock.patch.object(thesection.time, 'monotonic', side_effect=fake_monotonic):
+                with mock.patch.object(thesection.mail, 'send', side_effect=tick_send):
+                    sent, failed, skipped, pending = thesection.send_broadcast_email(
+                        'Tonight', 'Doors at 9', recipients
+                    )
+                    self.assertEqual(failed, [])
+                    self.assertTrue(pending)
+                    self.assertTrue(thesection.wait_for_broadcast_background(timeout=8))
+        already = thesection.emails_already_sent_message(
+            'broadcast', 'Tonight', 'Doors at 9'
+        )
+        self.assertEqual(already, set(recipients))
+
+    def test_broadcast_reuses_smtp_connection(self):
+        captured = []
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def send(self, msg):
+                captured.append(msg)
+
+        previous = self.app.config['TESTING']
+        self.app.config['TESTING'] = False
+        self.app.config['MAIL_DEFAULT_SENDER'] = 'hallie@example.com'
+        self.app.config['MAIL_USERNAME'] = 'hallie@example.com'
+        self.app.config['MAIL_PASSWORD'] = 'secret'
+        self.app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+        try:
+            with mock.patch.object(thesection.mail, 'connect', return_value=FakeConn()):
+                sent, failed, skipped, pending = thesection.send_broadcast_email(
+                    'Hello', 'There', ['a@b.co', 'c@d.co']
+                )
+        finally:
+            self.app.config['TESTING'] = previous
+        self.assertEqual(sent, ['a@b.co', 'c@d.co'])
+        self.assertEqual(failed, [])
+        self.assertEqual(pending, [])
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(self.mail_sent, [])
+
+    def test_admin_broadcast_resume_skips_rate_limit(self):
+        self.invites = [self._invite('guest@example.com'), self._invite('plus@example.com')]
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        data = {
+            'action': 'send_broadcast',
+            'list_exclusive': '1',
+            'subject': 'Doors at 9',
+            'body': 'Come through',
+            'csrf_token': token,
+        }
+        first = client.post('/admin/mailing-list', data=data)
+        self.assertEqual(first.status_code, 200)
+        self.assertIn('Sent broadcast to 2 addresses', first.get_data(as_text=True))
+
+        self.invites.append(self._invite('new@example.com'))
+        with mock.patch.object(thesection, 'rate_limit_allow', return_value=False):
+            second = client.post('/admin/mailing-list', data=data)
+        self.assertEqual(second.status_code, 200)
+        html = second.get_data(as_text=True)
+        self.assertNotIn('Broadcast limit reached', html)
+        self.assertIn('already sent', html.lower())
+        self.assertIn('Sent broadcast to 1 address', html)
+        self.assertEqual(len(self.mail_sent), 3)
+
+    def test_admin_new_broadcast_still_rate_limited(self):
+        self.invites = [self._invite('guest@example.com')]
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        with mock.patch.object(thesection, 'rate_limit_allow', return_value=False):
+            resp = client.post(
+                '/admin/mailing-list',
+                data={
+                    'action': 'send_broadcast',
+                    'list_exclusive': '1',
+                    'subject': 'Brand new',
+                    'body': 'Hello',
+                    'csrf_token': token,
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('Broadcast limit reached', resp.get_data(as_text=True))
+        self.assertEqual(self.mail_sent, [])
 
     def test_admin_and_mailing_list_show_signups_vs_invites(self):
         claimed = self._invite('joined@example.com')

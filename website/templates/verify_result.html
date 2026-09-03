@@ -48,7 +48,18 @@
         {% elif status == 'wrong_event' %}
             <div class="text-6xl mb-4">❌</div>
             <h1 class="text-3xl font-bold text-red-400 mb-2">Wrong Event</h1>
-            <p class="text-zinc-200 mb-8">This ticket is for a previous event</p>
+            <p class="text-zinc-200 mb-8">
+                {% if detail %}
+                    {{ detail }}
+                {% else %}
+                    This ticket is for {{ ticket_event_name or 'another event' }}.
+                    Tonight is {{ door_event_name or 'a different night' }}.
+                {% endif %}
+            </p>
+        {% elif status == 'error' %}
+            <div class="text-6xl mb-4">❌</div>
+            <h1 class="text-3xl font-bold text-red-400 mb-2">Scan failed</h1>
+            <p class="text-zinc-200 mb-8">{{ detail or 'Could not record this scan. Try again.' }}</p>
         {% elif status == 'used' %}
             <div class="text-6xl mb-4">❌</div>
             <h1 class="text-3xl font-bold text-red-400 mb-2">Already Used</h1>

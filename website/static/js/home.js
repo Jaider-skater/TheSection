@@ -507,14 +507,23 @@ async function createCheckoutSession() {
             }),
         });
 
+        if (response.status === 401) {
+            await redirectToLoginForCheckout();
+            return;
+        }
+
         const data = await response.json();
 
         if (data.remaining != null || data.sold_out != null || data.max_capacity != null) {
             ticketAvailability = {
+                ...ticketAvailability,
                 max_capacity: data.max_capacity ?? ticketAvailability.max_capacity,
                 sold: data.sold ?? ticketAvailability.sold,
                 remaining: data.remaining ?? ticketAvailability.remaining,
                 sold_out: !!(data.sold_out),
+                sales_open: data.sales_open ?? ticketAvailability.sales_open,
+                event_id: data.event_id || ticketAvailability.event_id,
+                event_name: data.event_name || ticketAvailability.event_name,
             };
             applyAvailabilityToUi();
         }

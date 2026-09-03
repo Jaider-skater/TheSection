@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort, send_from_directory
+from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort, send_from_directory, has_request_context
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -209,15 +209,40 @@ VISITOR_ID_RE = re.compile(r'^[a-f0-9]{16,64}$')
 VISITOR_COOKIE = 'thesection_vid'
 
 
+_broadcast_continue_thread = None
+_broadcast_delivery_lock = threading.Lock()
+_inflight_broadcasts = set()
+_delivered_broadcasts = set()
+
+
+def mailing_send_is_busy():
+    thread = _broadcast_continue_thread
+    return bool(thread is not None and thread.is_alive())
+
+
 @contextmanager
 def mailing_send_guard():
     """Only one broadcast/invite send at a time so a double-click cannot resend."""
+    if mailing_send_is_busy():
+        yield False
+        return
     acquired = _mailing_send_lock.acquire(blocking=False)
     try:
         yield acquired
     finally:
         if acquired:
             _mailing_send_lock.release()
+
+
+def wait_for_broadcast_background(timeout=8):
+    """Test helper: wait until a leftover broadcast thread finishes."""
+    thread = _broadcast_continue_thread
+    if thread is None:
+        return True
+    thread.join(timeout=timeout)
+    return not thread.is_alive()
+
+
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets = {}
 EXCLUSIVE_HOLD_TTL = timedelta(minutes=45)
@@ -524,7 +549,12 @@ def _locked_json_write(path, data):
             json.dump(data, f, indent=2, default=str)
             f.flush()
             os.fsync(f.fileno())
-        # Exclusive lock on destination while replacing
+        # Windows cannot replace a file that still has an open handle, and
+        # flock is a no-op there anyway. POSIX keeps an exclusive lock on the
+        # destination during the replace so readers see a complete file.
+        if os.name == 'nt':
+            os.replace(tmp_path, path)
+            return True
         flags = os.O_RDWR | os.O_CREAT
         fd = os.open(path, flags, 0o600)
         try:
@@ -664,7 +694,8 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
             if ticket.get('session_id') == session_id:
                 if not ticket.get('view_token'):
                     ticket['view_token'] = view_token
-                    save_tickets(tickets)
+                    if not save_tickets(tickets):
+                        raise RuntimeError('Could not save ticket')
                 return ticket
 
         ticket = {
@@ -684,7 +715,8 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
             'verify_url': f"{base_url}/verify/t/{ticket_id}",
         }
         tickets.append(ticket)
-        save_tickets(tickets)
+        if not save_tickets(tickets):
+            raise RuntimeError('Could not save ticket')
         return ticket
 
 
@@ -1400,6 +1432,41 @@ def mailing_message_fingerprint(kind, subject, body=''):
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
 
 
+def _broadcast_delivery_key(fingerprint, email):
+    return (fingerprint, (email or '').strip().lower())
+
+
+def mark_broadcast_delivered(fingerprint, email):
+    """Remember a successful send in-process so a retry cannot duplicate it."""
+    key = _broadcast_delivery_key(fingerprint, email)
+    if not key[1]:
+        return
+    with _broadcast_delivery_lock:
+        _delivered_broadcasts.add(key)
+        _inflight_broadcasts.discard(key)
+
+
+def claim_broadcast_emails(fingerprint, emails):
+    """Claim addresses that are not delivered and not already in this send."""
+    claimed = []
+    with _broadcast_delivery_lock:
+        for email in emails or []:
+            key = _broadcast_delivery_key(fingerprint, email)
+            if not key[1]:
+                continue
+            if key in _delivered_broadcasts or key in _inflight_broadcasts:
+                continue
+            _inflight_broadcasts.add(key)
+            claimed.append(key[1])
+    return claimed
+
+
+def release_broadcast_emails(fingerprint, emails):
+    with _broadcast_delivery_lock:
+        for email in emails or []:
+            _inflight_broadcasts.discard(_broadcast_delivery_key(fingerprint, email))
+
+
 def emails_already_sent_message(kind, subject, body=''):
     """Addresses that already got this exact message successfully."""
     fingerprint = mailing_message_fingerprint(kind, subject, body)
@@ -1422,6 +1489,10 @@ def emails_already_sent_message(kind, subject, body=''):
             normalized = (email or '').strip().lower()
             if normalized:
                 found.add(normalized)
+    with _broadcast_delivery_lock:
+        for delivered_fp, email in _delivered_broadcasts:
+            if delivered_fp == fingerprint and email:
+                found.add(email)
     return found
 
 
@@ -1693,34 +1764,8 @@ def mail_is_configured():
     return bool(sender and password and server)
 
 
-def send_broadcast_email(subject, body, recipients):
-    """Send plain/html broadcast to many recipients. Returns sent, failed, skipped."""
-    subject = (subject or '').strip()
-    body = (body or '').strip()
-    sent = []
-    failed = []
-    skipped = []
-    if not subject or not body or not recipients:
-        return sent, failed, skipped
-    if any(c in subject for c in '\r\n'):
-        return sent, failed, skipped
-    if not app.config.get('TESTING') and not mail_is_configured():
-        print('Broadcast skipped: mail is not configured')
-        return sent, list(recipients), skipped
-    fingerprint = mailing_message_fingerprint('broadcast', subject, body)
-    already = emails_already_sent_message('broadcast', subject, body)
-    to_send = []
-    for email in recipients:
-        normalized = (email or '').strip().lower()
-        if not normalized:
-            continue
-        if normalized in already:
-            skipped.append(normalized)
-        else:
-            to_send.append(normalized)
-    if not to_send:
-        return sent, failed, skipped
-    html_body = (
+def _broadcast_html_body(body):
+    return (
         '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;line-height:1.5;">'
         '<h2 style="margin:0 0 12px;">The Section</h2>'
         + ''.join(
@@ -1729,18 +1774,42 @@ def send_broadcast_email(subject, body, recipients):
         )
         + '</div>'
     )
-    budget = float(os.getenv('BROADCAST_REQUEST_BUDGET', '20'))
-    deadline = time.monotonic() + max(5.0, budget)
-    with app.app_context():
+
+
+def _send_broadcast_messages(subject, body, html_body, to_send, fingerprint, deadline=None):
+    """Send to to_send. Returns (sent, failed, leftover). leftover was not attempted."""
+    sent = []
+    failed = []
+    leftover = []
+    connection_cm = None
+    connection = None
+    if to_send and not app.config.get('TESTING'):
+        try:
+            connection_cm = mail.connect()
+            connection = connection_cm.__enter__()
+        except Exception as e:
+            print('Broadcast could not open a shared SMTP connection:', e)
+            connection_cm = None
+            connection = None
+    try:
         for email in to_send:
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 leftover = [
                     remaining for remaining in to_send
                     if remaining not in sent and remaining not in failed
                 ]
-                print(f'Broadcast stopped early to avoid request timeout; {len(leftover)} not sent')
-                failed.extend(leftover)
+                print(
+                    f'Broadcast paused to avoid request timeout; '
+                    f'{len(leftover)} still queued'
+                )
                 break
+            with _broadcast_delivery_lock:
+                already_delivered = (
+                    _broadcast_delivery_key(fingerprint, email) in _delivered_broadcasts
+                )
+            if already_delivered:
+                sent.append(email)
+                continue
             try:
                 msg = Message(
                     subject,
@@ -1749,20 +1818,119 @@ def send_broadcast_email(subject, body, recipients):
                 )
                 msg.body = body
                 msg.html = html_body
-                mail.send(msg)
+                if connection is not None:
+                    connection.send(msg)
+                else:
+                    mail.send(msg)
+                mark_broadcast_delivered(fingerprint, email)
                 sent.append(email)
+                log_mailing_list_send(
+                    'broadcast', subject, [email], status='sent', fingerprint=fingerprint
+                )
             except Exception as e:
                 print(f'Broadcast email failed for {email}:', e)
+                release_broadcast_emails(fingerprint, [email])
                 failed.append(email)
-    if sent:
-        log_mailing_list_send(
-            'broadcast', subject, sent, status='sent', fingerprint=fingerprint
+                log_mailing_list_send(
+                    'broadcast', subject, [email], status='failed', fingerprint=fingerprint
+                )
+    finally:
+        if connection_cm is not None:
+            try:
+                connection_cm.__exit__(None, None, None)
+            except Exception as e:
+                print('Broadcast SMTP connection close failed:', e)
+    return sent, failed, leftover
+
+
+def _continue_broadcast_in_background(subject, body, html_body, recipients, fingerprint):
+    global _broadcast_continue_thread
+
+    def _run():
+        with app.app_context():
+            try:
+                _send_broadcast_messages(
+                    subject, body, html_body, recipients, fingerprint, deadline=None
+                )
+            except Exception as e:
+                print('Background broadcast continuation failed:', e)
+            finally:
+                release_broadcast_emails(fingerprint, recipients)
+
+    thread = threading.Thread(target=_run, name='broadcast-continue', daemon=True)
+    _broadcast_continue_thread = thread
+    thread.start()
+    return thread
+
+
+def send_broadcast_email(
+    subject, body, recipients, continue_in_background=True, request_budget=None
+):
+    """Send plain/html broadcast to many recipients.
+
+    Returns sent, failed, skipped, pending.
+    pending were not attempted yet (request-time budget); they continue in a
+    background thread unless continue_in_background is False.
+    The same address never receives the same subject+body more than once.
+    """
+    subject = (subject or '').strip()
+    body = (body or '').strip()
+    sent = []
+    failed = []
+    skipped = []
+    pending = []
+    if not subject or not body or not recipients:
+        return sent, failed, skipped, pending
+    if any(c in subject for c in '\r\n'):
+        return sent, failed, skipped, pending
+    if not app.config.get('TESTING') and not mail_is_configured():
+        print('Broadcast skipped: mail is not configured')
+        return sent, list(recipients), skipped, pending
+    fingerprint = mailing_message_fingerprint('broadcast', subject, body)
+    already = emails_already_sent_message('broadcast', subject, body)
+    unique = []
+    seen = set()
+    for email in recipients:
+        normalized = (email or '').strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if normalized in already:
+            skipped.append(normalized)
+        else:
+            unique.append(normalized)
+    to_send = claim_broadcast_emails(fingerprint, unique)
+    claimed = set(to_send)
+    for email in unique:
+        if email not in claimed:
+            skipped.append(email)
+    if not to_send:
+        return sent, failed, skipped, pending
+    html_body = _broadcast_html_body(body)
+    deadline = None
+    if request_budget is None and continue_in_background:
+        try:
+            request_budget = float(os.getenv('BROADCAST_REQUEST_BUDGET', '20'))
+        except (TypeError, ValueError):
+            request_budget = 20.0
+    if request_budget is not None and request_budget > 0:
+        deadline = time.monotonic() + request_budget
+    with app.app_context():
+        sent, failed, leftover = _send_broadcast_messages(
+            subject, body, html_body, to_send, fingerprint, deadline=deadline
         )
-    if failed:
-        log_mailing_list_send(
-            'broadcast', subject, failed, status='failed', fingerprint=fingerprint
+    pending = leftover
+    if leftover and continue_in_background:
+        print(
+            f'Continuing broadcast to {len(leftover)} remaining addresses '
+            f'in the background'
         )
-    return sent, failed, skipped
+        _continue_broadcast_in_background(
+            subject, body, html_body, leftover, fingerprint
+        )
+    elif leftover:
+        release_broadcast_emails(fingerprint, leftover)
+    return sent, failed, skipped, pending
 
 
 
@@ -2032,7 +2200,9 @@ def get_logged_in_member():
 
 
 def ticket_recipient_email(stripe_email=None, metadata=None):
-    logged_in_email = (session.get('legacy_member_email') or '').strip().lower()
+    logged_in_email = ''
+    if has_request_context():
+        logged_in_email = (session.get('legacy_member_email') or '').strip().lower()
     if logged_in_email:
         return logged_in_email
     if metadata:
@@ -2270,7 +2440,12 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
                 ticket['admission_as'] = entry
                 if entry == 'vip':
                     ticket['vip_redeemed_at'] = now_iso
-                save_tickets(tickets)
+                if not save_tickets(tickets):
+                    ticket['scanned_at'] = None
+                    ticket.pop('admission_as', None)
+                    if entry == 'vip':
+                        ticket.pop('vip_redeemed_at', None)
+                    return False
                 return True
     return False
 
@@ -2599,6 +2774,8 @@ def checkout_session_is_paid(checkout_session):
 
 def fulfill_paid_checkout(checkout_session):
     """Idempotently create ticket records for a paid Stripe Checkout session."""
+    if not checkout_session_is_paid(checkout_session):
+        raise ValueError('Checkout session is not paid')
     if isinstance(checkout_session, dict):
         session_id = checkout_session.get('id')
         metadata = checkout_session.get('metadata') or {}
@@ -3534,12 +3711,18 @@ def admission_entry_type(ticket):
     return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
 
 
-def compute_admission_counts():
+def compute_admission_counts(event_id=None):
+    """Live door counts for the night being scanned (not every event)."""
+    target = (event_id or get_door_event_id() or '').strip()
     ga = 0
     vip = 0
+    if not target:
+        return {'ga': 0, 'vip': 0, 'total': 0}
     for ticket in load_tickets():
         scanned_at = ticket.get('scanned_at')
         if not scanned_at or not ticket_counts_for_current_period(scanned_at):
+            continue
+        if not ticket_belongs_to_event(ticket, target):
             continue
         qty = int(ticket.get('quantity') or 1)
         if admission_entry_type(ticket) == 'vip':
@@ -3724,7 +3907,16 @@ def check_ticket(ticket_id):
             vip_note = 'VIP area full — admitted as GA.'
 
     if not mark_ticket_scanned(normalized, admission_as=admission_as):
-        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+        refreshed = get_ticket_record(normalized) or record
+        if refreshed.get('scanned_at'):
+            return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+        return {
+            'status': 'error',
+            'ticket_id': display_id,
+            'quantity': quantity,
+            **meta,
+            'detail': 'Could not record this scan. Try again.',
+        }
 
     record = get_ticket_record(normalized) or record
     meta = ticket_result_meta(record, admission_as=admission_as)
@@ -3772,6 +3964,36 @@ def mark_email_sent(session_id):
         for ticket in tickets:
             if ticket.get('session_id') == session_id:
                 ticket['email_sent_at'] = datetime.now(timezone.utc).isoformat()
+                ticket.pop('email_sending_at', None)
+                save_tickets(tickets)
+                return
+
+
+def claim_ticket_email_delivery(session_id):
+    """True if this caller should send the ticket email (at most once)."""
+    if not session_id:
+        return True
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('session_id') != session_id:
+                continue
+            if ticket.get('email_sent_at') or ticket.get('email_sending_at'):
+                return False
+            ticket['email_sending_at'] = datetime.now(timezone.utc).isoformat()
+            save_tickets(tickets)
+            return True
+        return True
+
+
+def clear_ticket_email_sending(session_id):
+    if not session_id:
+        return
+    with tickets_lock:
+        tickets = load_tickets()
+        for ticket in tickets:
+            if ticket.get('session_id') == session_id and not ticket.get('email_sent_at'):
+                ticket.pop('email_sending_at', None)
                 save_tickets(tickets)
                 return
 
@@ -3818,6 +4040,8 @@ def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket
     record = get_ticket_by_session(session_id)
     if record and record.get('email_sent_at'):
         return True
+    if not claim_ticket_email_delivery(session_id):
+        return True
 
     if record:
         ticket_type = record.get('ticket_type', ticket_type)
@@ -3831,10 +4055,14 @@ def deliver_ticket_email(session_id, customer_email, ticket_id, quantity, ticket
         )
         if result['sent']:
             mark_email_sent(session_id)
+        else:
+            clear_ticket_email_sending(session_id)
 
     thread = threading.Thread(target=_send, daemon=False)
     thread.start()
     thread.join(timeout=app.config['MAIL_TIMEOUT'] + 2)
+    if not result['sent']:
+        clear_ticket_email_sending(session_id)
     return result['sent']
 
 
@@ -3915,10 +4143,14 @@ _display_tz = None
 def get_display_timezone():
     global _display_tz
     if _display_tz is None:
-        try:
-            _display_tz = ZoneInfo(APP_TIMEZONE)
-        except Exception:
-            _display_tz = ZoneInfo('America/Los_Angeles')
+        for key in (APP_TIMEZONE, 'America/Los_Angeles'):
+            try:
+                _display_tz = ZoneInfo(key)
+                break
+            except Exception:
+                _display_tz = None
+        if _display_tz is None:
+            _display_tz = timezone.utc
     return _display_tz
 
 
@@ -4659,9 +4891,17 @@ def verify_ticket():
         return guard
 
     if request.method == 'POST':
-        ticket_data = request.form.get('ticket_data') or request.json.get('ticket_data') if request.is_json else None
+        payload = request.get_json(silent=True) if request.is_json else None
+        ticket_data = request.form.get('ticket_data') or (payload or {}).get('ticket_data')
         ticket_id = parse_scanned_ticket(ticket_data)
         if not ticket_id:
+            if request.is_json:
+                return jsonify({
+                    'status': 'invalid',
+                    'ticket_id': None,
+                    'quantity': 0,
+                    'admission_totals': get_admission_totals(),
+                })
             return "Invalid ticket"
 
         result = check_ticket(ticket_id)
@@ -4686,6 +4926,8 @@ def verify_ticket():
             door_night = result.get('door_event_name') or 'tonight'
             detail = result.get('detail') or f'This ticket is for {ticket_night}. Tonight is {door_night}.'
             return f'❌ Wrong event — {detail}'
+        if result['status'] == 'error':
+            return f"❌ {result.get('detail') or 'Could not record this scan. Try again.'}"
         return "Invalid ticket"
 
     return render_template('verify.html', admission_totals=get_admission_totals())
@@ -5459,8 +5701,6 @@ def _admin_mailing_list_post():
         with mailing_send_guard() as got_lock:
             if not got_lock:
                 error = 'A send is already in progress. Wait for it to finish.'
-            elif not rate_limit_allow('broadcast_email', 3, 3600):
-                error = 'Broadcast limit reached (3 per hour). Wait before sending again.'
             else:
                 subject = (request.form.get('subject') or '').strip()
                 body = (request.form.get('body') or '').strip()
@@ -5482,6 +5722,7 @@ def _admin_mailing_list_post():
                 else:
                     recipients = resolve_broadcast_recipients(lists)
                     max_recipients = int(os.getenv('BROADCAST_MAX_RECIPIENTS', '2000'))
+                    already_sent = emails_already_sent_message('broadcast', subject, body)
                     if not recipients:
                         error = 'No recipients on the selected list(s).'
                     elif len(recipients) > max_recipients:
@@ -5489,8 +5730,12 @@ def _admin_mailing_list_post():
                             f'Too many recipients ({len(recipients)}). '
                             f'Max is {max_recipients}. Split the send or raise BROADCAST_MAX_RECIPIENTS.'
                         )
+                    elif not already_sent and not rate_limit_allow('broadcast_email', 3, 3600):
+                        error = 'Broadcast limit reached (3 per hour). Wait before sending again.'
                     else:
-                        sent, failed, skipped = send_broadcast_email(subject, body, recipients)
+                        sent, failed, skipped, pending = send_broadcast_email(
+                            subject, body, recipients
+                        )
                         parts = []
                         if sent:
                             parts.append(
@@ -5500,9 +5745,14 @@ def _admin_mailing_list_post():
                             parts.append(
                                 f'Skipped {len(skipped)} already sent this message.'
                             )
+                        if pending:
+                            parts.append(
+                                f'Continuing {len(pending)} in the background. '
+                                f'Refresh the send log in a minute — already-sent addresses will not get a duplicate.'
+                            )
                         if failed:
                             parts.append(f'{len(failed)} failed.')
-                        if sent or skipped:
+                        if sent or skipped or pending:
                             success = ' '.join(parts)
                         elif failed:
                             error = f'All {len(failed)} sends failed. Check mail settings.'
