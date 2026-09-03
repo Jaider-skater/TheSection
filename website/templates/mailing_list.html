@@ -371,7 +371,7 @@
         <div class="mb-3 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="sent">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
-                    aria-expanded="false"
+                    aria-expanded="true"
                     data-drawer-toggle>
                 <div class="flex items-center gap-2.5 min-w-0">
                     <span class="text-lg leading-none" aria-hidden="true">📤</span>
@@ -379,37 +379,59 @@
                         <div class="font-semibold text-base">Sent emails</div>
                         <div class="text-zinc-500 text-xs truncate">
                             {{ message_log_count|default(0) }} message{{ 's' if message_log_count|default(0) != 1 else '' }}
-                            · retry anyone who missed it
+                            · who got it, who missed it
                         </div>
                     </div>
                 </div>
                 <span class="drawer-chevron text-zinc-400 text-sm shrink-0" aria-hidden="true">▼</span>
             </button>
 
-            <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
+            <div class="drawer-panel open border-t border-zinc-800" data-drawer-panel>
                 <div class="p-3 space-y-3">
                     {% if message_log %}
                     <div class="mail-scroll space-y-3 pr-1">
                         {% for entry in message_log %}
                         <article class="email-row rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 space-y-2"
-                                 data-email="{{ entry.subject|lower }} {{ entry.body|lower }}">
+                                 data-email="{{ entry.subject|lower }} {{ entry.body|lower }} {{ entry.sent|join(' ') }} {{ entry.failed|join(' ') }} {{ entry.remaining|join(' ') }}">
                             <div class="flex flex-wrap items-start justify-between gap-2">
                                 <div class="min-w-0">
                                     <h3 class="text-sm font-semibold text-white truncate">{{ entry.subject or '—' }}</h3>
                                     <p class="text-[11px] text-zinc-500 tabular-nums">
                                         {{ entry.at | local_time }}
-                                        · {{ entry.lists|join(' + ') }}
+                                        {% if entry.lists %} · {{ entry.lists|join(' + ') }}{% endif %}
                                     </p>
                                 </div>
                                 <div class="flex items-center gap-1.5 shrink-0">
                                     {{ status_pill(entry.sent_count ~ ' sent', 'sky') }}
+                                    {% if entry.failed_count %}
+                                    {{ status_pill(entry.failed_count ~ ' failed', 'amber') }}
+                                    {% endif %}
                                     {% if entry.remaining_count %}
                                     {{ status_pill(entry.remaining_count ~ ' missed', 'amber') }}
                                     {% endif %}
                                 </div>
                             </div>
+                            {% if entry.has_body %}
                             <pre class="whitespace-pre-wrap break-words text-sm text-zinc-200 bg-zinc-900/80 border border-zinc-800 rounded-lg px-3 py-2 max-h-40 overflow-auto">{{ entry.body }}</pre>
-                            {% if entry.remaining_count %}
+                            {% else %}
+                            <p class="text-xs text-zinc-400">
+                                This send was logged before the message body was saved.
+                                Send the same subject and message from the form above — people who already got it will be skipped.
+                            </p>
+                            {% endif %}
+                            {% if entry.sent_count %}
+                            <p class="text-[11px] text-zinc-500 font-mono">
+                                Sent:
+                                {{ entry.sent|join(', ') }}{% if entry.sent_more %} +{{ entry.sent_more }} more{% endif %}
+                            </p>
+                            {% endif %}
+                            {% if entry.failed_count %}
+                            <p class="text-[11px] text-amber-200/80 font-mono">
+                                Failed:
+                                {{ entry.failed|join(', ') }}{% if entry.failed_more %} +{{ entry.failed_more }} more{% endif %}
+                            </p>
+                            {% endif %}
+                            {% if entry.has_body and entry.remaining_count %}
                             <p class="text-[11px] text-zinc-500 font-mono">
                                 Missed:
                                 {{ entry.remaining|join(', ') }}{% if entry.remaining_more %} +{{ entry.remaining_more }} more{% endif %}
@@ -425,7 +447,7 @@
                                     Send to remaining
                                 </button>
                             </form>
-                            {% else %}
+                            {% elif entry.has_body %}
                             <p class="text-[11px] text-emerald-400">Everyone on those lists has this email.</p>
                             {% endif %}
                         </article>

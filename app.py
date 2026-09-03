@@ -1573,21 +1573,68 @@ def get_broadcast_message(message_id):
     return None
 
 
+def _log_entry_emails(entry):
+    raw = entry.get('emails') or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [
+        (email or '').strip().lower()
+        for email in raw
+        if (email or '').strip()
+    ]
+
+
+def _preview_addresses(emails, limit=40):
+    items = sorted(emails)
+    return items[:limit], max(0, len(items) - limit)
+
+
 def broadcast_messages_for_admin():
-    """Saved emails (subject + body) with who still needs them."""
+    """Saved emails plus older subject-only sends, with who got them."""
     try:
         log_entries = load_mailing_list_log()
     except Exception as e:
         print('Failed to load mailing list log:', e)
         return []
-    messages = []
+    snapshots = {}
+    snapshot_order = []
+    grouped_sends = {}
     for entry in log_entries:
         if not isinstance(entry, dict):
             continue
         if entry.get('action') == 'message' and entry.get('kind') == 'broadcast':
-            messages.append(entry)
+            fp = (entry.get('fingerprint') or entry.get('id') or '').strip()
+            if fp and fp not in snapshots:
+                snapshots[fp] = entry
+                snapshot_order.append(fp)
+            continue
+        if entry.get('action') != 'send' or (entry.get('kind') or 'broadcast') != 'broadcast':
+            continue
+        fp = (entry.get('fingerprint') or '').strip()
+        subject = (entry.get('subject') or '').strip()
+        key = fp or f'subject:{(subject or "").lower()}'
+        bucket = grouped_sends.setdefault(key, {
+            'subject': subject,
+            'fingerprint': fp,
+            'sent': set(),
+            'failed': set(),
+            'at': entry.get('at'),
+        })
+        if subject and not bucket['subject']:
+            bucket['subject'] = subject
+        if entry.get('at') and (not bucket['at'] or str(entry.get('at')) > str(bucket['at'])):
+            bucket['at'] = entry.get('at')
+        emails = set(_log_entry_emails(entry))
+        if entry.get('status') == 'failed':
+            bucket['failed'].update(emails - bucket['sent'])
+        else:
+            bucket['sent'].update(emails)
+            bucket['failed'].difference_update(emails)
+
     rows = []
-    for entry in reversed(messages):
+    used_keys = set()
+    for fp in reversed(snapshot_order):
+        entry = snapshots[fp]
         subject = (entry.get('subject') or '').strip()
         body = (entry.get('body') or '').strip()
         lists = {
@@ -1600,17 +1647,57 @@ def broadcast_messages_for_admin():
         recipients = set(resolve_broadcast_recipients(lists))
         already = emails_already_sent_message('broadcast', subject, body)
         remaining = sorted(email for email in recipients if email not in already)
-        sent_on_lists = sorted(email for email in recipients if email in already)
+        send_info = grouped_sends.get(fp) or grouped_sends.get(f'subject:{subject.lower()}')
+        sent_emails = set((send_info or {}).get('sent') or []) | (already & recipients)
+        failed_emails = set((send_info or {}).get('failed') or []) - sent_emails
+        sent_preview, sent_more = _preview_addresses(sent_emails)
+        failed_preview, failed_more = _preview_addresses(failed_emails)
+        remaining_preview, remaining_more = _preview_addresses(remaining)
         rows.append({
             'id': entry.get('id') or '',
+            'has_body': True,
             'subject': subject,
             'body': body,
-            'at': entry.get('at'),
+            'at': entry.get('at') or (send_info or {}).get('at'),
             'lists': sorted(lists),
-            'sent_count': len(sent_on_lists),
+            'sent_count': len(sent_emails),
+            'sent': sent_preview,
+            'sent_more': sent_more,
+            'failed_count': len(failed_emails),
+            'failed': failed_preview,
+            'failed_more': failed_more,
             'remaining_count': len(remaining),
-            'remaining': remaining[:40],
-            'remaining_more': max(0, len(remaining) - 40),
+            'remaining': remaining_preview,
+            'remaining_more': remaining_more,
+        })
+        used_keys.add(fp)
+        if subject:
+            used_keys.add(f'subject:{subject.lower()}')
+
+    leftover_keys = [key for key in grouped_sends if key not in used_keys]
+    leftover_keys.sort(key=lambda key: str(grouped_sends[key].get('at') or ''), reverse=True)
+    for key in leftover_keys:
+        bucket = grouped_sends[key]
+        sent_emails = bucket['sent']
+        failed_emails = bucket['failed'] - sent_emails
+        sent_preview, sent_more = _preview_addresses(sent_emails)
+        failed_preview, failed_more = _preview_addresses(failed_emails)
+        rows.append({
+            'id': '',
+            'has_body': False,
+            'subject': bucket['subject'],
+            'body': '',
+            'at': bucket['at'],
+            'lists': [],
+            'sent_count': len(sent_emails),
+            'sent': sent_preview,
+            'sent_more': sent_more,
+            'failed_count': len(failed_emails),
+            'failed': failed_preview,
+            'failed_more': failed_more,
+            'remaining_count': 0,
+            'remaining': [],
+            'remaining_more': 0,
         })
     return rows
 

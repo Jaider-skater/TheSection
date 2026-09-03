@@ -43,6 +43,7 @@ class ProtectedMailingListTests(unittest.TestCase):
             patcher.start()
         thesection._delivered_broadcasts.clear()
         thesection._inflight_broadcasts.clear()
+        thesection._rate_limit_buckets.clear()
         self.app = thesection.app
         self.app.config['TESTING'] = True
 
@@ -826,6 +827,42 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('Broadcast limit reached', resp.get_data(as_text=True))
         self.assertEqual(self.mail_sent, [])
+
+    def test_legacy_send_rows_appear_without_saved_body(self):
+        self.log = [
+            {
+                'id': 'aaaaaaa1',
+                'action': 'send',
+                'kind': 'broadcast',
+                'subject': 'Doors at 9',
+                'status': 'sent',
+                'fingerprint': 'abc123abc123abcd',
+                'emails': ['got@example.com'],
+                'at': '2026-09-01T00:00:00+00:00',
+            },
+            {
+                'id': 'aaaaaaa2',
+                'action': 'send',
+                'kind': 'broadcast',
+                'subject': 'Doors at 9',
+                'status': 'failed',
+                'fingerprint': 'abc123abc123abcd',
+                'emails': ['missed@example.com'],
+                'at': '2026-09-01T00:00:00+00:00',
+            },
+        ]
+        rows = thesection.broadcast_messages_for_admin()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['subject'], 'Doors at 9')
+        self.assertFalse(rows[0]['has_body'])
+        self.assertEqual(rows[0]['sent'], ['got@example.com'])
+        self.assertEqual(rows[0]['failed'], ['missed@example.com'])
+        html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn('Doors at 9', html)
+        self.assertIn('got@example.com', html)
+        self.assertIn('missed@example.com', html)
+        self.assertIn('before the message body was saved', html)
+        self.assertNotIn('Send to remaining', html)
 
     def test_broadcast_saves_message_and_retry_sends_remaining(self):
         self.invites = [
