@@ -376,10 +376,10 @@
                 <div class="flex items-center gap-2.5 min-w-0">
                     <span class="text-lg leading-none" aria-hidden="true">📤</span>
                     <div class="min-w-0">
-                        <div class="font-semibold text-base">Sent log</div>
+                        <div class="font-semibold text-base">Sent emails</div>
                         <div class="text-zinc-500 text-xs truncate">
-                            {{ send_log_count|default(0) }} send{{ 's' if send_log_count|default(0) != 1 else '' }}
-                            · who got what
+                            {{ message_log_count|default(0) }} message{{ 's' if message_log_count|default(0) != 1 else '' }}
+                            · retry anyone who missed it
                         </div>
                     </div>
                 </div>
@@ -388,50 +388,51 @@
 
             <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
                 <div class="p-3 space-y-3">
-                    {% if send_log %}
-                    <div class="mail-scroll border border-zinc-800 rounded-xl bg-zinc-950/40">
-                        <table class="mail-table">
-                            <thead>
-                                <tr>
-                                    <th>To</th>
-                                    <th class="col-type">Type</th>
-                                    <th>Subject</th>
-                                    <th class="col-date hidden sm:table-cell">Sent</th>
-                                    <th class="col-status">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for entry in send_log %}
-                                <tr class="email-row hover:bg-zinc-900/80"
-                                    data-email="{{ entry.emails|join(' ') }} {{ entry.subject|lower }}">
-                                    <td class="min-w-0">
-                                        {% for email in entry.emails %}
-                                        <div class="font-mono text-xs text-zinc-200 truncate">{{ email }}</div>
-                                        {% endfor %}
-                                    </td>
-                                    <td class="col-type text-xs text-zinc-300">
-                                        {{ 'Invite' if entry.kind == 'invite' else 'Broadcast' }}
-                                    </td>
-                                    <td class="min-w-0 text-xs text-zinc-300 truncate" title="{{ entry.subject }}">
-                                        {{ entry.subject or '—' }}
-                                    </td>
-                                    <td class="col-date hidden sm:table-cell text-[11px] text-zinc-500 tabular-nums whitespace-nowrap">
+                    {% if message_log %}
+                    <div class="mail-scroll space-y-3 pr-1">
+                        {% for entry in message_log %}
+                        <article class="email-row rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 space-y-2"
+                                 data-email="{{ entry.subject|lower }} {{ entry.body|lower }}">
+                            <div class="flex flex-wrap items-start justify-between gap-2">
+                                <div class="min-w-0">
+                                    <h3 class="text-sm font-semibold text-white truncate">{{ entry.subject or '—' }}</h3>
+                                    <p class="text-[11px] text-zinc-500 tabular-nums">
                                         {{ entry.at | local_time }}
-                                    </td>
-                                    <td class="col-status">
-                                        {% if entry.status == 'failed' %}
-                                        {{ status_pill('Failed', 'amber') }}
-                                        {% else %}
-                                        {{ status_pill('Sent', 'sky') }}
-                                        {% endif %}
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
+                                        · {{ entry.lists|join(' + ') }}
+                                    </p>
+                                </div>
+                                <div class="flex items-center gap-1.5 shrink-0">
+                                    {{ status_pill(entry.sent_count ~ ' sent', 'sky') }}
+                                    {% if entry.remaining_count %}
+                                    {{ status_pill(entry.remaining_count ~ ' missed', 'amber') }}
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <pre class="whitespace-pre-wrap break-words text-sm text-zinc-200 bg-zinc-900/80 border border-zinc-800 rounded-lg px-3 py-2 max-h-40 overflow-auto">{{ entry.body }}</pre>
+                            {% if entry.remaining_count %}
+                            <p class="text-[11px] text-zinc-500 font-mono">
+                                Missed:
+                                {{ entry.remaining|join(', ') }}{% if entry.remaining_more %} +{{ entry.remaining_more }} more{% endif %}
+                            </p>
+                            <form method="POST" action="/admin/mailing-list" class="flex justify-end"
+                                  data-confirm-kind="retry-broadcast"
+                                  data-remaining-count="{{ entry.remaining_count }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="action" value="retry_broadcast">
+                                <input type="hidden" name="message_id" value="{{ entry.id }}">
+                                <button type="submit"
+                                        class="text-[11px] font-semibold uppercase tracking-wide text-zinc-200 border border-zinc-700 rounded-md px-2 py-1 hover:border-white">
+                                    Send to remaining
+                                </button>
+                            </form>
+                            {% else %}
+                            <p class="text-[11px] text-emerald-400">Everyone on those lists has this email.</p>
+                            {% endif %}
+                        </article>
+                        {% endfor %}
                     </div>
                     {% else %}
-                    <p class="text-zinc-600 text-xs text-center py-4">No sends logged yet.</p>
+                    <p class="text-zinc-600 text-xs text-center py-4">No saved emails yet. Send a list email and it will show up here.</p>
                     {% endif %}
                 </div>
             </div>
@@ -663,6 +664,14 @@
                     const ready = parseInt(form.getAttribute('data-ready-count') || '0', 10) || 0;
                     const noun = ready === 1 ? 'invite' : 'invites';
                     openConfirm('Send ' + ready + ' ' + noun + ' now?', [], 'Send', function () {
+                        submitConfirmed(form);
+                    });
+                    return;
+                }
+                if (kind === 'retry-broadcast') {
+                    const remaining = parseInt(form.getAttribute('data-remaining-count') || '0', 10) || 0;
+                    const noun = remaining === 1 ? 'person' : 'people';
+                    openConfirm('Send this email to ' + remaining + ' ' + noun + ' who missed it?', [], 'Send', function () {
                         submitConfirmed(form);
                     });
                     return;

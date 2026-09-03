@@ -172,7 +172,7 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertNotIn('Select all', html)
         self.assertIn('Remove selected', html)
         self.assertIn('Deletion log', html)
-        self.assertIn('Sent log', html)
+        self.assertIn('Sent emails', html)
         self.assertIn('confirm-dialog', html)
         self.assertIn('Select guest@example.com', html)
         self.assertIn('Select full@example.com', html)
@@ -359,10 +359,10 @@ class ProtectedMailingListTests(unittest.TestCase):
 
         html = self._admin_client().get('/admin/mailing-list').get_data(as_text=True)
         self.assertIn('Halloween is on', html)
-        self.assertIn('a@b.co', html)
-        self.assertIn('guest@example.com', html)
-        self.assertIn('Broadcast', html)
-        self.assertIn('Invite', html)
+        self.assertIn('See you there', html)
+        snapshots = [entry for entry in self.log if entry.get('action') == 'message']
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]['body'], 'See you there')
 
     def test_page_email_lists_are_scrollable(self):
         self.invites = [self._invite('guest@example.com')]
@@ -826,6 +826,65 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('Broadcast limit reached', resp.get_data(as_text=True))
         self.assertEqual(self.mail_sent, [])
+
+    def test_broadcast_saves_message_and_retry_sends_remaining(self):
+        self.invites = [
+            self._invite('got@example.com'),
+            self._invite('missed@example.com'),
+        ]
+        sent, failed, skipped, pending = thesection.send_broadcast_email(
+            'Doors at 9',
+            'Come through',
+            ['got@example.com'],
+            lists={'exclusive'},
+        )
+        self.assertEqual(sent, ['got@example.com'])
+        self.assertEqual(failed, [])
+        snapshots = [entry for entry in self.log if entry.get('action') == 'message']
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]['subject'], 'Doors at 9')
+        self.assertEqual(snapshots[0]['body'], 'Come through')
+        self.assertEqual(set(snapshots[0]['lists']), {'exclusive'})
+
+        rows = thesection.broadcast_messages_for_admin()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['sent_count'], 1)
+        self.assertEqual(rows[0]['remaining'], ['missed@example.com'])
+
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        html = client.get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn('Come through', html)
+        self.assertIn('Send to remaining', html)
+        self.assertIn('missed@example.com', html)
+        self.assertIn("form.dataset.submitting === '1'", html)
+
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/mailing-list',
+            data={
+                'action': 'retry_broadcast',
+                'message_id': snapshots[0]['id'],
+                'csrf_token': token,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('missed it', resp.get_data(as_text=True).lower())
+        self.assertEqual(
+            [msg.recipients[0] for msg in self.mail_sent],
+            ['got@example.com', 'missed@example.com'],
+        )
+
+        again = client.post(
+            '/admin/mailing-list',
+            data={
+                'action': 'retry_broadcast',
+                'message_id': snapshots[0]['id'],
+                'csrf_token': token,
+            },
+        )
+        self.assertIn('already got this email', again.get_data(as_text=True).lower())
+        self.assertEqual(len(self.mail_sent), 2)
 
     def test_admin_and_mailing_list_show_signups_vs_invites(self):
         claimed = self._invite('joined@example.com')

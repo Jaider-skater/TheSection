@@ -1514,6 +1514,107 @@ def emails_already_sent_invites():
     return found
 
 
+def log_broadcast_message_snapshot(subject, body, lists, fingerprint):
+    """Store one copy of the email itself so it can be resent to anyone who missed it."""
+    subject = (subject or '').replace('\r', ' ').replace('\n', ' ').strip()
+    if len(subject) > 200:
+        subject = subject[:200]
+    body = (body or '').strip()
+    if len(body) > 20000:
+        body = body[:20000]
+    fingerprint = (fingerprint or '').strip()
+    if not subject or not body or not fingerprint:
+        return False
+    lists = sorted({
+        (item or '').strip().lower()
+        for item in (lists or [])
+        if (item or '').strip().lower() in ('exclusive', 'full')
+    })
+    try:
+        with mailing_list_log_lock:
+            entries = load_mailing_list_log()
+            for entry in entries:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get('action') == 'message'
+                    and entry.get('fingerprint') == fingerprint
+                ):
+                    return True
+            entries.append({
+                'id': secrets.token_hex(8),
+                'action': 'message',
+                'kind': 'broadcast',
+                'subject': subject,
+                'body': body,
+                'fingerprint': fingerprint,
+                'lists': lists,
+                'at': datetime.now(timezone.utc).isoformat(),
+            })
+            if len(entries) > MAILING_LIST_LOG_MAX:
+                entries = entries[-MAILING_LIST_LOG_MAX:]
+            return save_mailing_list_log(entries)
+    except Exception as e:
+        print('Failed to save broadcast message snapshot:', e)
+        return False
+
+
+def get_broadcast_message(message_id):
+    wanted = (message_id or '').strip()
+    if not wanted or not re.fullmatch(r'[a-f0-9]{8,32}', wanted):
+        return None
+    for entry in load_mailing_list_log():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('id') != wanted:
+            continue
+        if entry.get('action') != 'message' or entry.get('kind') != 'broadcast':
+            continue
+        return entry
+    return None
+
+
+def broadcast_messages_for_admin():
+    """Saved emails (subject + body) with who still needs them."""
+    try:
+        log_entries = load_mailing_list_log()
+    except Exception as e:
+        print('Failed to load mailing list log:', e)
+        return []
+    messages = []
+    for entry in log_entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('action') == 'message' and entry.get('kind') == 'broadcast':
+            messages.append(entry)
+    rows = []
+    for entry in reversed(messages):
+        subject = (entry.get('subject') or '').strip()
+        body = (entry.get('body') or '').strip()
+        lists = {
+            (item or '').strip().lower()
+            for item in (entry.get('lists') or [])
+            if (item or '').strip().lower() in ('exclusive', 'full')
+        }
+        if not lists:
+            lists = {'exclusive', 'full'}
+        recipients = set(resolve_broadcast_recipients(lists))
+        already = emails_already_sent_message('broadcast', subject, body)
+        remaining = sorted(email for email in recipients if email not in already)
+        sent_on_lists = sorted(email for email in recipients if email in already)
+        rows.append({
+            'id': entry.get('id') or '',
+            'subject': subject,
+            'body': body,
+            'at': entry.get('at'),
+            'lists': sorted(lists),
+            'sent_count': len(sent_on_lists),
+            'remaining_count': len(remaining),
+            'remaining': remaining[:40],
+            'remaining_more': max(0, len(remaining) - 40),
+        })
+    return rows
+
+
 def log_mailing_list_send(kind, subject, emails, status='sent', fingerprint=''):
     """One log row per recipient for a broadcast or invite send."""
     now = datetime.now(timezone.utc).isoformat()
@@ -1864,7 +1965,8 @@ def _continue_broadcast_in_background(subject, body, html_body, recipients, fing
 
 
 def send_broadcast_email(
-    subject, body, recipients, continue_in_background=True, request_budget=None
+    subject, body, recipients, continue_in_background=True, request_budget=None,
+    lists=None,
 ):
     """Send plain/html broadcast to many recipients.
 
@@ -1883,10 +1985,11 @@ def send_broadcast_email(
         return sent, failed, skipped, pending
     if any(c in subject for c in '\r\n'):
         return sent, failed, skipped, pending
+    fingerprint = mailing_message_fingerprint('broadcast', subject, body)
+    log_broadcast_message_snapshot(subject, body, lists, fingerprint)
     if not app.config.get('TESTING') and not mail_is_configured():
         print('Broadcast skipped: mail is not configured')
         return sent, list(recipients), skipped, pending
-    fingerprint = mailing_message_fingerprint('broadcast', subject, body)
     already = emails_already_sent_message('broadcast', subject, body)
     unique = []
     seen = set()
@@ -5536,13 +5639,14 @@ def admin_mailing_list():
         full_list = full_mailing_list_for_admin()
         backup_log = mailing_list_log_for_admin('remove')
         send_log = mailing_list_log_for_admin('send')
+        message_log = broadcast_messages_for_admin()
     except Exception as e:
         error = public_error_message(
             e, 'Could not load mailing lists. Please try again.'
         )
         invites, ready_count, blocked_count = [], 0, 0
         signup_count, invite_count = 0, 0
-        full_list, backup_log, send_log = [], [], []
+        full_list, backup_log, send_log, message_log = [], [], [], []
     return render_template(
         'mailing_list.html',
         invites=invites,
@@ -5556,6 +5660,8 @@ def admin_mailing_list():
         backup_log_count=len(backup_log),
         send_log=send_log,
         send_log_count=len(send_log),
+        message_log=message_log,
+        message_log_count=len(message_log),
         key='',
         error=error,
         success=success,
@@ -5734,7 +5840,7 @@ def _admin_mailing_list_post():
                         error = 'Broadcast limit reached (3 per hour). Wait before sending again.'
                     else:
                         sent, failed, skipped, pending = send_broadcast_email(
-                            subject, body, recipients
+                            subject, body, recipients, lists=lists
                         )
                         parts = []
                         if sent:
@@ -5758,6 +5864,61 @@ def _admin_mailing_list_post():
                             error = f'All {len(failed)} sends failed. Check mail settings.'
                         else:
                             error = 'Nothing was sent.'
+    elif action == 'retry_broadcast':
+        with mailing_send_guard() as got_lock:
+            if not got_lock:
+                error = 'A send is already in progress. Wait for it to finish.'
+            else:
+                message = get_broadcast_message(request.form.get('message_id'))
+                if not message:
+                    error = 'That saved email was not found.'
+                else:
+                    subject = (message.get('subject') or '').strip()
+                    body = (message.get('body') or '').strip()
+                    lists = {
+                        (item or '').strip().lower()
+                        for item in (message.get('lists') or [])
+                        if (item or '').strip().lower() in ('exclusive', 'full')
+                    }
+                    if not lists:
+                        lists = {'exclusive', 'full'}
+                    if not subject or not body:
+                        error = 'That saved email has no subject or body to send.'
+                    else:
+                        recipients = resolve_broadcast_recipients(lists)
+                        already_sent = emails_already_sent_message(
+                            'broadcast', subject, body
+                        )
+                        remaining = [
+                            email for email in recipients if email not in already_sent
+                        ]
+                        if not remaining:
+                            success = 'Everyone on those lists already got this email.'
+                        else:
+                            sent, failed, skipped, pending = send_broadcast_email(
+                                subject, body, remaining, lists=lists
+                            )
+                            parts = []
+                            if sent:
+                                parts.append(
+                                    f'Sent to {len(sent)} address{"es" if len(sent) != 1 else ""} who missed it.'
+                                )
+                            if skipped:
+                                parts.append(
+                                    f'Skipped {len(skipped)} already sent this message.'
+                                )
+                            if pending:
+                                parts.append(
+                                    f'Continuing {len(pending)} in the background.'
+                                )
+                            if failed:
+                                parts.append(f'{len(failed)} failed.')
+                            if sent or skipped or pending:
+                                success = ' '.join(parts)
+                            elif failed:
+                                error = f'All {len(failed)} sends failed. Check mail settings.'
+                            else:
+                                error = 'Nothing was sent.'
     return error, success
 
 
