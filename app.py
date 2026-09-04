@@ -1496,6 +1496,25 @@ def emails_already_sent_message(kind, subject, body=''):
     return found
 
 
+def emails_sent_for_fingerprint(fingerprint):
+    """Addresses logged as successfully sent for this stored send fingerprint."""
+    wanted = (fingerprint or '').strip()
+    if not wanted or not re.fullmatch(r'[a-f0-9]{8,32}', wanted):
+        return set()
+    found = set()
+    for entry in load_mailing_list_log():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('action') != 'send' or entry.get('status') != 'sent':
+            continue
+        if (entry.get('kind') or 'broadcast') != 'broadcast':
+            continue
+        if (entry.get('fingerprint') or '') != wanted:
+            continue
+        found.update(_log_entry_emails(entry))
+    return found
+
+
 def emails_already_sent_invites():
     found = set()
     for entry in load_mailing_list_log():
@@ -1656,6 +1675,7 @@ def broadcast_messages_for_admin():
         rows.append({
             'id': entry.get('id') or '',
             'has_body': True,
+            'fingerprint': fp,
             'subject': subject,
             'body': body,
             'at': entry.get('at') or (send_info or {}).get('at'),
@@ -1685,6 +1705,7 @@ def broadcast_messages_for_admin():
         rows.append({
             'id': '',
             'has_body': False,
+            'fingerprint': bucket['fingerprint'],
             'subject': bucket['subject'],
             'body': '',
             'at': bucket['at'],
@@ -5914,10 +5935,20 @@ def _admin_mailing_list_post():
                     error = 'Message is too long (max 20,000 characters).'
                 else:
                     recipients = resolve_broadcast_recipients(lists)
+                    skip_fingerprint = (request.form.get('skip_fingerprint') or '').strip()
+                    earlier_sent = emails_sent_for_fingerprint(skip_fingerprint)
+                    if earlier_sent:
+                        recipients = [
+                            email for email in recipients if email not in earlier_sent
+                        ]
                     max_recipients = int(os.getenv('BROADCAST_MAX_RECIPIENTS', '2000'))
                     already_sent = emails_already_sent_message('broadcast', subject, body)
                     if not recipients:
-                        error = 'No recipients on the selected list(s).'
+                        error = (
+                            'Everyone on those lists already got the earlier send you loaded.'
+                            if earlier_sent
+                            else 'No recipients on the selected list(s).'
+                        )
                     elif len(recipients) > max_recipients:
                         error = (
                             f'Too many recipients ({len(recipients)}). '
@@ -5933,6 +5964,10 @@ def _admin_mailing_list_post():
                         if sent:
                             parts.append(
                                 f'Sent broadcast to {len(sent)} address{"es" if len(sent) != 1 else ""}.'
+                            )
+                        if earlier_sent:
+                            parts.append(
+                                f'Skipped {len(earlier_sent)} from the earlier send.'
                             )
                         if skipped:
                             parts.append(

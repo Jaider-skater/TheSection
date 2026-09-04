@@ -183,6 +183,7 @@
                   data-full-count="{{ full_list_count }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="send_broadcast">
+                <input type="hidden" name="skip_fingerprint" value="">
                 <div class="flex flex-wrap gap-4 text-sm">
                     <label class="flex items-center gap-1.5 cursor-pointer">
                         <input type="checkbox" name="list_exclusive" value="1" class="accent-white">
@@ -197,18 +198,12 @@
                        class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white">
                 <textarea name="body" rows="3" required placeholder="Message…"
                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white"></textarea>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <button type="submit" data-send-mode="all"
-                            class="w-full bg-zinc-800 text-white font-semibold py-2.5 rounded-xl text-sm border border-zinc-600 hover:border-white transition-colors">
-                        Send to selected lists
-                    </button>
-                    <button type="submit" data-send-mode="remaining"
-                            class="w-full bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-amber-200 transition-colors">
-                        Send to remaining
-                    </button>
-                </div>
-                <p class="text-zinc-500 text-xs">
-                    Click a sent email to load it, then Send to remaining.
+                <button type="submit"
+                        class="w-full bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-amber-200 transition-colors">
+                    Send to selected lists
+                </button>
+                <p class="text-zinc-500 text-xs" id="broadcast-hint">
+                    Click this morning’s send, write the message, then send. People who already got that send are skipped even if the wording is new.
                 </p>
             </form>
         </section>
@@ -399,7 +394,7 @@
                         <article class="email-row fill-email-card rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 space-y-2 cursor-pointer hover:border-zinc-500"
                                  data-email="{{ entry.subject|lower }} {{ entry.body|lower }} {{ entry.sent|join(' ') }} {{ entry.failed|join(' ') }} {{ entry.remaining|join(' ') }}"
                                  title="Load this email into the form">
-                            <script type="application/json" class="fill-email-payload">{{ {'subject': entry.subject, 'body': entry.body, 'lists': entry.lists}|tojson }}</script>
+                            <script type="application/json" class="fill-email-payload">{{ {'subject': entry.subject, 'body': entry.body, 'lists': entry.lists, 'fingerprint': entry.fingerprint}|tojson }}</script>
                             <div class="flex flex-wrap items-start justify-between gap-2">
                                 <div class="min-w-0">
                                     <h3 class="text-sm font-semibold text-white truncate">{{ entry.subject or '—' }}</h3>
@@ -422,7 +417,7 @@
                             <pre class="whitespace-pre-wrap break-words text-sm text-zinc-200 bg-zinc-900/80 border border-zinc-800 rounded-lg px-3 py-2 max-h-40 overflow-auto">{{ entry.body }}</pre>
                             {% else %}
                             <p class="text-xs text-zinc-400">
-                                Click to load the subject, paste the same message, then Send to remaining.
+                                Click this, write the message, then send. The people who already received it will be skipped.
                             </p>
                             {% endif %}
                             {% if entry.sent_count or entry.failed_count or entry.remaining_count %}
@@ -450,19 +445,7 @@
                                 </div>
                             </details>
                             {% endif %}
-                            {% if entry.has_body and entry.remaining_count %}
-                            <form method="POST" action="/admin/mailing-list" class="flex justify-end"
-                                  data-confirm-kind="retry-broadcast"
-                                  data-remaining-count="{{ entry.remaining_count }}">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                <input type="hidden" name="action" value="retry_broadcast">
-                                <input type="hidden" name="message_id" value="{{ entry.id }}">
-                                <button type="submit"
-                                        class="text-[11px] font-semibold uppercase tracking-wide text-zinc-200 border border-zinc-700 rounded-md px-2 py-1 hover:border-white">
-                                    Send to remaining
-                                </button>
-                            </form>
-                            {% elif entry.has_body %}
+                            {% if entry.has_body and not entry.remaining_count %}
                             <p class="text-[11px] text-emerald-400">Everyone on those lists has this email.</p>
                             {% endif %}
                         </article>
@@ -644,13 +627,6 @@
         });
 
         const broadcastForm = document.getElementById('broadcast-form');
-        if (broadcastForm) {
-            broadcastForm.querySelectorAll('[data-send-mode]').forEach(function (btn) {
-                btn.addEventListener('click', function () {
-                    broadcastForm.dataset.sendMode = btn.getAttribute('data-send-mode') || 'all';
-                });
-            });
-        }
 
         function fillBroadcastForm(card) {
             if (!broadcastForm) return;
@@ -668,9 +644,15 @@
             const full = broadcastForm.querySelector('[name="list_full"]');
             if (subject) subject.value = payload.subject || '';
             if (body) body.value = payload.body || '';
+            const skip = broadcastForm.querySelector('[name="skip_fingerprint"]');
+            if (skip) skip.value = payload.fingerprint || '';
             const lists = payload.lists || [];
             if (exclusive) exclusive.checked = !lists.length || lists.indexOf('exclusive') !== -1;
             if (full) full.checked = !lists.length || lists.indexOf('full') !== -1;
+            const hint = document.getElementById('broadcast-hint');
+            if (hint && skip && skip.value) {
+                hint.textContent = 'This send will skip everyone who already received that earlier email.';
+            }
             broadcastForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
             if (body) body.focus();
         }
@@ -728,17 +710,14 @@
                         alert('Select at least one mailing list.');
                         return;
                     }
-                    const remainingOnly = form.dataset.sendMode === 'remaining';
-                    if (remainingOnly) {
-                        openConfirm('Send this email only to people who have not received it yet?', [], 'Send', function () {
-                            submitConfirmed(form);
-                        });
-                        return;
-                    }
                     const parts = [];
                     if (exclusive) parts.push('Exclusive (' + (form.getAttribute('data-exclusive-count') || '0') + ')');
                     if (full) parts.push('Full (' + (form.getAttribute('data-full-count') || '0') + ')');
-                    openConfirm('Send this email to ' + parts.join(' and ') + '?', [], 'Send', function () {
+                    const skip = form.querySelector('[name="skip_fingerprint"]');
+                    const skipNote = (skip && skip.value)
+                        ? ' People who already received the earlier send you loaded will be skipped.'
+                        : ' Anyone who already got this exact message will be skipped.';
+                    openConfirm('Send this email to ' + parts.join(' and ') + '?' + skipNote, [], 'Send', function () {
                         submitConfirmed(form);
                     });
                     return;
@@ -747,14 +726,6 @@
                     const ready = parseInt(form.getAttribute('data-ready-count') || '0', 10) || 0;
                     const noun = ready === 1 ? 'invite' : 'invites';
                     openConfirm('Send ' + ready + ' ' + noun + ' now?', [], 'Send', function () {
-                        submitConfirmed(form);
-                    });
-                    return;
-                }
-                if (kind === 'retry-broadcast') {
-                    const remaining = parseInt(form.getAttribute('data-remaining-count') || '0', 10) || 0;
-                    const noun = remaining === 1 ? 'person' : 'people';
-                    openConfirm('Send this email to ' + remaining + ' ' + noun + ' who missed it?', [], 'Send', function () {
                         submitConfirmed(form);
                     });
                     return;

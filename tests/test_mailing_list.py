@@ -626,7 +626,7 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn('form.requestSubmit()', html)
         self.assertNotIn('confirmOk.disabled = true', html)
         self.assertIn('fillBroadcastForm', html)
-        self.assertIn('data-send-mode="remaining"', html)
+        self.assertNotIn('Send to remaining', html)
 
     def test_mailing_list_shows_ticket_purchase_counts(self):
         self.invites = [self._invite('guest@example.com'), self._invite('none@example.com')]
@@ -865,9 +865,48 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn('Doors at 9', html)
         self.assertIn('got@example.com', html)
         self.assertIn('missed@example.com', html)
-        self.assertIn('Click to load the subject', html)
+        self.assertIn('Click this, write the message', html)
         self.assertIn('fill-email-card', html)
-        self.assertNotIn('name="message_id"', html)
+        self.assertIn('abc123abc123abcd', html)
+        self.assertIn('skip_fingerprint', html)
+
+    def test_new_body_skips_people_from_loaded_earlier_send(self):
+        self.invites = [
+            self._invite('got@example.com'),
+            self._invite('missed@example.com'),
+        ]
+        thesection.send_broadcast_email(
+            'Doors at 9',
+            'Old body',
+            ['got@example.com'],
+            lists={'exclusive'},
+        )
+        fingerprint = next(
+            entry['fingerprint']
+            for entry in self.log
+            if entry.get('action') == 'send' and entry.get('status') == 'sent'
+        )
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/mailing-list',
+            data={
+                'action': 'send_broadcast',
+                'list_exclusive': '1',
+                'subject': 'Doors at 9',
+                'body': 'Brand new wording',
+                'skip_fingerprint': fingerprint,
+                'csrf_token': token,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_data(as_text=True)
+        self.assertIn('earlier send', html.lower())
+        self.assertEqual(
+            [msg.recipients[0] for msg in self.mail_sent],
+            ['got@example.com', 'missed@example.com'],
+        )
 
     def test_broadcast_saves_message_and_retry_sends_remaining(self):
         self.invites = [
@@ -897,35 +936,29 @@ class ProtectedMailingListTests(unittest.TestCase):
         client = self._admin_client()
         html = client.get('/admin/mailing-list').get_data(as_text=True)
         self.assertIn('Come through', html)
-        self.assertIn('Send to remaining', html)
+        self.assertNotIn('Send to remaining', html)
         self.assertIn('missed@example.com', html)
-        self.assertIn("form.dataset.submitting === '1'", html)
 
         token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
-        resp = client.post(
-            '/admin/mailing-list',
-            data={
-                'action': 'retry_broadcast',
-                'message_id': snapshots[0]['id'],
-                'csrf_token': token,
-            },
-        )
+        data = {
+            'action': 'send_broadcast',
+            'list_exclusive': '1',
+            'subject': 'Doors at 9',
+            'body': 'Come through',
+            'csrf_token': token,
+        }
+        resp = client.post('/admin/mailing-list', data=data)
         self.assertEqual(resp.status_code, 200)
-        self.assertIn('missed it', resp.get_data(as_text=True).lower())
+        page = resp.get_data(as_text=True)
+        self.assertIn('already sent', page.lower())
+        self.assertIn('Sent broadcast to 1 address', page)
         self.assertEqual(
             [msg.recipients[0] for msg in self.mail_sent],
             ['got@example.com', 'missed@example.com'],
         )
 
-        again = client.post(
-            '/admin/mailing-list',
-            data={
-                'action': 'retry_broadcast',
-                'message_id': snapshots[0]['id'],
-                'csrf_token': token,
-            },
-        )
-        self.assertIn('already got this email', again.get_data(as_text=True).lower())
+        again = client.post('/admin/mailing-list', data=data)
+        self.assertIn('already sent', again.get_data(as_text=True).lower())
         self.assertEqual(len(self.mail_sent), 2)
 
     def test_admin_and_mailing_list_show_signups_vs_invites(self):
