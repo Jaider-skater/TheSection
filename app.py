@@ -1985,7 +1985,10 @@ def _broadcast_html_body(body):
     )
 
 
-def _send_broadcast_messages(subject, body, html_body, to_send, fingerprint, deadline=None):
+def _send_broadcast_messages(
+    subject, body, html_body, to_send, fingerprint, deadline=None,
+    kind='broadcast', skip_dedupe=False,
+):
     """Send to to_send. Returns (sent, failed, leftover). leftover was not attempted."""
     sent = []
     failed = []
@@ -2012,13 +2015,14 @@ def _send_broadcast_messages(subject, body, html_body, to_send, fingerprint, dea
                     f'{len(leftover)} still queued'
                 )
                 break
-            with _broadcast_delivery_lock:
-                already_delivered = (
-                    _broadcast_delivery_key(fingerprint, email) in _delivered_broadcasts
-                )
-            if already_delivered:
-                sent.append(email)
-                continue
+            if not skip_dedupe:
+                with _broadcast_delivery_lock:
+                    already_delivered = (
+                        _broadcast_delivery_key(fingerprint, email) in _delivered_broadcasts
+                    )
+                if already_delivered:
+                    sent.append(email)
+                    continue
             try:
                 msg = Message(
                     subject,
@@ -2031,17 +2035,19 @@ def _send_broadcast_messages(subject, body, html_body, to_send, fingerprint, dea
                     connection.send(msg)
                 else:
                     mail.send(msg)
-                mark_broadcast_delivered(fingerprint, email)
+                if not skip_dedupe:
+                    mark_broadcast_delivered(fingerprint, email)
                 sent.append(email)
                 log_mailing_list_send(
-                    'broadcast', subject, [email], status='sent', fingerprint=fingerprint
+                    kind, subject, [email], status='sent', fingerprint=fingerprint
                 )
             except Exception as e:
                 print(f'Broadcast email failed for {email}:', e)
-                release_broadcast_emails(fingerprint, [email])
+                if not skip_dedupe:
+                    release_broadcast_emails(fingerprint, [email])
                 failed.append(email)
                 log_mailing_list_send(
-                    'broadcast', subject, [email], status='failed', fingerprint=fingerprint
+                    kind, subject, [email], status='failed', fingerprint=fingerprint
                 )
     finally:
         if connection_cm is not None:
@@ -2142,6 +2148,39 @@ def send_broadcast_email(
     elif leftover:
         release_broadcast_emails(fingerprint, leftover)
     return sent, failed, skipped, pending
+
+
+def test_mail_recipients():
+    """Only these addresses may receive a test send."""
+    return sorted(PROTECTED_MAILING_LIST_EMAILS)
+
+
+def send_test_broadcast_email(subject, body):
+    """Send a test copy to Hallie and events only. Never uses the mailing lists."""
+    subject = (subject or '').strip()
+    body = (body or '').strip()
+    sent, failed, skipped, pending = [], [], [], []
+    if not subject or not body or any(c in subject for c in '\r\n'):
+        return sent, failed, skipped, pending
+    if not subject.upper().startswith('[TEST]'):
+        subject = f'[TEST] {subject}'
+    recipients = [
+        email for email in test_mail_recipients()
+        if is_valid_email(email)
+    ]
+    if not recipients:
+        return sent, failed, skipped, pending
+    if not app.config.get('TESTING') and not mail_is_configured():
+        print('Test broadcast skipped: mail is not configured')
+        return sent, list(recipients), skipped, pending
+    fingerprint = mailing_message_fingerprint('test', subject, body) + secrets.token_hex(4)
+    html_body = _broadcast_html_body(body)
+    with app.app_context():
+        sent, failed, leftover = _send_broadcast_messages(
+            subject, body, html_body, recipients, fingerprint,
+            deadline=None, kind='test', skip_dedupe=True,
+        )
+    return sent, failed, skipped, leftover
 
 
 
@@ -5777,6 +5816,7 @@ def admin_mailing_list():
         returning_guest_discount_percent=int(returning_guest_discount * 100),
         invite_days=INVITE_EXPIRY_DAYS,
         timezone_label=display_timezone_label(),
+        test_mail_recipients=test_mail_recipients(),
     )
 
 
@@ -5911,6 +5951,48 @@ def _admin_mailing_list_post():
             f'Synced members into full list: {len(added)} added, '
             f'{len(skipped)} already present or exclusive.'
         )
+    elif action == 'send_test_broadcast':
+        with mailing_send_guard() as got_lock:
+            if not got_lock:
+                error = 'A send is already in progress. Wait for it to finish.'
+            elif not rate_limit_allow('test_broadcast', 20, 3600):
+                error = 'Test send limit reached (20 per hour). Wait before sending again.'
+            else:
+                subject = (request.form.get('subject') or '').strip()
+                body = (request.form.get('body') or '').strip()
+                if not subject or not body:
+                    error = 'Subject and message body are required.'
+                elif any(c in subject for c in '\r\n'):
+                    error = 'Subject cannot contain line breaks.'
+                elif len(subject) > 200:
+                    error = 'Subject is too long (max 200 characters).'
+                elif len(body) > 20000:
+                    error = 'Message is too long (max 20,000 characters).'
+                else:
+                    recipients = test_mail_recipients()
+                    sent, failed, skipped, pending = send_test_broadcast_email(subject, body)
+                    unexpected = [
+                        email for email in (sent + failed + skipped + pending)
+                        if email not in PROTECTED_MAILING_LIST_EMAILS
+                    ]
+                    if unexpected:
+                        error = 'Test send aborted: unexpected recipient.'
+                    else:
+                        parts = []
+                        if sent:
+                            parts.append(
+                                f'Test sent to {", ".join(sent)}.'
+                            )
+                        if failed:
+                            parts.append(f'{len(failed)} test send(s) failed.')
+                        if sent:
+                            success = ' '.join(parts)
+                        elif failed:
+                            error = (
+                                f'Test send failed for {", ".join(failed)}. Check mail settings.'
+                            )
+                        else:
+                            error = 'Test send did not go out.'
     elif action == 'send_broadcast':
         with mailing_send_guard() as got_lock:
             if not got_lock:

@@ -198,12 +198,20 @@
                        class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white">
                 <textarea name="body" rows="3" required placeholder="Message…"
                           class="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white"></textarea>
-                <button type="submit"
-                        class="w-full bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-amber-200 transition-colors">
-                    Send to selected lists
-                </button>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button type="submit" data-mail-action="send_test_broadcast"
+                            data-confirm-kind-override="broadcast-test"
+                            class="w-full bg-zinc-800 text-white font-semibold py-2.5 rounded-xl text-sm border border-zinc-600 hover:border-white transition-colors">
+                        Send test
+                    </button>
+                    <button type="submit" data-mail-action="send_broadcast"
+                            data-confirm-kind-override="broadcast"
+                            class="w-full bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-amber-200 transition-colors">
+                        Send to selected lists
+                    </button>
+                </div>
                 <p class="text-zinc-500 text-xs" id="broadcast-hint">
-                    Click this morning’s send, write the message, then send. People who already got that send are skipped even if the wording is new.
+                    Send test goes only to {{ test_mail_recipients|join(' and ') }}. Use it before a real list send.
                 </p>
             </form>
         </section>
@@ -627,6 +635,17 @@
         });
 
         const broadcastForm = document.getElementById('broadcast-form');
+        if (broadcastForm) {
+            broadcastForm.querySelectorAll('[data-mail-action]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    const action = btn.getAttribute('data-mail-action');
+                    const kind = btn.getAttribute('data-confirm-kind-override');
+                    const actionInput = broadcastForm.querySelector('[name="action"]');
+                    if (actionInput && action) actionInput.value = action;
+                    if (kind) broadcastForm.setAttribute('data-confirm-kind', kind);
+                });
+            });
+        }
 
         function fillBroadcastForm(card) {
             if (!broadcastForm) return;
@@ -699,6 +718,13 @@
                     const list = form.getAttribute('data-confirm-list') || 'this list';
                     const noun = emails.length === 1 ? 'email' : 'emails';
                     openConfirm('Remove ' + emails.length + ' ' + noun + ' from the ' + list + '?', emails, 'Remove', function () {
+                        submitConfirmed(form);
+                    });
+                    return;
+                }
+                if (kind === 'broadcast-test') {
+                    const testers = {{ test_mail_recipients|tojson }};
+                    openConfirm('Send a TEST email only to these addresses?', testers, 'Send test', function () {
                         submitConfirmed(form);
                     });
                     return;

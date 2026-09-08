@@ -961,6 +961,58 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn('already sent', again.get_data(as_text=True).lower())
         self.assertEqual(len(self.mail_sent), 2)
 
+    def test_test_send_only_goes_to_protected_addresses(self):
+        self.invites = [
+            self._invite('guest@example.com'),
+            self._invite(PROTECTED[0]),
+        ]
+        self.full_list = [self._full_entry('crowd@example.com')]
+        sent, failed, skipped, pending = thesection.send_test_broadcast_email(
+            'Halloween is on', 'See you there'
+        )
+        self.assertEqual(failed, [])
+        self.assertEqual(set(sent), set(PROTECTED))
+        self.assertTrue(all(msg.subject.startswith('[TEST]') for msg in self.mail_sent))
+        self.assertEqual(
+            {msg.recipients[0] for msg in self.mail_sent},
+            set(PROTECTED),
+        )
+        self.assertNotIn('guest@example.com', {msg.recipients[0] for msg in self.mail_sent})
+
+        sent2, failed2, skipped2, pending2 = thesection.send_test_broadcast_email(
+            'Halloween is on', 'See you there'
+        )
+        self.assertEqual(set(sent2), set(PROTECTED))
+        self.assertEqual(len(self.mail_sent), 4)
+
+        broadcasts = [
+            entry for entry in self.log
+            if entry.get('action') == 'send' and entry.get('kind') == 'broadcast'
+        ]
+        self.assertEqual(broadcasts, [])
+
+        thesection._rate_limit_buckets.clear()
+        client = self._admin_client()
+        token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
+        html = client.get('/admin/mailing-list').get_data(as_text=True)
+        self.assertIn('Send test', html)
+        self.assertIn(PROTECTED[0], html)
+        self.assertIn(PROTECTED[1], html)
+        resp = client.post(
+            '/admin/mailing-list',
+            data={
+                'action': 'send_test_broadcast',
+                'list_full': '1',
+                'subject': 'Doors at 9',
+                'body': 'Come through',
+                'csrf_token': token,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        page = resp.get_data(as_text=True)
+        self.assertIn('Test sent', page)
+        self.assertNotIn('crowd@example.com', [msg.recipients[0] for msg in self.mail_sent])
+
     def test_admin_and_mailing_list_show_signups_vs_invites(self):
         claimed = self._invite('joined@example.com')
         claimed['claimed_at'] = datetime.now(timezone.utc).isoformat()
