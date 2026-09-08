@@ -11,6 +11,7 @@
         .drawer-chevron { transition: transform 0.15s ease; }
         .drawer-header[aria-expanded="true"] .drawer-chevron { transform: rotate(180deg); }
         .email-row.hidden-by-search { display: none !important; }
+        .fill-email-card.selected { border-color: #fff; }
         .mail-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .mail-table th {
             text-align: left;
@@ -210,8 +211,9 @@
                         Send to selected lists
                     </button>
                 </div>
-                <p class="text-zinc-500 text-xs" id="broadcast-hint">
-                    Send test goes only to {{ test_mail_recipients|join(' and ') }}. Use it before a real list send.
+                <p class="text-zinc-500 text-xs" id="broadcast-hint"
+                   data-default-hint="Send test goes only to {{ test_mail_recipients|join(' and ') }}. Use it before a real list send. Click a sent email again to unselect it.">
+                    Send test goes only to {{ test_mail_recipients|join(' and ') }}. Use it before a real list send. Click a sent email again to unselect it.
                 </p>
             </form>
         </section>
@@ -466,6 +468,61 @@
             </div>
         </div>
 
+        <div class="mb-2 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="tests">
+            <button type="button"
+                    class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
+                    aria-expanded="false"
+                    data-drawer-toggle>
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="text-lg leading-none" aria-hidden="true">🧪</span>
+                    <div class="min-w-0">
+                        <div class="font-semibold text-base">Test log</div>
+                        <div class="text-zinc-500 text-xs truncate">
+                            {{ test_log_count|default(0) }} test{{ 's' if test_log_count|default(0) != 1 else '' }}
+                            · {{ test_mail_recipients|join(' + ') }}
+                        </div>
+                    </div>
+                </div>
+                <span class="drawer-chevron text-zinc-400 text-sm shrink-0" aria-hidden="true">▼</span>
+            </button>
+            <div class="drawer-panel border-t border-zinc-800" data-drawer-panel>
+                <div class="p-3 space-y-3">
+                    {% if test_log %}
+                    <div class="mail-scroll space-y-3 pr-1">
+                        {% for entry in test_log %}
+                        <article class="email-row rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 space-y-2"
+                                 data-email="{{ entry.subject|lower }} {{ entry.body|lower }} {{ entry.sent|join(' ') }}">
+                            <div class="flex flex-wrap items-start justify-between gap-2">
+                                <div class="min-w-0">
+                                    <h3 class="text-sm font-semibold text-white truncate">{{ entry.subject or '—' }}</h3>
+                                    <p class="text-[11px] text-zinc-500 tabular-nums">{{ entry.at | local_time }}</p>
+                                </div>
+                                <div class="flex items-center gap-1.5 shrink-0">
+                                    {{ status_pill(entry.sent_count ~ ' sent', 'sky') }}
+                                    {% if entry.failed_count %}
+                                    {{ status_pill(entry.failed_count ~ ' failed', 'amber') }}
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% if entry.body %}
+                            <pre class="whitespace-pre-wrap break-words text-sm text-zinc-200 bg-zinc-900/80 border border-zinc-800 rounded-lg px-3 py-2 max-h-32 overflow-auto">{{ entry.body }}</pre>
+                            {% endif %}
+                            {% if entry.sent_count %}
+                            <p class="text-[11px] text-zinc-500 font-mono">{{ entry.sent|join(', ') }}</p>
+                            {% endif %}
+                            {% if entry.failed_count %}
+                            <p class="text-[11px] text-amber-200/80 font-mono">Failed: {{ entry.failed|join(', ') }}</p>
+                            {% endif %}
+                        </article>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-zinc-600 text-xs text-center py-4">No test sends yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
         <div class="mb-8 border border-zinc-800 rounded-2xl overflow-hidden bg-zinc-900/50" data-drawer data-list="log">
             <button type="button"
                     class="drawer-header w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-900 transition-colors"
@@ -647,8 +704,37 @@
             });
         }
 
+        function defaultBroadcastHint() {
+            const hint = document.getElementById('broadcast-hint');
+            if (!hint) return '';
+            return hint.getAttribute('data-default-hint') || hint.textContent || '';
+        }
+
+        function clearBroadcastForm() {
+            if (!broadcastForm) return;
+            const subject = broadcastForm.querySelector('[name="subject"]');
+            const body = broadcastForm.querySelector('[name="body"]');
+            const exclusive = broadcastForm.querySelector('[name="list_exclusive"]');
+            const full = broadcastForm.querySelector('[name="list_full"]');
+            const skip = broadcastForm.querySelector('[name="skip_fingerprint"]');
+            if (subject) subject.value = '';
+            if (body) body.value = '';
+            if (exclusive) exclusive.checked = false;
+            if (full) full.checked = false;
+            if (skip) skip.value = '';
+            const hint = document.getElementById('broadcast-hint');
+            if (hint) hint.textContent = defaultBroadcastHint();
+            document.querySelectorAll('.fill-email-card.selected').forEach(function (card) {
+                card.classList.remove('selected');
+            });
+        }
+
         function fillBroadcastForm(card) {
             if (!broadcastForm) return;
+            if (card.classList.contains('selected')) {
+                clearBroadcastForm();
+                return;
+            }
             const payloadEl = card.querySelector('.fill-email-payload');
             if (!payloadEl) return;
             let payload = {};
@@ -657,6 +743,10 @@
             } catch (err) {
                 return;
             }
+            document.querySelectorAll('.fill-email-card.selected').forEach(function (el) {
+                el.classList.remove('selected');
+            });
+            card.classList.add('selected');
             const subject = broadcastForm.querySelector('[name="subject"]');
             const body = broadcastForm.querySelector('[name="body"]');
             const exclusive = broadcastForm.querySelector('[name="list_exclusive"]');
@@ -670,7 +760,7 @@
             if (full) full.checked = !lists.length || lists.indexOf('full') !== -1;
             const hint = document.getElementById('broadcast-hint');
             if (hint && skip && skip.value) {
-                hint.textContent = 'This send will skip everyone who already received that earlier email.';
+                hint.textContent = 'This send will skip everyone who already received that earlier email. Click the email again to unselect it.';
             }
             broadcastForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
             if (body) body.focus();
@@ -678,7 +768,7 @@
 
         document.querySelectorAll('.fill-email-card').forEach(function (card) {
             card.addEventListener('click', function (e) {
-                if (e.target.closest('form, button, a, input, textarea')) return;
+                if (e.target.closest('form, button, a, input, textarea, summary, details')) return;
                 fillBroadcastForm(card);
             });
         });

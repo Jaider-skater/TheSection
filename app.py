@@ -1533,7 +1533,9 @@ def emails_already_sent_invites():
     return found
 
 
-def log_broadcast_message_snapshot(subject, body, lists, fingerprint):
+def log_broadcast_message_snapshot(
+    subject, body, lists, fingerprint, *, kind='broadcast', action='message',
+):
     """Store one copy of the email itself so it can be resent to anyone who missed it."""
     subject = (subject or '').replace('\r', ' ').replace('\n', ' ').strip()
     if len(subject) > 200:
@@ -1542,6 +1544,8 @@ def log_broadcast_message_snapshot(subject, body, lists, fingerprint):
     if len(body) > 20000:
         body = body[:20000]
     fingerprint = (fingerprint or '').strip()
+    kind = (kind or 'broadcast').strip().lower()
+    action = (action or 'message').strip().lower()
     if not subject or not body or not fingerprint:
         return False
     lists = sorted({
@@ -1555,14 +1559,14 @@ def log_broadcast_message_snapshot(subject, body, lists, fingerprint):
             for entry in entries:
                 if (
                     isinstance(entry, dict)
-                    and entry.get('action') == 'message'
+                    and entry.get('action') == action
                     and entry.get('fingerprint') == fingerprint
                 ):
                     return True
             entries.append({
                 'id': secrets.token_hex(8),
-                'action': 'message',
-                'kind': 'broadcast',
+                'action': action,
+                'kind': kind,
                 'subject': subject,
                 'body': body,
                 'fingerprint': fingerprint,
@@ -1719,6 +1723,76 @@ def broadcast_messages_for_admin():
             'remaining_count': 0,
             'remaining': [],
             'remaining_more': 0,
+        })
+    return rows
+
+
+def test_messages_for_admin():
+    """Saved test sends (Hallie + events only)."""
+    try:
+        log_entries = load_mailing_list_log()
+    except Exception as e:
+        print('Failed to load mailing list log:', e)
+        return []
+    snapshots = []
+    grouped = {}
+    for entry in log_entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('action') == 'test_message':
+            snapshots.append(entry)
+            continue
+        if entry.get('action') != 'send' or entry.get('kind') != 'test':
+            continue
+        fp = (entry.get('fingerprint') or '').strip() or (entry.get('id') or '')
+        bucket = grouped.setdefault(fp, {
+            'subject': (entry.get('subject') or '').strip(),
+            'sent': set(),
+            'failed': set(),
+            'at': entry.get('at'),
+        })
+        if entry.get('at') and (not bucket['at'] or str(entry.get('at')) > str(bucket['at'])):
+            bucket['at'] = entry.get('at')
+        emails = set(_log_entry_emails(entry))
+        if entry.get('status') == 'failed':
+            bucket['failed'].update(emails - bucket['sent'])
+        else:
+            bucket['sent'].update(emails)
+            bucket['failed'].difference_update(emails)
+    rows = []
+    used = set()
+    for entry in reversed(snapshots):
+        fp = (entry.get('fingerprint') or '').strip()
+        send_info = grouped.get(fp) or {}
+        sent_emails = sorted(send_info.get('sent') or [])
+        failed_emails = sorted(send_info.get('failed') or [])
+        rows.append({
+            'id': entry.get('id') or '',
+            'subject': (entry.get('subject') or '').strip(),
+            'body': (entry.get('body') or '').strip(),
+            'at': entry.get('at') or send_info.get('at'),
+            'sent': sent_emails,
+            'sent_count': len(sent_emails),
+            'failed': failed_emails,
+            'failed_count': len(failed_emails),
+        })
+        if fp:
+            used.add(fp)
+    leftover = [fp for fp in grouped if fp not in used]
+    leftover.sort(key=lambda key: str(grouped[key].get('at') or ''), reverse=True)
+    for fp in leftover:
+        bucket = grouped[fp]
+        sent_emails = sorted(bucket['sent'])
+        failed_emails = sorted(bucket['failed'] - bucket['sent'])
+        rows.append({
+            'id': '',
+            'subject': bucket['subject'],
+            'body': '',
+            'at': bucket['at'],
+            'sent': sent_emails,
+            'sent_count': len(sent_emails),
+            'failed': failed_emails,
+            'failed_count': len(failed_emails),
         })
     return rows
 
@@ -2174,6 +2248,9 @@ def send_test_broadcast_email(subject, body):
         print('Test broadcast skipped: mail is not configured')
         return sent, list(recipients), skipped, pending
     fingerprint = mailing_message_fingerprint('test', subject, body) + secrets.token_hex(4)
+    log_broadcast_message_snapshot(
+        subject, body, [], fingerprint, kind='test', action='test_message',
+    )
     html_body = _broadcast_html_body(body)
     with app.app_context():
         sent, failed, leftover = _send_broadcast_messages(
@@ -5787,13 +5864,14 @@ def admin_mailing_list():
         backup_log = mailing_list_log_for_admin('remove')
         send_log = mailing_list_log_for_admin('send')
         message_log = broadcast_messages_for_admin()
+        test_log = test_messages_for_admin()
     except Exception as e:
         error = public_error_message(
             e, 'Could not load mailing lists. Please try again.'
         )
         invites, ready_count, blocked_count = [], 0, 0
         signup_count, invite_count = 0, 0
-        full_list, backup_log, send_log, message_log = [], [], [], []
+        full_list, backup_log, send_log, message_log, test_log = [], [], [], [], []
     return render_template(
         'mailing_list.html',
         invites=invites,
@@ -5809,6 +5887,8 @@ def admin_mailing_list():
         send_log_count=len(send_log),
         message_log=message_log,
         message_log_count=len(message_log),
+        test_log=test_log,
+        test_log_count=len(test_log),
         key='',
         error=error,
         success=success,

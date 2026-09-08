@@ -626,6 +626,8 @@ class ProtectedMailingListTests(unittest.TestCase):
         self.assertIn('form.requestSubmit()', html)
         self.assertNotIn('confirmOk.disabled = true', html)
         self.assertIn('fillBroadcastForm', html)
+        self.assertIn('clearBroadcastForm', html)
+        self.assertIn('Test log', html)
         self.assertNotIn('Send to remaining', html)
 
     def test_mailing_list_shows_ticket_purchase_counts(self):
@@ -990,12 +992,20 @@ class ProtectedMailingListTests(unittest.TestCase):
             if entry.get('action') == 'send' and entry.get('kind') == 'broadcast'
         ]
         self.assertEqual(broadcasts, [])
+        tests = thesection.test_messages_for_admin()
+        self.assertTrue(tests)
+        self.assertTrue(tests[0]['subject'].startswith('[TEST]'))
+        self.assertEqual(tests[0]['body'], 'See you there')
+        self.assertEqual(set(tests[0]['sent']), set(PROTECTED))
 
         thesection._rate_limit_buckets.clear()
         client = self._admin_client()
         token = client.get('/admin/mailing-list').headers.get('X-CSRF-Token')
         html = client.get('/admin/mailing-list').get_data(as_text=True)
         self.assertIn('Send test', html)
+        self.assertIn('Test log', html)
+        self.assertIn('[TEST] Halloween is on', html)
+        self.assertIn('See you there', html)
         self.assertIn(PROTECTED[0], html)
         self.assertIn(PROTECTED[1], html)
         resp = client.post(
