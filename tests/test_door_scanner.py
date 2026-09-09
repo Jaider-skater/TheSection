@@ -59,6 +59,7 @@ class DoorScannerTests(unittest.TestCase):
             'quantity': 1,
             'ticket_type': 'general',
             'event_id': event_id,
+            'purchased_at': datetime.now(timezone.utc).isoformat(),
             'scanned_at': datetime.now(timezone.utc).isoformat() if scanned else None,
             'admission_as': 'ga' if scanned else None,
         }
@@ -208,10 +209,23 @@ class DoorScannerTests(unittest.TestCase):
             'quantity': 4,
         }])
         thesection.set_door_event_id('halloween-2026')
-        self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 4)
+        self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 0)
         self.assertTrue(thesection.apply_one_time_sales_counter_reset())
         self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 0)
         self.assertFalse(thesection.apply_one_time_sales_counter_reset())
+
+    def test_tickets_before_cutoff_are_void_and_omitted_from_sales(self):
+        old = self._ticket('OLDVOID', 'halloween-2026')
+        old['purchased_at'] = '2026-09-07T12:00:00+00:00'
+        fresh = self._ticket('NEWOK', 'halloween-2026')
+        fresh['purchased_at'] = '2026-09-08T12:00:00+00:00'
+        thesection.save_tickets([old, fresh])
+        thesection.set_door_event_id('halloween-2026')
+        self.assertFalse(thesection.ticket_is_valid_purchase(old))
+        self.assertTrue(thesection.ticket_is_valid_purchase(fresh))
+        self.assertEqual(thesection.check_ticket('OLDVOID')['status'], 'void')
+        self.assertEqual(thesection.check_ticket('NEWOK')['status'], 'accepted')
+        self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 1)
 
 
 if __name__ == '__main__':

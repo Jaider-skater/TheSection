@@ -250,6 +250,9 @@ EMAIL_RE = re.compile(r'^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$', re.IGNORECASE)
 
 HALLOWEEN_EVENT_SLUG = 'halloween-2026'
 HALLOWEEN_EVENT_DATE = '2026-10-24'
+# Local calendar date: purchases before this day are void at the door and omitted from Ticket Sales.
+TICKET_VALIDITY_CUTOFF_DATE = os.getenv('TICKET_VALIDITY_CUTOFF', '2026-09-08').strip() or '2026-09-08'
+TICKET_VALIDITY_RESET_TOKEN = 'void-before-2026-09-08-1'
 
 TICKET_TYPES = {
     'general': {
@@ -2861,8 +2864,38 @@ def ticket_counts_for_current_period(scanned_at):
     return scanned >= counting_epoch
 
 
+def ticket_validity_cutoff():
+    """First instant (app timezone) at which a purchase is still valid."""
+    raw = TICKET_VALIDITY_CUTOFF_DATE
+    try:
+        year, month, day = (int(part) for part in raw.split('-')[:3])
+    except Exception:
+        year, month, day = 2026, 9, 8
+    try:
+        tz = get_display_timezone()
+    except Exception:
+        try:
+            tz = ZoneInfo(APP_TIMEZONE)
+        except Exception:
+            tz = timezone.utc
+    return datetime(year, month, day, tzinfo=tz)
+
+
+def ticket_is_valid_purchase(ticket):
+    """False for test/old sales from before the validity cutoff."""
+    purchased = parse_iso_datetime((ticket or {}).get('purchased_at'))
+    if not purchased:
+        return False
+    cutoff = ticket_validity_cutoff()
+    if purchased.tzinfo is None:
+        purchased = purchased.replace(tzinfo=timezone.utc)
+    return purchased >= cutoff.astimezone(timezone.utc)
+
+
 def ticket_counts_for_current_sales_period(purchased_at):
     """Whether a purchase counts toward the live ticket-sales cap."""
+    if not ticket_is_valid_purchase({'purchased_at': purchased_at}):
+        return False
     epoch = get_sales_epoch()
     if epoch is None:
         return True
@@ -4022,10 +4055,38 @@ def apply_one_time_sales_counter_reset():
     return True
 
 
+def apply_one_time_pre_cutoff_ticket_void():
+    """Drop pre-cutoff test sales from sold counts. Door also rejects them."""
+    settings = load_scanner_settings()
+    if settings.get('validity_reset_applied') == TICKET_VALIDITY_RESET_TOKEN:
+        return False
+    cutoff_dt = ticket_validity_cutoff().astimezone(timezone.utc)
+    cutoff_iso = cutoff_dt.isoformat()
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        existing = None
+        raw_epoch = settings.get('sales_epoch')
+        if raw_epoch:
+            try:
+                existing = datetime.fromisoformat(str(raw_epoch).replace('Z', '+00:00'))
+                if existing.tzinfo is None:
+                    existing = existing.replace(tzinfo=timezone.utc)
+            except ValueError:
+                existing = None
+        if existing is None or existing < cutoff_dt:
+            settings['sales_epoch'] = cutoff_iso
+        settings['ticket_validity_epoch'] = cutoff_iso
+        settings['validity_reset_applied'] = TICKET_VALIDITY_RESET_TOKEN
+        save_scanner_settings(settings)
+    print(f'Tickets purchased before {TICKET_VALIDITY_CUTOFF_DATE} are void')
+    return True
+
+
 try:
     seed_default_event()
     apply_one_time_unused_ticket_reset()
     apply_one_time_sales_counter_reset()
+    apply_one_time_pre_cutoff_ticket_void()
 except Exception as exc:
     print('Event seed skipped:', exc)
 
@@ -4220,6 +4281,15 @@ def check_ticket(ticket_id):
 
     if not ticket_belongs_to_event(record, door_id):
         return {'status': 'wrong_event', 'ticket_id': display_id, 'quantity': quantity, **meta}
+
+    if not ticket_is_valid_purchase(record):
+        return {
+            'status': 'void',
+            'ticket_id': display_id,
+            'quantity': quantity,
+            **meta,
+            'detail': 'This ticket is from an earlier sale and is not valid.',
+        }
 
     if record.get('scanned_at'):
         return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
@@ -5255,6 +5325,8 @@ def verify_ticket():
             return f'❌ Wrong event — {detail}'
         if result['status'] == 'error':
             return f"❌ {result.get('detail') or 'Could not record this scan. Try again.'}"
+        if result['status'] == 'void':
+            return f"❌ {result.get('detail') or 'This ticket is no longer valid.'}"
         return "Invalid ticket"
 
     return render_template('verify.html', admission_totals=get_admission_totals())
@@ -5760,7 +5832,11 @@ def admin_dashboard():
         return redirect(url_for('admin_login'))
 
     # Never include view_token secrets in admin JSON dump for clipboard sharing
-    tickets = sorted(load_tickets(), key=lambda t: t.get('purchased_at', ''), reverse=True)
+    tickets = sorted(
+        [ticket for ticket in load_tickets() if ticket_is_valid_purchase(ticket)],
+        key=lambda t: t.get('purchased_at', ''),
+        reverse=True,
+    )
     safe_tickets = []
     for ticket in tickets:
         safe = {k: v for k, v in ticket.items() if k != 'view_token'}

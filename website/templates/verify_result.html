@@ -60,6 +60,10 @@
             <div class="text-6xl mb-4">❌</div>
             <h1 class="text-3xl font-bold text-red-400 mb-2">Scan failed</h1>
             <p class="text-zinc-200 mb-8">{{ detail or 'Could not record this scan. Try again.' }}</p>
+        {% elif status == 'void' %}
+            <div class="text-6xl mb-4">❌</div>
+            <h1 class="text-3xl font-bold text-red-400 mb-2">Not valid</h1>
+            <p class="text-zinc-200 mb-8">{{ detail or 'This ticket is from an earlier sale and is not valid.' }}</p>
         {% elif status == 'used' %}
             <div class="text-6xl mb-4">❌</div>
             <h1 class="text-3xl font-bold text-red-400 mb-2">Already Used</h1>

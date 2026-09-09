@@ -387,6 +387,11 @@
                     <div class="text-red-400 text-2xl font-bold mb-2">❌ Scan failed</div>
                     <div class="text-zinc-200">${result.detail || 'Could not record this scan. Try again.'}</div>
                 `;
+            } else if (result.status === 'void') {
+                resultEl.innerHTML = `
+                    <div class="text-red-400 text-2xl font-bold mb-2">❌ Not valid</div>
+                    <div class="text-zinc-200">${result.detail || 'This ticket is from an earlier sale and is not valid.'}</div>
+                `;
             } else {
                 resultEl.innerHTML = `<span class="text-red-400 text-xl">Invalid ticket</span>`;
             }
