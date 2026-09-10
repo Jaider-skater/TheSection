@@ -346,7 +346,6 @@ def main() -> int:
         "SECRET_KEY": secret_key,
         "ADMIN_KEY": admin_key,
         "STRIPE_SECRET_KEY": stripe_key,
-        "MAX_TICKET_QUANTITY": cfg.get("MAX_TICKET_QUANTITY") or "20",
         "MEMBERS_FILE": "/opt/render/project/src/data/legacy_members.json",
         "TICKETS_FILE": "/opt/render/project/src/data/tickets.json",
         "MAIL_SERVER": cfg.get("MAIL_SERVER") or "smtp.gmail.com",

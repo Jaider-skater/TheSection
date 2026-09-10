@@ -214,6 +214,27 @@ class DoorScannerTests(unittest.TestCase):
         self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 0)
         self.assertFalse(thesection.apply_one_time_sales_counter_reset())
 
+    def test_order_quantity_follows_ticket_cap_remaining(self):
+        thesection.save_events([
+            thesection.normalize_event({
+                'id': 'halloween-2026',
+                'name': 'Halloween',
+                'date': '2026-10-24',
+                'sales_open': True,
+                'ticket_cap': 10,
+            }),
+        ])
+        thesection.save_tickets([{
+            **self._ticket('SOLD8', 'halloween-2026'),
+            'quantity': 8,
+        }])
+        self.assertEqual(thesection.max_order_quantity('halloween-2026'), 2)
+        self.assertEqual(thesection.clamp_quantity(20, event_id='halloween-2026'), 2)
+        self.assertEqual(
+            thesection.get_ticket_availability('halloween-2026')['max_quantity'],
+            2,
+        )
+
     def test_tickets_before_cutoff_are_void_and_omitted_from_sales(self):
         old = self._ticket('OLDVOID', 'halloween-2026')
         old['purchased_at'] = '2026-09-07T12:00:00+00:00'

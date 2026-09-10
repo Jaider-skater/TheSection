@@ -52,8 +52,6 @@ services:
         sync: false
       - key: VERIFY_LOGIN_PASSWORD
         sync: false
-      - key: MAX_TICKET_QUANTITY
-        value: "20"
       - key: BUNDLE_DISCOUNT
         value: "0.10"
       - key: LEGACY_BUNDLE_DISCOUNT

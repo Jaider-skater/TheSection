@@ -47,7 +47,6 @@ app = Flask(__name__,
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 PRODUCTION_BASE_URL = 'https://thesection.onrender.com'
-MAX_TICKET_QUANTITY = int(os.getenv('MAX_TICKET_QUANTITY', '20'))
 WEAK_DEFAULT_SECRETS = {
     'SECRET_KEY': 'thesection-legacy-portal-change-me',
     'ADMIN_KEY': 'section2024',
@@ -496,12 +495,26 @@ class TicketSalesError(Exception):
         self.remaining = remaining
 
 
-def clamp_quantity(raw, default=1):
+def max_order_quantity(event_id=None):
+    """Most tickets one checkout can buy: remaining from the event ticket cap."""
+    remaining = ticket_sales_remaining(event_id)
+    if remaining is None:
+        return None
+    return max(0, remaining)
+
+
+def clamp_quantity(raw, default=1, event_id=None):
     try:
         value = int(raw)
     except (TypeError, ValueError):
         value = default
-    return max(1, min(MAX_TICKET_QUANTITY, value))
+    value = max(1, value)
+    cap = max_order_quantity(event_id)
+    if cap is None:
+        return value
+    if cap < 1:
+        return 1
+    return min(cap, value)
 
 
 def is_valid_email(email):
@@ -3161,7 +3174,10 @@ def fulfill_paid_checkout(checkout_session):
     if existing:
         return existing
 
-    quantity = clamp_quantity(quantity)
+    try:
+        quantity = max(1, int(quantity or 1))
+    except (TypeError, ValueError):
+        quantity = 1
     ticket_id = new_ticket_id()
     ticket_type = metadata.get('ticket_type', 'general')
     if ticket_type not in TICKET_TYPES:
@@ -4167,6 +4183,7 @@ def get_ticket_availability(event_id=None):
         'event_name': event.get('name') if event else None,
         'event_date_display': format_event_date_line((event or {}).get('date')) if event else None,
         'can_buy': bool(event and sales_open and not sold_out),
+        'max_quantity': 0 if sold_out else remaining,
     }
 
 
@@ -4180,7 +4197,10 @@ def ensure_ticket_sales_available(quantity, event_id=None):
     remaining = ticket_sales_remaining(event.get('id'))
     if remaining is None:
         return remaining
-    quantity = clamp_quantity(quantity)
+    try:
+        quantity = max(1, int(quantity or 1))
+    except (TypeError, ValueError):
+        quantity = 1
     if remaining <= 0:
         raise TicketSalesError('Tickets are sold out.', remaining=0)
     if quantity > remaining:
@@ -4774,13 +4794,13 @@ def member_status():
 @app.route('/api/pricing')
 def pricing():
     ticket_type = request.args.get('ticket_type', 'general')
-    quantity = clamp_quantity(request.args.get('quantity', 1))
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
     apply_member = resolve_member_discount_application(
         request.args.get('apply_member_discount', '').lower() in ('1', 'true', 'yes')
     )
     event_id = resolve_checkout_event_id(request.args.get('event_id'))
+    quantity = clamp_quantity(request.args.get('quantity', 1), event_id=event_id)
     return jsonify(pricing_breakdown(ticket_type, quantity, apply_member, event_id=event_id))
 
 
@@ -4801,8 +4821,8 @@ def build_checkout_session(quantity, ticket_type, apply_member_discount=False, e
         raise RuntimeError('Stripe is not configured')
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
-    quantity = clamp_quantity(quantity)
     sales_event_id = resolve_checkout_event_id(event_id)
+    quantity = clamp_quantity(quantity, event_id=sales_event_id)
     ensure_ticket_sales_available(quantity, sales_event_id)
     sales_event = get_event(sales_event_id) if sales_event_id else get_sales_event()
     sales_event_id = sales_event.get('id') if sales_event else sales_event_id
@@ -4924,11 +4944,12 @@ def checkout_intent():
         ticket_type = data.get('ticket_type', 'general')
         if ticket_type not in TICKET_TYPES:
             ticket_type = 'general'
+        event_id = resolve_checkout_event_id(data.get('event_id'))
         session['checkout_intent'] = {
-            'quantity': clamp_quantity(data.get('quantity', 1)),
+            'quantity': clamp_quantity(data.get('quantity', 1), event_id=event_id),
             'ticket_type': ticket_type,
             'apply_member_discount': bool(data.get('apply_member_discount')),
-            'event_id': resolve_checkout_event_id(data.get('event_id')),
+            'event_id': event_id,
         }
         touch_auth_session()
         return jsonify({'ok': True})
@@ -4970,10 +4991,10 @@ def create_checkout_session():
 
     try:
         data = request.get_json() or {}
-        quantity = clamp_quantity(data.get('quantity', 1))
         ticket_type = data.get('ticket_type', 'general')
         apply_member_discount = bool(data.get('apply_member_discount'))
         event_id = resolve_checkout_event_id(data.get('event_id'))
+        quantity = clamp_quantity(data.get('quantity', 1), event_id=event_id)
         # Re-stamp permanent session so login survives Stripe + browser Back.
         member = get_logged_in_member()
         if member:

@@ -16,17 +16,17 @@ let ticketAvailability = window.ticketAvailability || {
     sold_out: false,
 };
 let selectedEventId = (ticketAvailability && ticketAvailability.event_id) || (window.featuredEvent && window.featuredEvent.id) || '';
-const MAX_TICKET_QUANTITY = 20;
-
 function onSaleEventById(eventId) {
     const events = window.onSaleEvents || [];
     return events.find(event => event.id === eventId) || null;
 }
 
 function maxPurchasableQuantity() {
+    const fromSetup = ticketAvailability && ticketAvailability.max_quantity;
+    if (fromSetup != null) return Math.max(0, fromSetup);
     const remaining = ticketAvailability && ticketAvailability.remaining;
-    if (remaining == null) return MAX_TICKET_QUANTITY;
-    return Math.max(0, Math.min(MAX_TICKET_QUANTITY, remaining));
+    if (remaining != null) return Math.max(0, remaining);
+    return 999;
 }
 
 function applyAvailabilityToUi() {
