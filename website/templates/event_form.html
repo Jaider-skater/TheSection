@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% if is_new %}New Event{% else %}Edit Event{% endif %} • The Section</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
     <style>
         input[type="date"],
         input[type="time"] {

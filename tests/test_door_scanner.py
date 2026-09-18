@@ -306,6 +306,27 @@ class DoorScannerTests(unittest.TestCase):
             2,
         )
 
+    def test_order_quantity_caps_per_checkout(self):
+        thesection.save_events([
+            thesection.normalize_event({
+                'id': 'halloween-2026',
+                'name': 'Halloween',
+                'date': '2026-10-24',
+                'sales_open': True,
+                'ticket_cap': 300,
+            }),
+        ])
+        thesection.save_tickets([{
+            **self._ticket('SOLD2', 'halloween-2026'),
+            'quantity': 2,
+        }])
+        self.assertEqual(thesection.max_order_quantity('halloween-2026'), 10)
+        self.assertEqual(thesection.clamp_quantity(298, event_id='halloween-2026'), 10)
+        self.assertEqual(
+            thesection.get_ticket_availability('halloween-2026')['max_quantity'],
+            10,
+        )
+
     def test_tickets_before_cutoff_are_void_and_omitted_from_sales(self):
         old = self._ticket('OLDVOID', 'halloween-2026')
         old['purchased_at'] = '2026-09-07T12:00:00+00:00'

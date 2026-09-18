@@ -71,6 +71,15 @@ function applyAvailabilityToUi() {
     if (cap > 0 && quantity > cap) {
         quantity = cap;
     }
+    const capNote = document.getElementById('order-cap-note');
+    if (capNote) {
+        if (soldOut || cap < 1) {
+            capNote.classList.add('hidden');
+        } else {
+            capNote.textContent = cap === 1 ? 'Max 1 ticket per order' : `Max ${cap} tickets per order`;
+            capNote.classList.remove('hidden');
+        }
+    }
 }
 
 async function loadTicketAvailability(eventId) {

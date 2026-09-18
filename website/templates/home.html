@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>The Section</title>
     <meta name="csrf-token" content="{{ csrf_token }}">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
 </head>
 <body class="bg-zinc-950 text-white">
 
@@ -251,6 +251,7 @@
                             <button onclick="changeQuantity(1)" class="w-11 h-11 flex items-center justify-center border-2 border-zinc-600 rounded-xl text-2xl font-bold hover:bg-zinc-800">+</button>
                         </div>
                     </div>
+                    <p id="order-cap-note" class="hidden text-center text-xs text-zinc-500 -mt-4 mb-4"></p>
 
                     <div id="pricing-notes" class="mb-4 space-y-2">
                         <p id="bulk-pricing-note" class="hidden text-sm text-white font-semibold text-center"></p>

@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Door Scanner • The Section</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/html5-qrcode.min.js') }}"></script>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
     <div class="max-w-lg mx-auto text-center">
@@ -156,6 +156,13 @@
                     option.selected = event.id === selected;
                     doorSelect.appendChild(option);
                 });
+                if (!selected && events.length === 1) {
+                    doorSelect.value = events[0].id;
+                    if (doorSelect.dataset.autoSaved !== '1') {
+                        doorSelect.dataset.autoSaved = '1';
+                        saveDoorEvent();
+                    }
+                }
             }
         }
         const doorLabel = document.getElementById('door-event-label');

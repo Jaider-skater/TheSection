@@ -495,12 +495,26 @@ class TicketSalesError(Exception):
         self.remaining = remaining
 
 
+DEFAULT_MAX_ORDER_QUANTITY = 10
+
+
+def per_order_quantity_cap():
+    """Hard ceiling for one checkout so nobody can buy the whole house."""
+    raw = os.getenv('MAX_ORDER_QUANTITY', str(DEFAULT_MAX_ORDER_QUANTITY))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_ORDER_QUANTITY
+    return value if value > 0 else DEFAULT_MAX_ORDER_QUANTITY
+
+
 def max_order_quantity(event_id=None):
-    """Most tickets one checkout can buy: remaining from the event ticket cap."""
+    """Most tickets one checkout can buy: leftover inventory, max 10 per order."""
+    per_order = per_order_quantity_cap()
     remaining = ticket_sales_remaining(event_id)
     if remaining is None:
-        return None
-    return max(0, remaining)
+        return per_order
+    return max(0, min(per_order, remaining))
 
 
 def clamp_quantity(raw, default=1, event_id=None):
@@ -4282,7 +4296,7 @@ def get_ticket_availability(event_id=None):
         'event_name': event.get('name') if event else None,
         'event_date_display': format_event_date_line((event or {}).get('date')) if event else None,
         'can_buy': bool(event and sales_open and not sold_out),
-        'max_quantity': 0 if sold_out else remaining,
+        'max_quantity': 0 if sold_out else max_order_quantity(event.get('id') if event else None),
     }
 
 
