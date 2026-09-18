@@ -2985,10 +2985,13 @@ def reset_admission_counts():
             'ga': counts['ga'],
             'vip': counts['vip'],
             'total': counts['total'],
+            'free_girls': counts.get('free_girls', 0),
         })
         # Keep last 50 resets
         settings['reset_history'] = history[-50:]
         settings['counting_epoch'] = now_iso
+        # First-hour comps follow the same counting period as scanned tickets.
+        settings['free_girls_entries'] = []
         save_scanner_settings(settings)
 
     return {
@@ -2996,6 +2999,7 @@ def reset_admission_counts():
         'ga': counts['ga'],
         'vip': counts['vip'],
         'total': counts['total'],
+        'free_girls': counts.get('free_girls', 0),
         'cleared': 0,  # tickets stay void; not cleared
     }
 
@@ -4115,13 +4119,106 @@ def admission_entry_type(ticket):
     return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
 
 
+def normalize_free_girls_entries(raw):
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        event_id = (entry.get('event_id') or '').strip()
+        if not event_id:
+            continue
+        try:
+            qty = int(entry.get('quantity') or 1)
+        except (TypeError, ValueError):
+            qty = 1
+        if qty < 1:
+            continue
+        cleaned.append({
+            'id': entry.get('id') or secrets.token_hex(8),
+            'at': entry.get('at'),
+            'event_id': event_id,
+            'quantity': qty,
+        })
+    return cleaned
+
+
+def compute_free_girls_count(event_id=None):
+    """Complimentary first-hour guests for the door event in the current period."""
+    target = (event_id or get_door_event_id() or '').strip()
+    if not target:
+        return 0
+    settings = load_scanner_settings()
+    total = 0
+    for entry in normalize_free_girls_entries(settings.get('free_girls_entries')):
+        if entry['event_id'] != target:
+            continue
+        if not ticket_counts_for_current_period(entry.get('at')):
+            continue
+        total += entry['quantity']
+    return total
+
+
+def add_free_girls(delta=1, event_id=None):
+    """Admit or undo complimentary first-hour guests on the live door count.
+
+    Positive delta adds that many guests. Negative delta undoes recent adds.
+    Returns admission totals, or None if tonight's event is not set / save failed.
+    """
+    target = (event_id or get_door_event_id() or '').strip()
+    if not target or not get_event(target):
+        return None
+    try:
+        change = int(delta)
+    except (TypeError, ValueError):
+        change = 1
+    if change == 0:
+        return get_admission_totals()
+    change = max(-20, min(20, change))
+
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        entries = normalize_free_girls_entries(settings.get('free_girls_entries'))
+        if change > 0:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for _ in range(change):
+                entries.append({
+                    'id': secrets.token_hex(8),
+                    'at': now_iso,
+                    'event_id': target,
+                    'quantity': 1,
+                })
+        else:
+            remaining = abs(change)
+            kept = []
+            for entry in reversed(entries):
+                if (
+                    remaining
+                    and entry['event_id'] == target
+                    and ticket_counts_for_current_period(entry.get('at'))
+                ):
+                    remaining -= 1
+                    continue
+                kept.append(entry)
+            entries = list(reversed(kept))
+        pruned = [
+            entry for entry in entries
+            if ticket_counts_for_current_period(entry.get('at'))
+        ]
+        settings['free_girls_entries'] = pruned[-2000:]
+        if not save_scanner_settings(settings):
+            return None
+    return get_admission_totals()
+
+
 def compute_admission_counts(event_id=None):
     """Live door counts for the night being scanned (not every event)."""
     target = (event_id or get_door_event_id() or '').strip()
     ga = 0
     vip = 0
     if not target:
-        return {'ga': 0, 'vip': 0, 'total': 0}
+        return {'ga': 0, 'vip': 0, 'total': 0, 'free_girls': 0}
     for ticket in load_tickets():
         scanned_at = ticket.get('scanned_at')
         if not scanned_at or not ticket_counts_for_current_period(scanned_at):
@@ -4133,7 +4230,9 @@ def compute_admission_counts(event_id=None):
             vip += qty
         else:
             ga += qty
-    return {'ga': ga, 'vip': vip, 'total': ga + vip}
+    free_girls = compute_free_girls_count(target)
+    ga += free_girls
+    return {'ga': ga, 'vip': vip, 'total': ga + vip, 'free_girls': free_girls}
 
 
 def compute_ticket_sales_counts(event_id=None):
@@ -5197,6 +5296,21 @@ def reset_admission_totals():
     result = reset_admission_counts()
     totals = get_admission_totals()
     return jsonify({**result, **totals})
+
+
+@app.route('/api/admission-totals/free-girl', methods=['POST'])
+def add_free_girl_route():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    totals = add_free_girls(data.get('delta', 1))
+    if totals is None:
+        door_id = get_door_event_id()
+        if not door_id or not get_event(door_id):
+            return jsonify({'error': "Pick tonight’s event first."}), 400
+        return jsonify({'error': 'Could not save. Try again.'}), 500
+    return jsonify(totals)
 
 
 @app.route('/api/admission-totals/reset-history', methods=['DELETE'])

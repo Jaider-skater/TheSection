@@ -27,6 +27,30 @@
             </div>
         </div>
 
+        <div class="bg-zinc-900 border border-rose-900/50 rounded-2xl p-3 mb-3">
+            <div class="flex items-center justify-between gap-3 mb-2">
+                <div class="text-left min-w-0">
+                    <p class="text-[10px] uppercase tracking-wider text-rose-400 font-semibold">Free girls</p>
+                    <p class="text-[11px] text-zinc-500">First-hour comps · counted in GA + Total</p>
+                </div>
+                <p id="total-free-girls" class="text-3xl font-black tabular-nums text-rose-300">{{ admission_totals.free_girls or 0 }}</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button type="button"
+                        id="add-free-girl-btn"
+                        onclick="addFreeGirl(1)"
+                        class="flex-1 py-3.5 bg-rose-500 hover:bg-rose-400 active:bg-rose-600 disabled:opacity-50 text-white font-semibold rounded-xl text-base">
+                    + Add free girl
+                </button>
+                <button type="button"
+                        id="undo-free-girl-btn"
+                        onclick="addFreeGirl(-1)"
+                        class="px-4 py-3.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:hover:bg-zinc-800 text-zinc-300 rounded-xl text-sm">
+                    Undo
+                </button>
+            </div>
+        </div>
+
         <div id="capacity-banner"
              class="hidden mb-3 rounded-2xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
             Ticket cap reached — congrats on selling this place out!
@@ -105,6 +129,11 @@
         document.getElementById('total-ga').textContent = totals.ga;
         document.getElementById('total-vip').textContent = totals.vip;
         document.getElementById('total-all').textContent = totals.total;
+        const freeGirls = totals.free_girls || 0;
+        const freeEl = document.getElementById('total-free-girls');
+        if (freeEl) freeEl.textContent = freeGirls;
+        const undoBtn = document.getElementById('undo-free-girl-btn');
+        if (undoBtn) undoBtn.disabled = freeGirls <= 0;
 
         const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
@@ -192,12 +221,14 @@
             const ga = entry.ga ?? 0;
             const vip = entry.vip ?? 0;
             const total = entry.total ?? (ga + vip);
+            const freeGirls = entry.free_girls ?? 0;
+            const freeNote = freeGirls ? ` · ${freeGirls} free` : '';
             const entryId = entry.id || entry.reset_at || '';
             const safeId = String(entryId).replace(/"/g, '&quot;');
             return `<li class="flex items-center justify-between gap-3 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
                 <div class="min-w-0 text-left">
                     <span class="text-zinc-300 block">${when}</span>
-                    <span class="tabular-nums text-zinc-500 text-[11px]">Was GA ${ga} · VIP ${vip} · ${total} total</span>
+                    <span class="tabular-nums text-zinc-500 text-[11px]">Was GA ${ga} · VIP ${vip} · ${total} total${freeNote}</span>
                 </div>
                 <button type="button"
                         data-reset-id="${safeId}"
@@ -288,10 +319,66 @@
         await saveScannerSetting({ door_event_id: value }, 'door event');
     }
 
+    let freeGirlBusy = false;
+
+    async function addFreeGirl(delta) {
+        if (freeGirlBusy) return;
+        const doorSelect = document.getElementById('door-event-select');
+        if (doorSelect && !doorSelect.value) {
+            alert('Pick tonight’s event first.');
+            return;
+        }
+        const currentFree = Number(document.getElementById('total-free-girls')?.textContent || 0);
+        if (delta < 0 && currentFree <= 0) return;
+
+        freeGirlBusy = true;
+        const addBtn = document.getElementById('add-free-girl-btn');
+        const undoBtn = document.getElementById('undo-free-girl-btn');
+        if (addBtn) addBtn.disabled = true;
+        if (undoBtn) undoBtn.disabled = true;
+
+        try {
+            const response = await fetch('/api/admission-totals/free-girl', {
+                method: 'POST',
+                headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ delta }),
+            });
+            if (response.status === 401) {
+                redirectToScannerLogin();
+                return;
+            }
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                alert(payload.error || 'Could not update free girls. Try again.');
+                return;
+            }
+            const totals = await response.json();
+            updateAdmissionTotals(totals);
+            const resultEl = document.getElementById('result');
+            if (resultEl) {
+                const n = totals.free_girls || 0;
+                const word = n === 1 ? 'free girl' : 'free girls';
+                if (delta > 0) {
+                    resultEl.innerHTML = `<span class="text-rose-300">Added — ${n} ${word} tonight</span>`;
+                } else {
+                    resultEl.innerHTML = `<span class="text-zinc-400">Undone — ${n} ${word} tonight</span>`;
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to update free girls', err);
+            alert('Could not update free girls. Check your connection.');
+        } finally {
+            freeGirlBusy = false;
+            if (addBtn) addBtn.disabled = false;
+            const latest = Number(document.getElementById('total-free-girls')?.textContent || 0);
+            if (undoBtn) undoBtn.disabled = latest <= 0;
+        }
+    }
+
     async function resetAdmissionTotals() {
         const confirmed = window.confirm(
             'Reset admission counts?\n\n' +
-            'GA, VIP, and Total go back to 0 for a new counting period.\n' +
+            'GA, VIP, free girls, and Total go back to 0 for a new counting period.\n' +
             'Already-scanned tickets stay VOID and cannot be scanned again.\n' +
             'This does not reset ticket sales or reopen the ticket cap.\n' +
             'This reset is saved in the log at the bottom of the page.'
@@ -486,6 +573,7 @@
             ga: {{ admission_totals.ga }},
             vip: {{ admission_totals.vip }},
             total: {{ admission_totals.total }},
+            free_girls: {{ admission_totals.free_girls or 0 }},
             max_capacity: {{ admission_totals.max_capacity if admission_totals.max_capacity else 'null' }},
             max_vip_capacity: {{ admission_totals.max_vip_capacity if admission_totals.max_vip_capacity else 'null' }},
             capacity_reached: {{ 'true' if admission_totals.capacity_reached else 'false' }},

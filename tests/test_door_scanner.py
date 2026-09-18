@@ -138,13 +138,84 @@ class DoorScannerTests(unittest.TestCase):
         thesection.set_door_event_id('christmas-2026')
         self.assertEqual(
             thesection.compute_admission_counts(),
-            {'ga': 0, 'vip': 1, 'total': 1},
+            {'ga': 0, 'vip': 1, 'total': 1, 'free_girls': 0},
         )
         thesection.set_door_event_id('halloween-2026')
         self.assertEqual(
             thesection.compute_admission_counts(),
-            {'ga': 2, 'vip': 0, 'total': 2},
+            {'ga': 2, 'vip': 0, 'total': 2, 'free_girls': 0},
         )
+
+    def test_free_girl_adds_to_running_count_and_tracks_separately(self):
+        thesection.set_door_event_id('halloween-2026')
+        first = thesection.add_free_girls(1)
+        self.assertEqual(first['free_girls'], 1)
+        self.assertEqual(first['ga'], 1)
+        self.assertEqual(first['total'], 1)
+        second = thesection.add_free_girls(2)
+        self.assertEqual(second['free_girls'], 3)
+        self.assertEqual(second['ga'], 3)
+        self.assertEqual(second['total'], 3)
+        self.assertEqual(second['vip'], 0)
+
+        thesection.set_door_event_id('christmas-2026')
+        self.assertEqual(
+            thesection.compute_admission_counts(),
+            {'ga': 0, 'vip': 0, 'total': 0, 'free_girls': 0},
+        )
+        thesection.add_free_girls(1)
+        self.assertEqual(thesection.compute_admission_counts()['free_girls'], 1)
+
+        thesection.set_door_event_id('halloween-2026')
+        self.assertEqual(thesection.compute_admission_counts()['free_girls'], 3)
+
+        undone = thesection.add_free_girls(-1)
+        self.assertEqual(undone['free_girls'], 2)
+        self.assertEqual(undone['ga'], 2)
+        self.assertEqual(undone['total'], 2)
+
+        thesection.reset_admission_counts()
+        reset_counts = thesection.compute_admission_counts()
+        self.assertEqual(reset_counts['free_girls'], 0)
+        self.assertEqual(reset_counts['ga'], 0)
+        self.assertEqual(reset_counts['total'], 0)
+
+    def test_free_girl_requires_door_event(self):
+        thesection.save_scanner_settings({})
+        self.assertIsNone(thesection.add_free_girls(1))
+
+    def test_free_girl_api_and_scanner_page(self):
+        thesection.set_door_event_id('halloween-2026')
+        paid = self._ticket('PAID1', 'halloween-2026', scanned=True)
+        paid['quantity'] = 2
+        thesection.save_tickets([paid])
+        app = thesection.app
+        app.config['TESTING'] = True
+        with mock.patch.object(thesection, 'verify_auth_configured', return_value=True), \
+             mock.patch.object(thesection, 'verify_authenticated', return_value=True):
+            client = app.test_client()
+            page = client.get('/verify')
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(b'Add free girl', page.data)
+            self.assertIn(b'total-free-girls', page.data)
+            token = page.headers.get('X-CSRF-Token')
+            resp = client.post(
+                '/api/admission-totals/free-girl',
+                json={'delta': 1},
+                headers={'X-CSRF-Token': token},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertEqual(data['free_girls'], 1)
+            self.assertEqual(data['ga'], 3)
+            self.assertEqual(data['total'], 3)
+            undo = client.post(
+                '/api/admission-totals/free-girl',
+                json={'delta': -1},
+                headers={'X-CSRF-Token': token},
+            )
+            self.assertEqual(undo.get_json()['free_girls'], 0)
+            self.assertEqual(undo.get_json()['ga'], 2)
 
     def test_fulfill_paid_checkout_is_idempotent_and_rejects_unpaid(self):
         unpaid = {
