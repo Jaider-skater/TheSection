@@ -3410,6 +3410,101 @@ def fulfill_paid_payment_intent(payment_intent):
     return ticket
 
 
+def _stripe_get(obj, key, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def payment_intent_amount_cents(payment_intent):
+    try:
+        return int(_stripe_get(payment_intent, 'amount') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def payment_is_card_present(payment_intent):
+    """True for Stripe app / Terminal Tap to Pay (card held to the phone or reader)."""
+    types = list(_stripe_get(payment_intent, 'payment_method_types') or [])
+    if 'card_present' in types:
+        return True
+    charges = []
+    raw_charges = _stripe_get(payment_intent, 'charges')
+    if isinstance(raw_charges, dict):
+        charges.extend(raw_charges.get('data') or [])
+    elif raw_charges is not None:
+        charges.extend(getattr(raw_charges, 'data', None) or [])
+    latest = _stripe_get(payment_intent, 'latest_charge')
+    if isinstance(latest, dict):
+        charges.append(latest)
+    for charge in charges:
+        details = _stripe_get(charge, 'payment_method_details')
+        detail_type = _stripe_get(details, 'type') if details is not None else None
+        if detail_type in ('card_present', 'interac_present'):
+            return True
+    return False
+
+
+def door_ticket_type_from_in_person_amount(amount_cents):
+    """Stripe app charges a single amount: $15 GA or $30 VIP."""
+    if amount_cents == door_unit_price_cents('vip'):
+        return 'vip'
+    if amount_cents == door_unit_price_cents('general'):
+        return 'general'
+    return None
+
+
+def fulfill_in_person_door_payment(payment_intent):
+    """Admit a Stripe-app / Tap to Pay charge on the live door count.
+
+    Only card-present payments of door GA ($15) or VIP ($30). Online checkouts
+    are card-not-present and stay on the existing Checkout webhook.
+    """
+    if not payment_intent_is_paid(payment_intent):
+        return None
+    intent_id = _stripe_get(payment_intent, 'id')
+    if not intent_id:
+        return None
+    existing = get_ticket_by_session(intent_id)
+    if existing:
+        if existing.get('door_sale') and not existing.get('scanned_at'):
+            existing, _note = admit_paid_door_ticket(existing)
+        return existing
+
+    metadata = _stripe_get(payment_intent, 'metadata') or {}
+    if isinstance(metadata, dict) and metadata.get('door_sale') == 'true':
+        return fulfill_paid_payment_intent(payment_intent)
+
+    if not payment_is_card_present(payment_intent):
+        return None
+    ticket_type = door_ticket_type_from_in_person_amount(
+        payment_intent_amount_cents(payment_intent)
+    )
+    if not ticket_type:
+        print(
+            f'In-person payment {intent_id} amount '
+            f'{payment_intent_amount_cents(payment_intent)}c is not door GA/VIP'
+        )
+        return None
+
+    email = payment_intent_email(
+        payment_intent, metadata if isinstance(metadata, dict) else {}
+    )
+    ticket = record_ticket(
+        intent_id,
+        new_ticket_id(),
+        email,
+        1,
+        ticket_type=ticket_type,
+        event_id=get_door_event_id() or get_sales_event_id(),
+        door_sale=True,
+    )
+    ticket, _note = admit_paid_door_ticket(ticket)
+    return ticket
+
+
 def verify_auth_configured():
     return bool(verify_login_emails and verify_login_password)
 
@@ -5542,13 +5637,15 @@ def stripe_webhook():
     if event_type == 'payment_intent.succeeded':
         try:
             intent_id = data_object.get('id') if isinstance(data_object, dict) else data_object.id
-            payment_intent = stripe.PaymentIntent.retrieve(intent_id)
-            metadata = (
-                payment_intent.get('metadata') if isinstance(payment_intent, dict)
-                else (payment_intent.metadata or {})
-            )
-            if metadata.get('door_sale') == 'true':
-                ticket = fulfill_paid_payment_intent(payment_intent)
+            payment_intent = data_object
+            try:
+                fetched = stripe.PaymentIntent.retrieve(intent_id, expand=['latest_charge'])
+                if fetched:
+                    payment_intent = fetched
+            except Exception as refresh_error:
+                print('Using webhook PaymentIntent payload:', refresh_error)
+            ticket = fulfill_in_person_door_payment(payment_intent)
+            if ticket:
                 ticket_id = ticket['ticket_id']
                 ticket_data = build_qr_image(ticket_id)
                 deliver_ticket_email(

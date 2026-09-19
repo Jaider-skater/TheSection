@@ -316,6 +316,65 @@ class DoorScannerTests(unittest.TestCase):
         self.assertEqual(thesection.compute_admission_counts()['ga'], 1)
         self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 1)
 
+    def test_stripe_app_tap_to_pay_counts_ga_and_vip(self):
+        thesection.set_door_event_id('halloween-2026')
+        ga_pi = {
+            'id': 'pi_taptopay_ga',
+            'status': 'succeeded',
+            'amount': 1500,
+            'payment_method_types': ['card_present'],
+            'latest_charge': {'payment_method_details': {'type': 'card_present'}},
+            'metadata': {},
+        }
+        ga_ticket = thesection.fulfill_in_person_door_payment(ga_pi)
+        self.assertEqual(ga_ticket['ticket_type'], 'general')
+        self.assertTrue(ga_ticket.get('door_sale'))
+        self.assertTrue(ga_ticket.get('scanned_at'))
+        self.assertEqual(thesection.compute_admission_counts()['ga'], 1)
+        self.assertEqual(thesection.compute_ticket_sales_counts('halloween-2026')['sold'], 1)
+
+        vip_pi = {
+            'id': 'pi_taptopay_vip',
+            'status': 'succeeded',
+            'amount': 3000,
+            'payment_method_types': ['card_present'],
+            'latest_charge': {'payment_method_details': {'type': 'card_present'}},
+            'metadata': {},
+        }
+        vip_ticket = thesection.fulfill_in_person_door_payment(vip_pi)
+        self.assertEqual(vip_ticket['ticket_type'], 'vip')
+        counts = thesection.compute_admission_counts()
+        self.assertEqual(counts['ga'], 1)
+        self.assertEqual(counts['vip'], 1)
+        self.assertEqual(counts['total'], 2)
+        again = thesection.fulfill_in_person_door_payment(ga_pi)
+        self.assertEqual(again['ticket_id'], ga_ticket['ticket_id'])
+        self.assertEqual(thesection.compute_admission_counts()['ga'], 1)
+
+    def test_online_card_payment_is_not_counted_as_door_tap(self):
+        thesection.set_door_event_id('halloween-2026')
+        online = {
+            'id': 'pi_online_fifteen',
+            'status': 'succeeded',
+            'amount': 1500,
+            'payment_method_types': ['card'],
+            'latest_charge': {'payment_method_details': {'type': 'card'}},
+            'metadata': {},
+        }
+        self.assertIsNone(thesection.fulfill_in_person_door_payment(online))
+        self.assertEqual(thesection.compute_admission_counts()['total'], 0)
+
+        wrong_amount = {
+            'id': 'pi_taptopay_ten',
+            'status': 'succeeded',
+            'amount': 1000,
+            'payment_method_types': ['card_present'],
+            'latest_charge': {'payment_method_details': {'type': 'card_present'}},
+            'metadata': {},
+        }
+        self.assertIsNone(thesection.fulfill_in_person_door_payment(wrong_amount))
+        self.assertEqual(thesection.compute_admission_counts()['total'], 0)
+
     def test_scanner_login_survives_dropped_flask_session(self):
         app = thesection.app
         app.config['TESTING'] = True
