@@ -191,6 +191,9 @@ app.config.update(
 MEMBER_LOGIN_COOKIE = 'thesection_member'
 MEMBER_LOGIN_SALT = 'thesection-member-login'
 MEMBER_LOGIN_MAX_AGE = int(timedelta(days=31).total_seconds())
+SCANNER_LOGIN_COOKIE = 'thesection_scanner'
+SCANNER_LOGIN_SALT = 'thesection-scanner-login'
+SCANNER_LOGIN_MAX_AGE = MEMBER_LOGIN_MAX_AGE
 tickets_lock = threading.Lock()
 members_lock = threading.Lock()
 scanner_settings_lock = threading.Lock()
@@ -285,10 +288,15 @@ def door_unit_price_cents(ticket_type):
 
 # Stripe — never hardcode keys; set STRIPE_SECRET_KEY in the environment
 stripe.api_key = (os.getenv('STRIPE_SECRET_KEY') or os.getenv('STRIPE_API_KEY') or '').strip()
+stripe_publishable_key = (
+    os.getenv('STRIPE_PUBLISHABLE_KEY') or os.getenv('STRIPE_PUBLIC_KEY') or ''
+).strip()
 if not stripe.api_key:
     if IS_PRODUCTION:
         raise RuntimeError('STRIPE_SECRET_KEY must be set in production')
     print('WARNING: STRIPE_SECRET_KEY is not set; checkout will fail until configured')
+if stripe.api_key and not stripe_publishable_key:
+    print('WARNING: STRIPE_PUBLISHABLE_KEY is not set; door tap-to-pay will not load')
 
 # Email Config (set MAIL_* env vars on Render)
 mail_username = (os.getenv('MAIL_USERNAME') or '').strip()
@@ -473,6 +481,71 @@ def restore_member_session_from_cookie():
         mark_member_session(email)
 
 
+def _scanner_login_serializer():
+    return URLSafeTimedSerializer(app.secret_key, salt=SCANNER_LOGIN_SALT)
+
+
+def set_scanner_login_cookie(response, email):
+    """SameSite=None cookie so Back / Apple Pay does not drop door staff login."""
+    normalized = (email or '').strip().lower()
+    if not normalized or not response or not is_staff_email(normalized):
+        return response
+    try:
+        token = _scanner_login_serializer().dumps(normalized)
+    except Exception as e:
+        print('Failed to sign scanner login cookie:', e)
+        return response
+    response.set_cookie(
+        SCANNER_LOGIN_COOKIE,
+        token,
+        max_age=SCANNER_LOGIN_MAX_AGE,
+        httponly=True,
+        secure=IS_PRODUCTION,
+        samesite=member_login_cookie_samesite(),
+        path='/',
+    )
+    return response
+
+
+def clear_scanner_login_cookie(response):
+    if not response:
+        return response
+    response.delete_cookie(
+        SCANNER_LOGIN_COOKIE,
+        path='/',
+        samesite=member_login_cookie_samesite(),
+        secure=IS_PRODUCTION,
+        httponly=True,
+    )
+    return response
+
+
+def read_scanner_login_cookie():
+    raw = request.cookies.get(SCANNER_LOGIN_COOKIE)
+    if not raw:
+        return None
+    try:
+        email = _scanner_login_serializer().loads(raw, max_age=SCANNER_LOGIN_MAX_AGE)
+    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return None
+    email = (email or '').strip().lower()
+    if email and is_staff_email(email):
+        return email
+    return None
+
+
+def restore_scanner_session_from_cookie():
+    """Re-attach door staff login if the Flask session cookie was dropped."""
+    if verify_scanner_session_authenticated():
+        return
+    email = read_scanner_login_cookie()
+    if email:
+        mark_scanner_session_authenticated(email)
+        session['admin_authenticated'] = True
+        session.permanent = True
+        session.modified = True
+
+
 def ensure_csrf_token():
     token = session.get('csrf_token')
     if not token:
@@ -622,6 +695,7 @@ def _locked_json_write(path, data):
 @app.before_request
 def security_before_request():
     restore_member_session_from_cookie()
+    restore_scanner_session_from_cookie()
     ensure_csrf_token()
     touch_auth_session()
     # CSRF for state-changing requests (except Stripe webhook)
@@ -640,7 +714,7 @@ def security_after_request(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy'] = 'camera=(self), microphone=(), geolocation=()'
+    response.headers['Permissions-Policy'] = 'camera=(self), microphone=(), geolocation=(), payment=(self)'
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
     response.headers['X-Permitted-Cross-Domain-Policies'] = 'none'
     if IS_PRODUCTION:
@@ -656,6 +730,11 @@ def security_after_request(response):
         set_member_login_cookie(response, member_email)
     elif request.cookies.get(MEMBER_LOGIN_COOKIE):
         clear_member_login_cookie(response)
+    scanner_email = (session.get('verify_login_email') or '').strip().lower()
+    if session.get('verify_authenticated') and is_staff_email(scanner_email):
+        set_scanner_login_cookie(response, scanner_email)
+    elif request.cookies.get(SCANNER_LOGIN_COOKIE):
+        clear_scanner_login_cookie(response)
     return response
 
 
@@ -3090,6 +3169,8 @@ def mark_scanner_session_authenticated(email=None):
     if not is_staff_email(chosen):
         chosen = next(iter(sorted(verify_login_emails)), '')
     session['verify_login_email'] = chosen
+    session.permanent = True
+    session.modified = True
 
 
 def require_admin():
@@ -3236,7 +3317,96 @@ def fulfill_paid_checkout(checkout_session):
             refreshed = get_legacy_member(delivery_email)
             if refreshed and member_has_past_purchases(refreshed):
                 ensure_member_discount_code(refreshed)
+    return ticket
 
+
+def payment_intent_is_paid(payment_intent):
+    if not payment_intent:
+        return False
+    status = getattr(payment_intent, 'status', None)
+    if status is None and isinstance(payment_intent, dict):
+        status = payment_intent.get('status')
+    return (status or '').lower() == 'succeeded'
+
+
+def payment_intent_email(payment_intent, metadata=None):
+    metadata = metadata or {}
+    if isinstance(payment_intent, dict):
+        email = (payment_intent.get('receipt_email') or '').strip().lower()
+        charges = ((payment_intent.get('charges') or {}).get('data') or [])
+        if not email and charges:
+            email = ((charges[0].get('billing_details') or {}).get('email') or '').strip().lower()
+    else:
+        email = (getattr(payment_intent, 'receipt_email', None) or '').strip().lower()
+        charges = getattr(payment_intent, 'charges', None)
+        data = getattr(charges, 'data', None) if charges else None
+        if not email and data:
+            details = getattr(data[0], 'billing_details', None)
+            email = (getattr(details, 'email', None) or '').strip().lower()
+    return ticket_recipient_email(email, metadata)
+
+
+def payment_intent_quantity(payment_intent, metadata=None):
+    metadata = metadata or {}
+    try:
+        qty = int(metadata.get('quantity') or 1)
+    except (TypeError, ValueError):
+        qty = 1
+    if qty >= 1:
+        return qty
+    return 1
+
+
+def admit_paid_door_ticket(ticket):
+    """Walk-up is already at the door: count them in after payment."""
+    if not ticket:
+        return ticket, None
+    if ticket.get('scanned_at'):
+        return ticket, None
+    ticket_id = ticket.get('ticket_id')
+    quantity = int(ticket.get('quantity') or 1)
+    ticket_type = ticket.get('ticket_type', 'general')
+    admission_as = 'vip' if ticket_type == 'vip' else 'ga'
+    vip_note = None
+    if ticket_type == 'vip':
+        vip_left = vip_capacity_remaining()
+        if vip_left is not None and quantity > vip_left:
+            admission_as = 'ga'
+            vip_note = 'VIP area full — admitted as GA.'
+    mark_ticket_scanned(ticket_id, admission_as=admission_as)
+    return get_ticket_record(ticket_id) or ticket, vip_note
+
+
+def fulfill_paid_payment_intent(payment_intent):
+    """Idempotently create (and door-admit) a ticket from a succeeded PaymentIntent."""
+    if not payment_intent_is_paid(payment_intent):
+        raise ValueError('Payment is not complete')
+    if isinstance(payment_intent, dict):
+        intent_id = payment_intent.get('id')
+        metadata = payment_intent.get('metadata') or {}
+    else:
+        intent_id = payment_intent.id
+        metadata = payment_intent.metadata or {}
+    existing = get_ticket_by_session(intent_id)
+    if existing:
+        if metadata.get('door_sale') == 'true' and not existing.get('scanned_at'):
+            existing, _note = admit_paid_door_ticket(existing)
+        return existing
+
+    ticket_type = metadata.get('ticket_type', 'general')
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    quantity = payment_intent_quantity(payment_intent, metadata)
+    ticket = record_ticket(
+        intent_id, new_ticket_id(), payment_intent_email(payment_intent, metadata), quantity,
+        ticket_type=ticket_type,
+        legacy_discount=False,
+        event_id=metadata.get('event_id') or get_door_event_id() or get_sales_event_id(),
+        exclusive_single_rate=False,
+        door_sale=metadata.get('door_sale') == 'true',
+    )
+    if metadata.get('door_sale') == 'true':
+        ticket, _note = admit_paid_door_ticket(ticket)
     return ticket
 
 
@@ -5126,6 +5296,38 @@ def build_door_checkout_session(quantity, ticket_type, event_id=None):
     )
 
 
+def build_door_payment_intent(quantity, ticket_type, event_id=None):
+    """On-page tap-to-pay PaymentIntent: posted price plus the door surcharge."""
+    if not stripe.api_key:
+        raise RuntimeError('Stripe is not configured')
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    door_event_id = (event_id or get_door_event_id() or '').strip()
+    door_event = get_event(door_event_id) if door_event_id else None
+    if not door_event:
+        raise TicketSalesError("Pick tonight’s event first.", remaining=0)
+    quantity = clamp_quantity(quantity, event_id=door_event_id)
+    ensure_ticket_sales_available(quantity, door_event_id)
+    unit_price = door_unit_price_cents(ticket_type)
+    amount = unit_price * quantity
+    ticket_meta = TICKET_TYPES[ticket_type]
+    event_name = door_event.get('name') or 'The Section'
+    return stripe.PaymentIntent.create(
+        amount=amount,
+        currency='usd',
+        automatic_payment_methods={'enabled': True},
+        description=f"{event_name} door {ticket_meta['name']} × {quantity}",
+        metadata={
+            'ticket_type': ticket_type,
+            'event_id': door_event_id,
+            'quantity': str(quantity),
+            'door_sale': 'true',
+            'legacy_member': 'false',
+            'exclusive_single_rate': 'false',
+        },
+    )
+
+
 @app.route('/api/checkout-intent', methods=['GET', 'POST', 'DELETE'])
 def checkout_intent():
     if request.method == 'POST':
@@ -5306,6 +5508,31 @@ def stripe_webhook():
             print('Stripe webhook fulfill error:', e)
             return jsonify({'error': 'Fulfillment failed'}), 500
 
+    if event_type == 'payment_intent.succeeded':
+        try:
+            intent_id = data_object.get('id') if isinstance(data_object, dict) else data_object.id
+            payment_intent = stripe.PaymentIntent.retrieve(intent_id)
+            metadata = (
+                payment_intent.get('metadata') if isinstance(payment_intent, dict)
+                else (payment_intent.metadata or {})
+            )
+            if metadata.get('door_sale') == 'true':
+                ticket = fulfill_paid_payment_intent(payment_intent)
+                ticket_id = ticket['ticket_id']
+                ticket_data = build_qr_image(ticket_id)
+                deliver_ticket_email(
+                    intent_id,
+                    ticket.get('email'),
+                    ticket_id,
+                    ticket.get('quantity', 1),
+                    ticket_data,
+                    ticket.get('ticket_type', 'general'),
+                    ticket.get('access'),
+                )
+        except Exception as e:
+            print('Stripe webhook door payment fulfill error:', e)
+            return jsonify({'error': 'Fulfillment failed'}), 500
+
     return jsonify({'received': True})
 
 @app.route('/wallet/<ticket_id>.pkpass')
@@ -5388,13 +5615,13 @@ def reset_admission_totals():
     return jsonify({**result, **totals})
 
 
-@app.route('/api/door-checkout', methods=['POST'])
-def door_checkout():
+@app.route('/api/door-payment-intent', methods=['POST'])
+def door_payment_intent():
     guard = protect_scanner_response()
     if guard:
         return guard
-    if not stripe.api_key:
-        return jsonify({'error': 'Payment system is not configured.'}), 503
+    if not stripe.api_key or not stripe_publishable_key:
+        return jsonify({'error': 'Tap to pay is not configured. Set STRIPE_PUBLISHABLE_KEY.'}), 503
     if not rate_limit_allow('door_checkout', 30, 60):
         return jsonify({'error': 'Too many checkout attempts. Please wait a moment.'}), 429
     data = request.get_json(silent=True) or {}
@@ -5402,12 +5629,24 @@ def door_checkout():
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
     try:
-        checkout_session = build_door_checkout_session(
+        intent = build_door_payment_intent(
             data.get('quantity', 1),
             ticket_type,
             event_id=data.get('event_id') or get_door_event_id(),
         )
-        return jsonify({'url': checkout_session.url})
+        amount = intent.get('amount') if isinstance(intent, dict) else intent.amount
+        client_secret = intent.get('client_secret') if isinstance(intent, dict) else intent.client_secret
+        intent_id = intent.get('id') if isinstance(intent, dict) else intent.id
+        qty = clamp_quantity(data.get('quantity', 1), event_id=get_door_event_id())
+        return jsonify({
+            'client_secret': client_secret,
+            'payment_intent_id': intent_id,
+            'amount': amount,
+            'quantity': qty,
+            'ticket_type': ticket_type,
+            'publishable_key': stripe_publishable_key,
+            'label': f"The Section door {TICKET_TYPES[ticket_type]['name']}",
+        })
     except TicketSalesError as e:
         availability = get_ticket_availability(get_door_event_id())
         return jsonify({
@@ -5420,14 +5659,58 @@ def door_checkout():
         return jsonify({'error': public_error_message(e, 'Could not start door checkout. Please try again.')}), 500
 
 
+@app.route('/api/door-payment-complete', methods=['POST'])
+def door_payment_complete():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    if not stripe.api_key:
+        return jsonify({'error': 'Payment system is not configured.'}), 503
+    data = request.get_json(silent=True) or {}
+    intent_id = (data.get('payment_intent_id') or '').strip()
+    if not intent_id:
+        return jsonify({'error': 'Missing payment.'}), 400
+    try:
+        payment_intent = stripe.PaymentIntent.retrieve(intent_id)
+        ticket = fulfill_paid_payment_intent(payment_intent)
+        ticket, vip_note = admit_paid_door_ticket(ticket)
+        ticket_id = ticket.get('ticket_id')
+        quantity = int(ticket.get('quantity') or 1)
+        ticket_data = build_qr_image(ticket_id)
+        deliver_ticket_email(
+            intent_id,
+            ticket.get('email'),
+            ticket_id,
+            quantity,
+            ticket_data,
+            ticket.get('ticket_type', 'general'),
+            ticket.get('access'),
+        )
+        meta = ticket_result_meta(ticket, admission_as=ticket.get('admission_as'))
+        if vip_note:
+            meta['vip_overflow_note'] = vip_note
+        return jsonify({
+            'status': 'accepted',
+            'ticket_id': ticket_id,
+            'quantity': quantity,
+            'admission_totals': get_admission_totals(),
+            **meta,
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 402
+    except Exception as e:
+        return jsonify({'error': public_error_message(e, 'Could not record this door sale. Try again.')}), 500
+
+
 @app.route('/verify/door-paid')
 def verify_door_paid():
     guard = protect_scanner_response()
     if guard:
         return guard
     session_id = (request.args.get('session_id') or '').strip()
-    if not session_id:
-        return redirect(url_for('verify_ticket', autostart=1))
+    intent_id = (request.args.get('payment_intent') or '').strip()
+    if not session_id and not intent_id:
+        return redirect(url_for('verify_ticket'))
     if not stripe.api_key:
         return render_template(
             'verify_result.html',
@@ -5439,42 +5722,39 @@ def verify_door_paid():
             is_vip=False,
         )
     try:
-        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
-        if not checkout_session_is_paid(checkout_session):
-            return render_template(
-                'verify_result.html',
-                status='error',
-                detail='Payment is not complete yet. If you were charged, refresh this page.',
-                admission_totals=get_admission_totals(),
-                ticket_id=None,
-                quantity=0,
-                is_vip=False,
-            )
-        ticket = fulfill_paid_checkout(checkout_session)
+        if intent_id:
+            payment_intent = stripe.PaymentIntent.retrieve(intent_id)
+            ticket = fulfill_paid_payment_intent(payment_intent)
+            ticket, vip_note = admit_paid_door_ticket(ticket)
+            deliver_id = intent_id
+        else:
+            checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
+            if not checkout_session_is_paid(checkout_session):
+                return render_template(
+                    'verify_result.html',
+                    status='error',
+                    detail='Payment is not complete yet. If you were charged, refresh this page.',
+                    admission_totals=get_admission_totals(),
+                    ticket_id=None,
+                    quantity=0,
+                    is_vip=False,
+                )
+            ticket = fulfill_paid_checkout(checkout_session)
+            ticket, vip_note = admit_paid_door_ticket(ticket)
+            deliver_id = session_id
         ticket_id = ticket.get('ticket_id')
         quantity = int(ticket.get('quantity') or 1)
-        ticket_type = ticket.get('ticket_type', 'general')
-        admission_as = 'vip' if ticket_type == 'vip' else 'ga'
-        vip_note = None
-        if ticket_type == 'vip' and not ticket.get('scanned_at'):
-            vip_left = vip_capacity_remaining()
-            if vip_left is not None and quantity > vip_left:
-                admission_as = 'ga'
-                vip_note = 'VIP area full — admitted as GA.'
-        if not ticket.get('scanned_at'):
-            mark_ticket_scanned(ticket_id, admission_as=admission_as)
-            ticket = get_ticket_record(ticket_id) or ticket
         ticket_data = build_qr_image(ticket_id)
         deliver_ticket_email(
-            session_id,
+            deliver_id,
             ticket.get('email'),
             ticket_id,
             quantity,
             ticket_data,
-            ticket_type,
+            ticket.get('ticket_type', 'general'),
             ticket.get('access'),
         )
-        meta = ticket_result_meta(ticket, admission_as=admission_as)
+        meta = ticket_result_meta(ticket, admission_as=ticket.get('admission_as'))
         if vip_note:
             meta['vip_overflow_note'] = vip_note
         return render_template(
@@ -5663,7 +5943,11 @@ def verify_ticket():
             return f"❌ {result.get('detail') or 'This ticket is no longer valid.'}"
         return "Invalid ticket"
 
-    return render_template('verify.html', admission_totals=get_admission_totals())
+    return render_template(
+        'verify.html',
+        admission_totals=get_admission_totals(),
+        stripe_publishable_key=stripe_publishable_key,
+    )
 
 
 def portal_context(member=None, saved_ticket_details=None, error=None, success=None, next_url='', active_tab='login'):
