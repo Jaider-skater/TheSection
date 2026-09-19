@@ -41,6 +41,9 @@
                 {{ quantity }} {% if quantity == 1 %}guest{% else %}guests{% endif %}
             </p>
             <p class="text-zinc-300 mb-4 text-lg">Welcome to The Section</p>
+            {% if vip_overflow_note %}
+            <p class="text-purple-300 mb-4">{{ vip_overflow_note }}</p>
+            {% endif %}
             {% if admission_totals.capacity_reached %}
             <p class="text-amber-300 mb-8">Ticket cap reached — congrats on selling this place out!</p>
             {% else %}

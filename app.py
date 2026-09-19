@@ -268,6 +268,21 @@ TICKET_TYPES = {
     },
 }
 
+
+def door_surcharge_cents():
+    raw = (os.getenv('DOOR_SURCHARGE_CENTS') or '500').strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 500
+    return value if value >= 0 else 500
+
+
+def door_unit_price_cents(ticket_type):
+    """Walk-up price: posted online rate plus the door surcharge."""
+    base = TICKET_TYPES.get(ticket_type, TICKET_TYPES['general'])['price_cents']
+    return base + door_surcharge_cents()
+
 # Stripe — never hardcode keys; set STRIPE_SECRET_KEY in the environment
 stripe.api_key = (os.getenv('STRIPE_SECRET_KEY') or os.getenv('STRIPE_API_KEY') or '').strip()
 if not stripe.api_key:
@@ -711,7 +726,7 @@ def get_ticket_by_session(session_id):
     return None
 
 
-def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None, exclusive_single_rate=False):
+def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general', legacy_discount=False, view_token=None, event_id=None, exclusive_single_rate=False, door_sale=False):
     ticket_id = normalize_ticket_id(ticket_id)
     if not ticket_id:
         raise ValueError('Invalid ticket id')
@@ -737,6 +752,7 @@ def record_ticket(session_id, ticket_id, email, quantity, ticket_type='general',
             'access': ticket_meta.get('access'),
             'legacy_discount': legacy_discount,
             'exclusive_single_rate': bool(exclusive_single_rate),
+            'door_sale': bool(door_sale),
             'event_id': stamped_event_id,
             'purchased_at': datetime.now(timezone.utc).isoformat(),
             'scanned_at': None,
@@ -3210,6 +3226,7 @@ def fulfill_paid_checkout(checkout_session):
         view_token=view_token,
         event_id=metadata.get('event_id') or get_sales_event_id(),
         exclusive_single_rate=metadata.get('exclusive_single_rate') == 'true',
+        door_sale=metadata.get('door_sale') == 'true',
     )
     if delivery_email:
         release_exclusive_hold(delivery_email, ticket.get('event_id'))
@@ -4375,6 +4392,9 @@ def get_admission_totals():
         'door_event_id': door_event_id,
         'door_event_name': door_event.get('name') if door_event else None,
         'events': event_options,
+        'door_surcharge_cents': door_surcharge_cents(),
+        'door_ga_cents': door_unit_price_cents('general'),
+        'door_vip_cents': door_unit_price_cents('vip'),
     }
 
 
@@ -5050,6 +5070,62 @@ def _create_stripe_checkout_session(
     return stripe.checkout.Session.create(**checkout_kwargs)
 
 
+def build_door_checkout_session(quantity, ticket_type, event_id=None):
+    """Walk-up Stripe Checkout: posted price plus the door surcharge, no member rates."""
+    if not stripe.api_key:
+        raise RuntimeError('Stripe is not configured')
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    door_event_id = (event_id or get_door_event_id() or '').strip()
+    door_event = get_event(door_event_id) if door_event_id else None
+    if not door_event:
+        raise TicketSalesError("Pick tonight’s event first.", remaining=0)
+    quantity = clamp_quantity(quantity, event_id=door_event_id)
+    ensure_ticket_sales_available(quantity, door_event_id)
+    unit_price = door_unit_price_cents(ticket_type)
+    ticket_meta = TICKET_TYPES[ticket_type]
+    event_bits = [
+        door_event.get('name'),
+        format_event_date_line(door_event.get('date')) or format_event_headline(
+            door_event.get('date'), door_event.get('headline')
+        ),
+        door_event.get('venue'),
+        f"+${door_surcharge_cents() // 100} at the door",
+    ]
+    description = ' • '.join(bit for bit in event_bits if bit)
+    name = (
+        f"The Section - {ticket_meta['name']} (door)"
+        + (f" ({door_event.get('name')})" if door_event.get('name') else '')
+    )
+    print(f"Creating door {ticket_type} session for {quantity} tickets @ {unit_price}c")
+    return stripe.checkout.Session.create(
+        payment_method_types=['card'],
+        line_items=[{
+            'price_data': {
+                'currency': 'usd',
+                'product_data': {
+                    'name': name,
+                    'description': description,
+                },
+                'unit_amount': unit_price,
+            },
+            'quantity': quantity,
+        }],
+        mode='payment',
+        metadata={
+            'ticket_type': ticket_type,
+            'legacy_member': 'false',
+            'legacy_discount': 'false',
+            'member_email': '',
+            'event_id': door_event_id,
+            'exclusive_single_rate': 'false',
+            'door_sale': 'true',
+        },
+        success_url=f"{base_url}/verify/door-paid?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{base_url}/verify?autostart=1",
+    )
+
+
 @app.route('/api/checkout-intent', methods=['GET', 'POST', 'DELETE'])
 def checkout_intent():
     if request.method == 'POST':
@@ -5310,6 +5386,115 @@ def reset_admission_totals():
     result = reset_admission_counts()
     totals = get_admission_totals()
     return jsonify({**result, **totals})
+
+
+@app.route('/api/door-checkout', methods=['POST'])
+def door_checkout():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    if not stripe.api_key:
+        return jsonify({'error': 'Payment system is not configured.'}), 503
+    if not rate_limit_allow('door_checkout', 30, 60):
+        return jsonify({'error': 'Too many checkout attempts. Please wait a moment.'}), 429
+    data = request.get_json(silent=True) or {}
+    ticket_type = data.get('ticket_type', 'general')
+    if ticket_type not in TICKET_TYPES:
+        ticket_type = 'general'
+    try:
+        checkout_session = build_door_checkout_session(
+            data.get('quantity', 1),
+            ticket_type,
+            event_id=data.get('event_id') or get_door_event_id(),
+        )
+        return jsonify({'url': checkout_session.url})
+    except TicketSalesError as e:
+        availability = get_ticket_availability(get_door_event_id())
+        return jsonify({
+            'error': str(e),
+            'remaining': e.remaining,
+            'sold_out': e.remaining <= 0,
+            **availability,
+        }), 409
+    except Exception as e:
+        return jsonify({'error': public_error_message(e, 'Could not start door checkout. Please try again.')}), 500
+
+
+@app.route('/verify/door-paid')
+def verify_door_paid():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    session_id = (request.args.get('session_id') or '').strip()
+    if not session_id:
+        return redirect(url_for('verify_ticket', autostart=1))
+    if not stripe.api_key:
+        return render_template(
+            'verify_result.html',
+            status='error',
+            detail='Payment system is not configured.',
+            admission_totals=get_admission_totals(),
+            ticket_id=None,
+            quantity=0,
+            is_vip=False,
+        )
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
+        if not checkout_session_is_paid(checkout_session):
+            return render_template(
+                'verify_result.html',
+                status='error',
+                detail='Payment is not complete yet. If you were charged, refresh this page.',
+                admission_totals=get_admission_totals(),
+                ticket_id=None,
+                quantity=0,
+                is_vip=False,
+            )
+        ticket = fulfill_paid_checkout(checkout_session)
+        ticket_id = ticket.get('ticket_id')
+        quantity = int(ticket.get('quantity') or 1)
+        ticket_type = ticket.get('ticket_type', 'general')
+        admission_as = 'vip' if ticket_type == 'vip' else 'ga'
+        vip_note = None
+        if ticket_type == 'vip' and not ticket.get('scanned_at'):
+            vip_left = vip_capacity_remaining()
+            if vip_left is not None and quantity > vip_left:
+                admission_as = 'ga'
+                vip_note = 'VIP area full — admitted as GA.'
+        if not ticket.get('scanned_at'):
+            mark_ticket_scanned(ticket_id, admission_as=admission_as)
+            ticket = get_ticket_record(ticket_id) or ticket
+        ticket_data = build_qr_image(ticket_id)
+        deliver_ticket_email(
+            session_id,
+            ticket.get('email'),
+            ticket_id,
+            quantity,
+            ticket_data,
+            ticket_type,
+            ticket.get('access'),
+        )
+        meta = ticket_result_meta(ticket, admission_as=admission_as)
+        if vip_note:
+            meta['vip_overflow_note'] = vip_note
+        return render_template(
+            'verify_result.html',
+            status='accepted',
+            admission_totals=get_admission_totals(),
+            ticket_id=ticket_id,
+            quantity=quantity,
+            **meta,
+        )
+    except Exception as e:
+        return render_template(
+            'verify_result.html',
+            status='error',
+            detail=public_error_message(e, 'Could not record this door sale. Try again.'),
+            admission_totals=get_admission_totals(),
+            ticket_id=None,
+            quantity=0,
+            is_vip=False,
+        )
 
 
 @app.route('/api/admission-totals/free-girl', methods=['POST'])
