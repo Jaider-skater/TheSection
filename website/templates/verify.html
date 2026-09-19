@@ -133,12 +133,15 @@
             Scan Another Ticket
         </button>
 
-        <div id="door-pay-overlay" class="hidden fixed inset-0 z-[80] bg-black/80 p-4 flex items-end sm:items-center justify-center">
-            <div class="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-3xl p-5 text-left">
+        <div id="door-pay-overlay"
+             class="hidden fixed inset-0 z-[80] bg-zinc-950 overflow-y-auto overscroll-y-contain"
+             style="-webkit-overflow-scrolling: touch;">
+            <div class="w-full max-w-lg mx-auto px-4 pt-5 pb-10 text-left">
                 <p class="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Tap to pay</p>
                 <p id="door-pay-title" class="text-2xl font-black mt-1">GA $15</p>
-                <p id="door-pay-sub" class="text-sm text-zinc-400 mb-4">Hand the phone to the guest</p>
-                <div id="door-pay-element" class="mb-4 min-h-[180px]"></div>
+                <p id="door-pay-sub" class="text-sm text-zinc-400 mt-1 mb-2">Apple Pay, Google Pay, or card</p>
+                <p id="door-pay-wallet-hint" class="hidden mb-3 text-sm text-amber-200 bg-amber-400/10 border border-amber-400/30 rounded-xl px-3 py-2"></p>
+                <div id="door-pay-element" class="mb-4 w-full"></div>
                 <p id="door-pay-error" class="hidden text-sm text-red-400 mb-3"></p>
                 <button type="button"
                         id="door-pay-cancel"
@@ -442,6 +445,7 @@
         const payEl = document.getElementById('door-pay-element');
         if (payEl) payEl.innerHTML = '';
         setDoorPayError('');
+        document.body.style.overflow = '';
         doorCheckoutBusy = false;
         const gaBtn = document.getElementById('door-ga-btn');
         const vipBtn = document.getElementById('door-vip-btn');
@@ -502,10 +506,25 @@
         const typeLabel = payload.ticket_type === 'vip' ? 'VIP' : 'GA';
         title.textContent = `${typeLabel} $${formatDoorDollars(payload.amount)}`;
         sub.textContent = payload.quantity > 1
-            ? `${payload.quantity} guests · Apple Pay, Google Pay, or card`
-            : 'Apple Pay, Google Pay, or card on this phone';
+            ? `${payload.quantity} guests · scroll to Apple Pay, Google Pay, or card`
+            : 'Scroll if you need to — Apple Pay is at the top in Safari';
+        const hint = document.getElementById('door-pay-wallet-hint');
+        const ua = navigator.userAgent || '';
+        const isiOS = /iPhone|iPad|iPod/i.test(ua);
+        const isChromeOniOS = /CriOS|FxiOS|EdgiOS/i.test(ua);
+        if (hint) {
+            if (isiOS && isChromeOniOS) {
+                hint.textContent = 'Apple Pay / tap to pay only works in Safari on iPhone. Open this scanner in Safari, or pay with card below.';
+                hint.classList.remove('hidden');
+            } else {
+                hint.classList.add('hidden');
+                hint.textContent = '';
+            }
+        }
         setDoorPayError('');
+        document.body.style.overflow = 'hidden';
         overlay.classList.remove('hidden');
+        overlay.scrollTop = 0;
 
         const checkout = await stripe.initEmbeddedCheckout({
             clientSecret: payload.client_secret,

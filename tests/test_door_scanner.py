@@ -221,6 +221,8 @@ class DoorScannerTests(unittest.TestCase):
             self.assertIn(b'door-ga-btn', page.data)
             self.assertIn(b'Tap to pay', page.data)
             self.assertIn(b'/api/door-payment-intent', page.data)
+            self.assertIn(b'overflow-y-auto', page.data)
+            self.assertIn(b'door-pay-wallet-hint', page.data)
 
     def test_door_price_is_online_plus_five(self):
         self.assertEqual(thesection.door_surcharge_cents(), 500)
