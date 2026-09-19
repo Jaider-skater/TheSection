@@ -714,7 +714,7 @@ def security_after_request(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy'] = 'camera=(self), microphone=(), geolocation=(), payment=(self)'
+    response.headers['Permissions-Policy'] = 'camera=(self), microphone=(), geolocation=(), payment=*'
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
     response.headers['X-Permitted-Cross-Domain-Policies'] = 'none'
     if IS_PRODUCTION:
@@ -4997,6 +4997,16 @@ def send_pending_member_invites():
         else:
             failed.append(email)
     return {'sent': sent, 'failed': failed, 'skipped': skipped}
+
+
+@app.route('/.well-known/apple-developer-merchantid-domain-association')
+def apple_pay_domain_association():
+    """Apple fetches this to allow Apple Pay on www.thesectionevents.com."""
+    return send_from_directory(
+        app.static_folder,
+        'apple-developer-merchantid-domain-association',
+        mimetype='text/plain',
+    )
 
 
 @app.route('/')

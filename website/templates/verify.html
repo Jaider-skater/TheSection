@@ -530,6 +530,12 @@
             clientSecret: payload.client_secret,
         });
         checkout.mount('#door-pay-element');
+        document.querySelectorAll('#door-pay-element iframe').forEach((frame) => {
+            const allow = frame.getAttribute('allow') || '';
+            if (!/\bpayment\b/.test(allow)) {
+                frame.setAttribute('allow', allow ? allow + '; payment *' : 'payment *');
+            }
+        });
         const onComplete = async () => {
             try {
                 await finishDoorPayment({ sessionId: payload.session_id });

@@ -224,6 +224,13 @@ class DoorScannerTests(unittest.TestCase):
             self.assertIn(b'overflow-y-auto', page.data)
             self.assertIn(b'door-pay-wallet-hint', page.data)
 
+    def test_apple_pay_domain_file_is_public(self):
+        client = thesection.app.test_client()
+        resp = client.get('/.well-known/apple-developer-merchantid-domain-association')
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b'<!DOCTYPE html>', resp.data[:80])
+        self.assertGreater(len(resp.data), 100)
+
     def test_door_price_is_online_plus_five(self):
         self.assertEqual(thesection.door_surcharge_cents(), 500)
         self.assertEqual(thesection.door_unit_price_cents('general'), 1500)
