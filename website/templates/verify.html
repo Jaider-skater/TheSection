@@ -138,17 +138,8 @@
                 <p class="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Tap to pay</p>
                 <p id="door-pay-title" class="text-2xl font-black mt-1">GA $15</p>
                 <p id="door-pay-sub" class="text-sm text-zinc-400 mb-4">Hand the phone to the guest</p>
-                <div id="door-pay-wallet" class="hidden mb-4">
-                    <div id="door-pay-wallet-button"></div>
-                    <p class="text-center text-[11px] text-zinc-500 mt-2">or pay with card</p>
-                </div>
-                <div id="door-pay-element" class="mb-4"></div>
+                <div id="door-pay-element" class="mb-4 min-h-[180px]"></div>
                 <p id="door-pay-error" class="hidden text-sm text-red-400 mb-3"></p>
-                <button type="button"
-                        id="door-pay-submit"
-                        class="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-xl mb-2">
-                    Pay
-                </button>
                 <button type="button"
                         id="door-pay-cancel"
                         class="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-sm">
@@ -448,8 +439,8 @@
             try { doorPayCleanup(); } catch (err) { console.warn(err); }
             doorPayCleanup = null;
         }
-        document.getElementById('door-pay-wallet-button').innerHTML = '';
-        document.getElementById('door-pay-element').innerHTML = '';
+        const payEl = document.getElementById('door-pay-element');
+        if (payEl) payEl.innerHTML = '';
         setDoorPayError('');
         doorCheckoutBusy = false;
         const gaBtn = document.getElementById('door-ga-btn');
@@ -478,11 +469,14 @@
         if (again) again.classList.remove('hidden');
     }
 
-    async function finishDoorPayment(paymentIntentId) {
+    async function finishDoorPayment({ sessionId, paymentIntentId } = {}) {
         const response = await fetch('/api/door-payment-complete', {
             method: 'POST',
             headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ payment_intent_id: paymentIntentId }),
+            body: JSON.stringify({
+                session_id: sessionId || '',
+                payment_intent_id: paymentIntentId || '',
+            }),
         });
         if (response.status === 401) {
             redirectToScannerLogin();
@@ -508,108 +502,33 @@
         const typeLabel = payload.ticket_type === 'vip' ? 'VIP' : 'GA';
         title.textContent = `${typeLabel} $${formatDoorDollars(payload.amount)}`;
         sub.textContent = payload.quantity > 1
-            ? `${payload.quantity} guests · hand the phone over`
-            : 'Hand the phone to the guest';
+            ? `${payload.quantity} guests · Apple Pay, Google Pay, or card`
+            : 'Apple Pay, Google Pay, or card on this phone';
         setDoorPayError('');
         overlay.classList.remove('hidden');
 
-        const elements = stripe.elements({
+        const checkout = await stripe.initEmbeddedCheckout({
             clientSecret: payload.client_secret,
-            appearance: {
-                theme: 'night',
-                variables: { colorPrimary: '#f59e0b', borderRadius: '14px' },
-            },
         });
-        const paymentRequest = stripe.paymentRequest({
-            country: 'US',
-            currency: 'usd',
-            total: { label: payload.label || 'The Section', amount: payload.amount },
-            requestPayerEmail: true,
-            disableWallets: ['link', 'browserCard'],
-        });
-        const prButton = elements.create('paymentRequestButton', {
-            paymentRequest,
-            style: {
-                paymentRequestButton: { type: 'default', theme: 'dark', height: '52px' },
-            },
-        });
-        const canPay = await paymentRequest.canMakePayment();
-        const walletWrap = document.getElementById('door-pay-wallet');
-        if (canPay) {
-            walletWrap.classList.remove('hidden');
-            prButton.mount('#door-pay-wallet-button');
-        } else {
-            walletWrap.classList.add('hidden');
-        }
-        paymentRequest.on('paymentmethod', async (ev) => {
-            const confirm = await stripe.confirmCardPayment(
-                payload.client_secret,
-                { payment_method: ev.paymentMethod.id },
-                { handleActions: false }
-            );
-            if (confirm.error) {
-                ev.complete('fail');
-                setDoorPayError(confirm.error.message || 'Payment failed.');
-                return;
-            }
-            ev.complete('success');
-            let intent = confirm.paymentIntent;
-            if (intent.status === 'requires_action') {
-                const next = await stripe.confirmCardPayment(payload.client_secret);
-                if (next.error) {
-                    setDoorPayError(next.error.message || 'Payment needs another step.');
-                    return;
-                }
-                intent = next.paymentIntent;
-            }
+        checkout.mount('#door-pay-element');
+        const onComplete = async () => {
             try {
-                await finishDoorPayment(intent.id);
+                await finishDoorPayment({ sessionId: payload.session_id });
             } catch (err) {
                 setDoorPayError(err.message || 'Paid, but could not admit. Refresh.');
-            }
-        });
-
-        const paymentElement = elements.create('payment', {
-            layout: 'tabs',
-            wallets: {
-                applePay: canPay ? 'never' : 'auto',
-                googlePay: canPay ? 'never' : 'auto',
-            },
-        });
-        paymentElement.mount('#door-pay-element');
-
-        const submitBtn = document.getElementById('door-pay-submit');
-        const cancelBtn = document.getElementById('door-pay-cancel');
-        const onSubmit = async () => {
-            submitBtn.disabled = true;
-            setDoorPayError('');
-            const result = await stripe.confirmPayment({
-                elements,
-                confirmParams: {
-                    return_url: window.location.origin + '/verify/door-paid',
-                },
-                redirect: 'if_required',
-            });
-            if (result.error) {
-                setDoorPayError(result.error.message || 'Payment failed.');
-                submitBtn.disabled = false;
-                return;
-            }
-            try {
-                await finishDoorPayment(result.paymentIntent.id);
-            } catch (err) {
-                setDoorPayError(err.message || 'Paid, but could not admit. Refresh.');
-                submitBtn.disabled = false;
             }
         };
-        submitBtn.disabled = false;
-        submitBtn.onclick = onSubmit;
-        cancelBtn.onclick = closeDoorPaySheet;
+        if (typeof checkout.on === 'function') {
+            checkout.on('complete', onComplete);
+        }
+        const cancelBtn = document.getElementById('door-pay-cancel');
+        cancelBtn.onclick = () => {
+            try { checkout.destroy(); } catch (err) {}
+            closeDoorPaySheet();
+        };
         doorPayCleanup = () => {
-            submitBtn.onclick = null;
             cancelBtn.onclick = null;
-            try { prButton.unmount(); } catch (err) {}
-            try { paymentElement.unmount(); } catch (err) {}
+            try { checkout.destroy(); } catch (err) {}
         };
     }
 
@@ -644,8 +563,19 @@
                 return;
             }
             const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.client_secret) {
-                alert(payload.error || 'Could not start tap to pay. Try again.');
+            if (!response.ok) {
+                alert(payload.error || 'Could not start door checkout. Try again.');
+                doorCheckoutBusy = false;
+                if (gaBtn) gaBtn.disabled = false;
+                if (vipBtn) vipBtn.disabled = false;
+                return;
+            }
+            if (payload.url && !payload.client_secret) {
+                window.location.href = payload.url;
+                return;
+            }
+            if (!payload.client_secret) {
+                alert(payload.error || 'Could not start door checkout. Try again.');
                 doorCheckoutBusy = false;
                 if (gaBtn) gaBtn.disabled = false;
                 if (vipBtn) vipBtn.disabled = false;
@@ -926,7 +856,7 @@
         }
         const returnedIntent = new URLSearchParams(window.location.search).get('payment_intent');
         if (returnedIntent) {
-            finishDoorPayment(returnedIntent).catch((err) => {
+            finishDoorPayment({ paymentIntentId: returnedIntent }).catch((err) => {
                 const resultEl = document.getElementById('result');
                 if (resultEl) {
                     resultEl.innerHTML = `<span class="text-red-400">${err.message || 'Could not admit this door sale.'}</span>`;

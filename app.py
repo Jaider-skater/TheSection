@@ -5240,7 +5240,19 @@ def _create_stripe_checkout_session(
     return stripe.checkout.Session.create(**checkout_kwargs)
 
 
-def build_door_checkout_session(quantity, ticket_type, event_id=None):
+def door_stripe_error_message(exc):
+    text = str(exc or '')
+    lowered = text.lower()
+    if 'restricted' in lowered or 'required permissions' in lowered:
+        return (
+            'Stripe restricted key cannot create this charge. '
+            'Door sales need Checkout Sessions: Write (already used for tickets), '
+            'or switch STRIPE_SECRET_KEY to a full sk_live_ key.'
+        )
+    return public_error_message(exc, 'Could not start door checkout. Please try again.')
+
+
+def build_door_checkout_session(quantity, ticket_type, event_id=None, embedded=True):
     """Walk-up Stripe Checkout: posted price plus the door surcharge, no member rates."""
     if not stripe.api_key:
         raise RuntimeError('Stripe is not configured')
@@ -5268,9 +5280,8 @@ def build_door_checkout_session(quantity, ticket_type, event_id=None):
         + (f" ({door_event.get('name')})" if door_event.get('name') else '')
     )
     print(f"Creating door {ticket_type} session for {quantity} tickets @ {unit_price}c")
-    return stripe.checkout.Session.create(
-        payment_method_types=['card'],
-        line_items=[{
+    checkout_kwargs = {
+        'line_items': [{
             'price_data': {
                 'currency': 'usd',
                 'product_data': {
@@ -5281,8 +5292,8 @@ def build_door_checkout_session(quantity, ticket_type, event_id=None):
             },
             'quantity': quantity,
         }],
-        mode='payment',
-        metadata={
+        'mode': 'payment',
+        'metadata': {
             'ticket_type': ticket_type,
             'legacy_member': 'false',
             'legacy_discount': 'false',
@@ -5290,10 +5301,20 @@ def build_door_checkout_session(quantity, ticket_type, event_id=None):
             'event_id': door_event_id,
             'exclusive_single_rate': 'false',
             'door_sale': 'true',
+            'quantity': str(quantity),
         },
-        success_url=f"{base_url}/verify/door-paid?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{base_url}/verify?autostart=1",
-    )
+    }
+    if embedded:
+        # Stays on the scanner. Uses Checkout Sessions (allowed on the live restricted key).
+        checkout_kwargs['ui_mode'] = 'embedded'
+        checkout_kwargs['redirect_on_completion'] = 'never'
+    else:
+        checkout_kwargs['payment_method_types'] = ['card']
+        checkout_kwargs['success_url'] = (
+            f"{base_url}/verify/door-paid?session_id={{CHECKOUT_SESSION_ID}}"
+        )
+        checkout_kwargs['cancel_url'] = f"{base_url}/verify"
+    return stripe.checkout.Session.create(**checkout_kwargs)
 
 
 def build_door_payment_intent(quantity, ticket_type, event_id=None):
@@ -5620,7 +5641,9 @@ def door_payment_intent():
     guard = protect_scanner_response()
     if guard:
         return guard
-    if not stripe.api_key or not stripe_publishable_key:
+    if not stripe.api_key:
+        return jsonify({'error': 'Payment system is not configured.'}), 503
+    if not stripe_publishable_key:
         return jsonify({'error': 'Tap to pay is not configured. Set STRIPE_PUBLISHABLE_KEY.'}), 503
     if not rate_limit_allow('door_checkout', 30, 60):
         return jsonify({'error': 'Too many checkout attempts. Please wait a moment.'}), 429
@@ -5628,19 +5651,20 @@ def door_payment_intent():
     ticket_type = data.get('ticket_type', 'general')
     if ticket_type not in TICKET_TYPES:
         ticket_type = 'general'
+    event_id = data.get('event_id') or get_door_event_id()
+    qty = clamp_quantity(data.get('quantity', 1), event_id=event_id)
+    amount = door_unit_price_cents(ticket_type) * qty
     try:
-        intent = build_door_payment_intent(
-            data.get('quantity', 1),
-            ticket_type,
-            event_id=data.get('event_id') or get_door_event_id(),
+        checkout = build_door_checkout_session(
+            qty, ticket_type, event_id=event_id, embedded=True,
         )
-        amount = intent.get('amount') if isinstance(intent, dict) else intent.amount
-        client_secret = intent.get('client_secret') if isinstance(intent, dict) else intent.client_secret
-        intent_id = intent.get('id') if isinstance(intent, dict) else intent.id
-        qty = clamp_quantity(data.get('quantity', 1), event_id=get_door_event_id())
+        client_secret = checkout.get('client_secret') if isinstance(checkout, dict) else checkout.client_secret
+        session_id = checkout.get('id') if isinstance(checkout, dict) else checkout.id
+        if not client_secret:
+            raise RuntimeError('Embedded checkout did not return a client secret')
         return jsonify({
             'client_secret': client_secret,
-            'payment_intent_id': intent_id,
+            'session_id': session_id,
             'amount': amount,
             'quantity': qty,
             'ticket_type': ticket_type,
@@ -5656,7 +5680,23 @@ def door_payment_intent():
             **availability,
         }), 409
     except Exception as e:
-        return jsonify({'error': public_error_message(e, 'Could not start door checkout. Please try again.')}), 500
+        print('Embedded door checkout failed, trying hosted checkout:', e)
+        try:
+            checkout = build_door_checkout_session(
+                qty, ticket_type, event_id=event_id, embedded=False,
+            )
+            url = checkout.get('url') if isinstance(checkout, dict) else checkout.url
+            if url:
+                return jsonify({
+                    'url': url,
+                    'session_id': checkout.get('id') if isinstance(checkout, dict) else checkout.id,
+                    'amount': amount,
+                    'quantity': qty,
+                    'ticket_type': ticket_type,
+                })
+        except Exception as hosted_error:
+            e = hosted_error
+        return jsonify({'error': door_stripe_error_message(e)}), 500
 
 
 @app.route('/api/door-payment-complete', methods=['POST'])
@@ -5667,18 +5707,25 @@ def door_payment_complete():
     if not stripe.api_key:
         return jsonify({'error': 'Payment system is not configured.'}), 503
     data = request.get_json(silent=True) or {}
+    session_id = (data.get('session_id') or '').strip()
     intent_id = (data.get('payment_intent_id') or '').strip()
-    if not intent_id:
+    if not session_id and not intent_id:
         return jsonify({'error': 'Missing payment.'}), 400
     try:
-        payment_intent = stripe.PaymentIntent.retrieve(intent_id)
-        ticket = fulfill_paid_payment_intent(payment_intent)
+        if session_id:
+            checkout_session = stripe.checkout.Session.retrieve(session_id, expand=['line_items'])
+            ticket = fulfill_paid_checkout(checkout_session)
+            deliver_id = session_id
+        else:
+            payment_intent = stripe.PaymentIntent.retrieve(intent_id)
+            ticket = fulfill_paid_payment_intent(payment_intent)
+            deliver_id = intent_id
         ticket, vip_note = admit_paid_door_ticket(ticket)
         ticket_id = ticket.get('ticket_id')
         quantity = int(ticket.get('quantity') or 1)
         ticket_data = build_qr_image(ticket_id)
         deliver_ticket_email(
-            intent_id,
+            deliver_id,
             ticket.get('email'),
             ticket_id,
             quantity,

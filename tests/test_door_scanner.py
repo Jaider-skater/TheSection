@@ -232,18 +232,19 @@ class DoorScannerTests(unittest.TestCase):
 
         def fake_create(**kwargs):
             return mock.Mock(
-                id='pi_door_1',
-                client_secret='pi_door_1_secret',
-                amount=kwargs['amount'],
+                id='cs_door_1',
+                client_secret='cs_door_1_secret',
+                url=None,
             )
 
         with mock.patch.object(thesection.stripe, 'api_key', 'sk_test_door'), \
              mock.patch.object(thesection, 'stripe_publishable_key', 'pk_test_door'), \
-             mock.patch.object(thesection.stripe.PaymentIntent, 'create', side_effect=fake_create) as create:
-            intent = thesection.build_door_payment_intent(1, 'general', 'halloween-2026')
-            self.assertEqual(intent.client_secret, 'pi_door_1_secret')
+             mock.patch.object(thesection.stripe.checkout.Session, 'create', side_effect=fake_create) as create:
+            session = thesection.build_door_checkout_session(1, 'general', 'halloween-2026', embedded=True)
+            self.assertEqual(session.client_secret, 'cs_door_1_secret')
             kwargs = create.call_args.kwargs
-            self.assertEqual(kwargs['amount'], 1500)
+            self.assertEqual(kwargs['ui_mode'], 'embedded')
+            self.assertEqual(kwargs['line_items'][0]['price_data']['unit_amount'], 1500)
             self.assertEqual(kwargs['metadata']['door_sale'], 'true')
             self.assertEqual(kwargs['metadata']['event_id'], 'halloween-2026')
 
@@ -253,7 +254,7 @@ class DoorScannerTests(unittest.TestCase):
              mock.patch.object(thesection, 'verify_authenticated', return_value=True), \
              mock.patch.object(thesection.stripe, 'api_key', 'sk_test_door'), \
              mock.patch.object(thesection, 'stripe_publishable_key', 'pk_test_door'), \
-             mock.patch.object(thesection.stripe.PaymentIntent, 'create', side_effect=fake_create):
+             mock.patch.object(thesection.stripe.checkout.Session, 'create', side_effect=fake_create):
             client = app.test_client()
             token = client.get('/verify').headers.get('X-CSRF-Token')
             resp = client.post(
@@ -263,34 +264,38 @@ class DoorScannerTests(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
-            self.assertEqual(data['client_secret'], 'pi_door_1_secret')
+            self.assertEqual(data['client_secret'], 'cs_door_1_secret')
             self.assertEqual(data['amount'], 3000)
+            self.assertEqual(data['session_id'], 'cs_door_1')
 
     def test_door_payment_complete_admits_walkup(self):
         thesection.set_door_event_id('halloween-2026')
         paid = {
-            'id': 'pi_door_paid',
-            'status': 'succeeded',
-            'receipt_email': 'walkup@example.com',
+            'id': 'cs_door_paid',
+            'payment_status': 'paid',
             'metadata': {
                 'ticket_type': 'general',
+                'legacy_discount': 'false',
+                'member_email': '',
                 'event_id': 'halloween-2026',
-                'quantity': '1',
+                'exclusive_single_rate': 'false',
                 'door_sale': 'true',
             },
+            'customer_details': {'email': 'walkup@example.com'},
+            'line_items': {'data': [{'quantity': 1}]},
         }
         app = thesection.app
         app.config['TESTING'] = True
         with mock.patch.object(thesection, 'verify_auth_configured', return_value=True), \
              mock.patch.object(thesection, 'verify_authenticated', return_value=True), \
              mock.patch.object(thesection.stripe, 'api_key', 'sk_test_door'), \
-             mock.patch.object(thesection.stripe.PaymentIntent, 'retrieve', return_value=paid), \
+             mock.patch.object(thesection.stripe.checkout.Session, 'retrieve', return_value=paid), \
              mock.patch.object(thesection, 'deliver_ticket_email', return_value=True):
             client = app.test_client()
             token = client.get('/verify').headers.get('X-CSRF-Token')
             resp = client.post(
                 '/api/door-payment-complete',
-                json={'payment_intent_id': 'pi_door_paid'},
+                json={'session_id': 'cs_door_paid'},
                 headers={'X-CSRF-Token': token},
             )
             self.assertEqual(resp.status_code, 200)
