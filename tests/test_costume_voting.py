@@ -688,7 +688,7 @@ class CostumeContestVisibilityTests(unittest.TestCase):
         self.assertIn('Costume contest', html)
         self.assertIn('Visible', html)
         self.assertIn('Hide costume contest', html)
-        self.assertIn('Hide contest', html)
+        self.assertNotIn('Hide contest', html)
         self.assertIn('/admin/costume-contest', html)
         self.assertIn('Open contest page', html)
 
@@ -722,21 +722,21 @@ class CostumeContestVisibilityTests(unittest.TestCase):
         self.assertTrue(thesection.is_costume_contest_open())
 
 
-    def test_admin_nav_and_menu_toggle_when_closed(self):
-        """Staff menus always link to costumes and expose show/hide, even when closed."""
+    def test_staff_menu_toggle_when_closed(self):
+        """The staff hamburger menu keeps costume controls available when closed."""
         thesection.set_costume_contest_open(False)
         admin = self._admin_client()
 
         dash = admin.get('/admin')
         html = dash.get_data(as_text=True)
-        self.assertIn('Show contest', html)
+        self.assertNotIn('Show contest', html)
         self.assertIn('Show costume contest', html)
         self.assertIn('/costumes', html)
         self.assertIn('Hidden', html)
 
         events = admin.get('/admin/events')
         events_html = events.get_data(as_text=True)
-        self.assertIn('Show contest', events_html)
+        self.assertNotIn('Show contest', events_html)
         self.assertIn('/admin/costume-contest', events_html)
         self.assertIn('Costume contest', events_html)
 
