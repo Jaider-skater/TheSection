@@ -1,9 +1,12 @@
 """Costume contest: members submit entries and vote on favorites."""
+import io
 import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
+
+from PIL import Image
 
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-not-for-production-123456')
 os.environ.setdefault('ADMIN_KEY', 'test-admin-key-12')
@@ -27,6 +30,7 @@ class CostumeVotingTests(unittest.TestCase):
             mock.patch.object(thesection, 'full_mailing_list_file', os.path.join(root, 'full.json')),
             mock.patch.object(thesection, 'scanner_settings_file', os.path.join(root, 'scanner.json')),
             mock.patch.object(thesection, 'costumes_file', os.path.join(root, 'costumes.json')),
+            mock.patch.object(thesection, 'costume_photos_dir', os.path.join(root, 'costume_photos')),
             mock.patch.object(thesection, 'get_display_timezone', return_value=timezone.utc),
         ]
         for patcher in self.patches:
@@ -274,6 +278,125 @@ class CostumeVotingTests(unittest.TestCase):
         location = resp.headers.get('Location', '')
         self.assertTrue('/legacy' in location or '/members' in location)
         self.assertEqual(thesection.load_costumes()['entries'][0]['votes'], [])
+
+
+    def _tiny_jpeg_bytes(self, color=(200, 40, 80), size=(64, 48)):
+        buf = io.BytesIO()
+        Image.new('RGB', size, color=color).save(buf, format='JPEG', quality=85)
+        return buf.getvalue()
+
+    def _photo_file(self, filename='costume.jpg', color=(200, 40, 80), size=(64, 48)):
+        # Werkzeug EnvironBuilder expects (stream, filename[, content_type])
+        return (io.BytesIO(self._tiny_jpeg_bytes(color=color, size=size)), filename, 'image/jpeg')
+
+    def test_photo_upload_happy_path_and_serve(self):
+        client = self._login()
+        token = self._csrf(client)
+        resp = client.post(
+            '/costumes',
+            data={
+                'action': 'submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire pirate',
+                'csrf_token': token,
+                'photo': self._photo_file(),
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        entries = thesection.load_costumes()['entries']
+        self.assertEqual(len(entries), 1)
+        photo = entries[0].get('photo')
+        self.assertTrue(photo)
+        self.assertTrue(photo.endswith('.jpg'))
+        self.assertTrue(thesection.costume_photo_is_safe_filename(photo))
+        disk_path = os.path.join(thesection.costume_photos_dir, photo)
+        self.assertTrue(os.path.isfile(disk_path))
+        self.assertLessEqual(os.path.getsize(disk_path), 500 * 1024)
+
+        # Public board shows photo URL, never emails
+        page = client.get('/costumes')
+        html = page.get_data(as_text=True)
+        self.assertIn(f'/costume-photos/{photo}', html)
+        self.assertNotIn('guest@example.com', html)
+
+        served = client.get(f'/costume-photos/{photo}')
+        self.assertEqual(served.status_code, 200)
+        self.assertIn('image/', served.headers.get('Content-Type', ''))
+        self.assertTrue(served.data.startswith(b'\xff\xd8\xff'))
+
+        # Path traversal rejected
+        self.assertEqual(client.get('/costume-photos/../costumes.json').status_code, 404)
+        self.assertEqual(client.get('/costume-photos/..%2Fcostumes.json').status_code, 404)
+
+    def test_anonymous_cannot_upload_photo(self):
+        client = self.app.test_client()
+        token = client.get('/costumes').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/costumes',
+            data={
+                'action': 'submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire',
+                'csrf_token': token,
+                'photo': self._photo_file(),
+            },
+            follow_redirects=False,
+        )
+        self.assertIn(resp.status_code, (302, 400))
+        self.assertEqual(thesection.load_costumes().get('entries'), [])
+        photos_dir = thesection.costume_photos_dir
+        if os.path.isdir(photos_dir):
+            self.assertEqual([n for n in os.listdir(photos_dir) if not n.startswith('.')], [])
+
+    def test_replace_and_remove_photo(self):
+        client = self._login()
+        token = self._csrf(client)
+        client.post(
+            '/costumes',
+            data={
+                'action': 'submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire',
+                'csrf_token': token,
+                'photo': self._photo_file(color=(10, 20, 30)),
+            },
+        )
+        first = thesection.load_costumes()['entries'][0]['photo']
+        first_path = os.path.join(thesection.costume_photos_dir, first)
+        self.assertTrue(os.path.isfile(first_path))
+
+        token = self._csrf(client)
+        client.post(
+            '/costumes',
+            data={
+                'action': 'submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire',
+                'csrf_token': token,
+                'photo': self._photo_file(filename='new.jpg', color=(240, 10, 10)),
+            },
+        )
+        second = thesection.load_costumes()['entries'][0]['photo']
+        self.assertNotEqual(first, second)
+        self.assertFalse(os.path.isfile(first_path))
+        self.assertTrue(os.path.isfile(os.path.join(thesection.costume_photos_dir, second)))
+
+        token = self._csrf(client)
+        client.post(
+            '/costumes',
+            data={
+                'action': 'submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire',
+                'csrf_token': token,
+                'remove_photo': '1',
+            },
+        )
+        entry = thesection.load_costumes()['entries'][0]
+        self.assertFalse(entry.get('photo'))
+        self.assertFalse(os.path.isfile(os.path.join(thesection.costume_photos_dir, second)))
+
 
 
 if __name__ == '__main__':
