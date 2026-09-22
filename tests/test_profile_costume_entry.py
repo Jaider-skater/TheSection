@@ -1,4 +1,4 @@
-"""Member profile/portal: show, edit, and delete own costume contest entry."""
+"""Member profile/portal: show, edit, and delete own costume entry."""
 import io
 import os
 import tempfile
@@ -36,7 +36,8 @@ class ProfileCostumeEntryTests(unittest.TestCase):
             patcher.start()
         thesection.save_tickets([])
         thesection.save_members([])
-        thesection.save_costumes({'entries': []})
+        thesection.save_costumes({'entries': [], 'ballots': {}})
+        thesection._rate_limit_buckets.clear()
         self.app = thesection.app
         self.app.config['TESTING'] = True
 
@@ -77,7 +78,7 @@ class ProfileCostumeEntryTests(unittest.TestCase):
     def _csrf(self, client):
         return client.get('/legacy').headers.get('X-CSRF-Token')
 
-    def _seed_entry(self, entry_id='entry1', owner='guest@example.com', photo=None, votes=None):
+    def _seed_entry(self, entry_id='entry1', owner='guest@example.com', photo=None, first_place_voters=None):
         entry = {
             'id': entry_id,
             'owner_email': owner,
@@ -85,13 +86,15 @@ class ProfileCostumeEntryTests(unittest.TestCase):
             'costume': 'Vampire pirate',
             'created_at': datetime.now(timezone.utc).isoformat(),
             'updated_at': datetime.now(timezone.utc).isoformat(),
-            'votes': list(votes or []),
         }
         if photo:
             entry['photo'] = photo
         store = thesection.load_costumes()
         entries = store.setdefault('entries', [])
         entries.append(entry)
+        ballots = store.setdefault('ballots', {})
+        for voter in (first_place_voters or []):
+            ballots[(voter or '').strip().lower()] = [entry_id]
         thesection.save_costumes(store)
         return entry
 
@@ -104,15 +107,15 @@ class ProfileCostumeEntryTests(unittest.TestCase):
         return (io.BytesIO(self._tiny_jpeg_bytes(color=color)), filename, 'image/jpeg')
 
     def test_profile_shows_costume_entry(self):
-        self._seed_entry(votes=['voter@example.com'])
+        self._seed_entry(first_place_voters=['voter@example.com'])
         client = self._login()
         page = client.get('/legacy')
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
-        self.assertIn('Costume contest', html)
+        self.assertIn('>Costume<', html)
         self.assertIn('Alex', html)
         self.assertIn('Vampire pirate', html)
-        self.assertIn('1 vote', html)
+        self.assertIn('3 pts', html)
         self.assertIn('costume_submit', html)
         self.assertIn('costume_delete', html)
         self.assertIn('Edit entry', html)
@@ -122,8 +125,8 @@ class ProfileCostumeEntryTests(unittest.TestCase):
         client = self._login()
         page = client.get('/legacy')
         html = page.get_data(as_text=True)
-        self.assertIn('Costume contest', html)
-        self.assertIn('You have not entered the costume contest yet.', html)
+        self.assertIn('>Costume<', html)
+        self.assertIn('You have not entered a costume yet.', html)
         self.assertIn('Enter a costume', html)
         self.assertIn('costume_submit', html)
         self.assertNotIn('costume_delete', html)
@@ -269,7 +272,7 @@ class ProfileCostumeEntryTests(unittest.TestCase):
         html = page.get_data(as_text=True)
         self.assertNotIn('costume_submit', html)
         self.assertNotIn('costume_delete', html)
-        self.assertNotIn('Costume contest', html)
+        self.assertNotIn('id="costume-entry"', html)
 
         token = page.headers.get('X-CSRF-Token')
         resp = client.post(

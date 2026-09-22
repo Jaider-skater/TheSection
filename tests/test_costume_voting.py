@@ -1,4 +1,4 @@
-"""Costume contest: members submit entries and vote on favorites."""
+"""Costume voting: members submit entries and rank favorites (1st–3rd)."""
 import io
 import os
 import tempfile
@@ -37,7 +37,8 @@ class CostumeVotingTests(unittest.TestCase):
             patcher.start()
         thesection.save_tickets([])
         thesection.save_members([])
-        thesection.save_costumes({'entries': []})
+        thesection.save_costumes({'entries': [], 'ballots': {}})
+        thesection._rate_limit_buckets.clear()
         self.app = thesection.app
         self.app.config['TESTING'] = True
 
@@ -122,7 +123,8 @@ class CostumeVotingTests(unittest.TestCase):
         self.assertEqual(entries[0]['display_name'], 'Alex')
         self.assertEqual(entries[0]['costume'], 'Vampire pirate')
         self.assertEqual(entries[0]['owner_email'], 'guest@example.com')
-        self.assertEqual(entries[0]['votes'], [])
+        self.assertNotIn('votes', entries[0])
+        self.assertEqual(thesection.load_costumes().get('ballots'), {})
 
     def test_resubmit_updates_same_entry(self):
         client = self._login()
@@ -153,109 +155,150 @@ class CostumeVotingTests(unittest.TestCase):
         self.assertEqual(entries[0]['display_name'], 'Alexandra')
         self.assertEqual(entries[0]['costume'], 'Ghost pirate')
 
-    def test_vote_and_cannot_vote_own(self):
-        owner = self._login('owner@example.com')
-        token = self._csrf(owner)
-        owner.post(
+    def _submit(self, client, display_name, costume):
+        token = self._csrf(client)
+        resp = client.post(
             '/costumes',
             data={
                 'action': 'submit',
-                'display_name': 'Owner',
-                'costume': 'Dracula',
-                'csrf_token': token,
-            },
-        )
-        entry_id = thesection.load_costumes()['entries'][0]['id']
-
-        # Owner cannot vote own
-        token = self._csrf(owner)
-        resp = owner.post(
-            '/costumes',
-            data={
-                'action': 'vote',
-                'entry_id': entry_id,
-                'csrf_token': token,
-            },
-            follow_redirects=True,
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn('cannot vote for your own', resp.get_data(as_text=True).lower())
-        self.assertEqual(thesection.load_costumes()['entries'][0]['votes'], [])
-
-        # Another member can vote
-        voter = self._login('voter@example.com')
-        token = self._csrf(voter)
-        resp = voter.post(
-            '/costumes',
-            data={
-                'action': 'vote',
-                'entry_id': entry_id,
+                'display_name': display_name,
+                'costume': costume,
                 'csrf_token': token,
             },
             follow_redirects=False,
         )
         self.assertEqual(resp.status_code, 302)
-        votes = thesection.load_costumes()['entries'][0]['votes']
-        self.assertEqual(votes, ['voter@example.com'])
+        return resp
 
-        # Public listing never exposes emails
-        html = voter.get('/costumes').get_data(as_text=True)
-        self.assertNotIn('owner@example.com', html)
-        self.assertNotIn('voter@example.com', html)
-        self.assertIn('Dracula', html)
-        self.assertIn('>1<', html)  # vote count
-
-    def test_vote_toggle_and_sort_by_votes(self):
-        a = self._login('a@example.com')
-        token = self._csrf(a)
-        a.post(
+    def _rank(self, client, rank_1='', rank_2='', rank_3='', follow=False):
+        token = self._csrf(client)
+        return client.post(
             '/costumes',
             data={
-                'action': 'submit',
-                'display_name': 'A',
-                'costume': 'Cat',
+                'action': 'rank',
+                'rank_1': rank_1,
+                'rank_2': rank_2,
+                'rank_3': rank_3,
                 'csrf_token': token,
             },
+            follow_redirects=follow,
         )
-        b = self._login('b@example.com')
-        token = self._csrf(b)
-        b.post(
-            '/costumes',
-            data={
-                'action': 'submit',
-                'display_name': 'B',
-                'costume': 'Bat',
-                'csrf_token': token,
-            },
-        )
+
+    def test_rank_three_distinct_and_cannot_rank_own(self):
+        for email, name, costume in [
+            ('a@example.com', 'A', 'Cat'),
+            ('b@example.com', 'B', 'Bat'),
+            ('c@example.com', 'C', 'Crow'),
+            ('d@example.com', 'D', 'Dog'),
+        ]:
+            self._submit(self._login(email), name, costume)
         entries = {e['display_name']: e for e in thesection.load_costumes()['entries']}
-        a_id = entries['A']['id']
-        b_id = entries['B']['id']
+        a_id, b_id, c_id = entries['A']['id'], entries['B']['id'], entries['C']['id']
 
-        c = self._login('c@example.com')
-        token = self._csrf(c)
-        c.post('/costumes', data={'action': 'vote', 'entry_id': b_id, 'csrf_token': token})
-        token = self._csrf(c)
-        c.post('/costumes', data={'action': 'vote', 'entry_id': a_id, 'csrf_token': token})
-        # Second vote for B from another member
-        d = self._login('d@example.com')
-        token = self._csrf(d)
-        d.post('/costumes', data={'action': 'vote', 'entry_id': b_id, 'csrf_token': token})
+        voter = self._login('voter@example.com')
+        resp = self._rank(voter, rank_1=a_id, rank_2=b_id, rank_3=c_id)
+        self.assertEqual(resp.status_code, 302)
+        ballots = thesection.load_costumes()['ballots']
+        self.assertEqual(ballots['voter@example.com'], [a_id, b_id, c_id])
 
-        public = thesection.list_costume_entries_public('c@example.com')
-        self.assertEqual([e['display_name'] for e in public], ['B', 'A'])
-        self.assertEqual(public[0]['vote_count'], 2)
-        self.assertEqual(public[1]['vote_count'], 1)
-        self.assertTrue(public[1]['voted_by_me'])
+        # Cannot include own entry
+        self._submit(voter, 'Voter', 'Vampire')
+        voter_entry = thesection.find_costume_entry_for_email('voter@example.com')
+        resp = self._rank(voter, rank_1=voter_entry['id'], rank_2=a_id, follow=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('cannot vote for your own', resp.get_data(as_text=True).lower())
+        self.assertEqual(
+            thesection.load_costumes()['ballots']['voter@example.com'],
+            [a_id, b_id, c_id],
+        )
 
-        # Toggle off vote for A
-        token = self._csrf(c)
-        c.post('/costumes', data={'action': 'unvote', 'entry_id': a_id, 'csrf_token': token})
-        votes_a = next(e['votes'] for e in thesection.load_costumes()['entries'] if e['id'] == a_id)
-        self.assertEqual(votes_a, [])
+        owner_a = self._login('a@example.com')
+        resp = self._rank(owner_a, rank_1=a_id, follow=True)
+        self.assertIn('cannot vote for your own', resp.get_data(as_text=True).lower())
 
-    def test_anonymous_vote_redirects_to_portal(self):
-        # Seed an entry directly
+        html = voter.get('/costumes').get_data(as_text=True)
+        self.assertNotIn('a@example.com', html)
+        self.assertNotIn('voter@example.com', html)
+        self.assertIn('Cat', html)
+        self.assertIn('Costume voting', html)
+        self.assertNotIn('>Contest<', html)
+        self.assertIn('Ranked by 3–2–1 points', html)
+
+    def test_reject_duplicate_ranks_and_update_ballot(self):
+        for email, name, costume in [
+            ('a@example.com', 'A', 'Cat'),
+            ('b@example.com', 'B', 'Bat'),
+            ('c@example.com', 'C', 'Crow'),
+        ]:
+            self._submit(self._login(email), name, costume)
+        entries = {e['display_name']: e for e in thesection.load_costumes()['entries']}
+        a_id, b_id, c_id = entries['A']['id'], entries['B']['id'], entries['C']['id']
+
+        voter = self._login('voter@example.com')
+        resp = self._rank(voter, rank_1=a_id, rank_2=a_id, follow=True)
+        self.assertIn('only appear once', resp.get_data(as_text=True).lower())
+        self.assertNotIn('voter@example.com', thesection.load_costumes().get('ballots') or {})
+
+        resp = self._rank(voter, rank_1=a_id, rank_2=b_id)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            thesection.load_costumes()['ballots']['voter@example.com'],
+            [a_id, b_id],
+        )
+
+        resp = self._rank(voter, rank_1=c_id, rank_2=b_id, rank_3=a_id)
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            thesection.load_costumes()['ballots']['voter@example.com'],
+            [c_id, b_id, a_id],
+        )
+
+        resp = self._rank(voter)
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn('voter@example.com', thesection.load_costumes().get('ballots') or {})
+
+    def test_borda_scoring_order(self):
+        for email, name, costume in [
+            ('a@example.com', 'A', 'Cat'),
+            ('b@example.com', 'B', 'Bat'),
+            ('c@example.com', 'C', 'Crow'),
+        ]:
+            self._submit(self._login(email), name, costume)
+        entries = {e['display_name']: e for e in thesection.load_costumes()['entries']}
+        a_id, b_id, c_id = entries['A']['id'], entries['B']['id'], entries['C']['id']
+
+        self._rank(self._login('v1@example.com'), rank_1=a_id, rank_2=b_id, rank_3=c_id)
+        self._rank(self._login('v2@example.com'), rank_1=b_id, rank_2=c_id)
+
+        public = thesection.list_costume_entries_public('v1@example.com')
+        by_name = {e['display_name']: e for e in public}
+        self.assertEqual(by_name['B']['score'], 5)
+        self.assertEqual(by_name['A']['score'], 3)
+        self.assertEqual(by_name['C']['score'], 3)
+        self.assertEqual(public[0]['display_name'], 'B')
+        self.assertEqual(by_name['A']['my_rank'], 1)
+        self.assertEqual(by_name['B']['my_rank'], 2)
+        self.assertEqual(by_name['C']['my_rank'], 3)
+
+        thesection.save_costumes({
+            'entries': [
+                {
+                    'id': 'legacy',
+                    'owner_email': 'x@example.com',
+                    'display_name': 'X',
+                    'costume': 'X',
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                    'votes': ['old@example.com'],
+                }
+            ],
+            'ballots': {},
+        })
+        store = thesection.load_costumes()
+        self.assertNotIn('votes', store['entries'][0])
+        self.assertEqual(store.get('ballots'), {})
+
+    def test_anonymous_rank_redirects_to_portal(self):
         thesection.save_costumes({
             'entries': [{
                 'id': 'entry1',
@@ -264,21 +307,32 @@ class CostumeVotingTests(unittest.TestCase):
                 'costume': 'Witch',
                 'created_at': datetime.now(timezone.utc).isoformat(),
                 'updated_at': datetime.now(timezone.utc).isoformat(),
-                'votes': [],
-            }]
+            }],
+            'ballots': {},
         })
         client = self.app.test_client()
         token = client.get('/costumes').headers.get('X-CSRF-Token')
         resp = client.post(
             '/costumes',
-            data={'action': 'vote', 'entry_id': 'entry1', 'csrf_token': token},
+            data={
+                'action': 'rank',
+                'rank_1': 'entry1',
+                'csrf_token': token,
+            },
             follow_redirects=False,
         )
         self.assertEqual(resp.status_code, 302)
         location = resp.headers.get('Location', '')
         self.assertTrue('/legacy' in location or '/members' in location)
-        self.assertEqual(thesection.load_costumes()['entries'][0]['votes'], [])
+        self.assertEqual(thesection.load_costumes().get('ballots'), {})
 
+    def test_copy_has_no_stranded_contest_heading(self):
+        client = self.app.test_client()
+        html = client.get('/costumes').get_data(as_text=True)
+        self.assertIn('Costume voting', html)
+        self.assertIn('Costumes', html)
+        self.assertNotIn('>Contest<', html)
+        self.assertNotIn('Costume Contest', html)
 
     def _tiny_jpeg_bytes(self, color=(200, 40, 80), size=(64, 48)):
         buf = io.BytesIO()
@@ -417,11 +471,10 @@ class CostumeVotingTests(unittest.TestCase):
             'costume': 'Witch',
             'created_at': datetime.now(timezone.utc).isoformat(),
             'updated_at': datetime.now(timezone.utc).isoformat(),
-            'votes': [],
         }
         if photo:
             entry['photo'] = photo
-        thesection.save_costumes({'entries': [entry]})
+        thesection.save_costumes({'entries': [entry], 'ballots': {}})
         return entry
 
     def test_admin_can_remove_costume_entry(self):
