@@ -752,7 +752,7 @@ def inject_security_template_globals():
     return {
         'csrf_token': ensure_csrf_token(),
         'csrf_field': f'<input type="hidden" name="csrf_token" value="{ensure_csrf_token()}">',
-        'show_staff_nav': is_staff_user(),
+        'show_staff_nav': is_staff_user() or admin_authenticated(),
         'member_logged_in': bool(get_logged_in_member()),
         'costume_contest_open': is_costume_contest_open(),
     }
@@ -7252,9 +7252,17 @@ def admin_costume_contest_toggle():
         return redirect(url_for('admin_login'))
     currently_open = is_costume_contest_open()
     new_open = not currently_open
-    if not set_costume_contest_open(new_open):
-        return redirect(url_for('admin_dashboard', contest='error'))
-    return redirect(url_for('admin_dashboard', contest='shown' if new_open else 'hidden'))
+    contest_status = 'error'
+    if set_costume_contest_open(new_open):
+        contest_status = 'shown' if new_open else 'hidden'
+
+    next_url = safe_next_url(request.form.get('next'), '')
+    path_only = next_url.split('?', 1)[0].rstrip('/') if next_url else ''
+    if path_only in ('', '/admin'):
+        return redirect(url_for('admin_dashboard', contest=contest_status))
+    if next_url and path_only != '/admin/costume-contest':
+        return redirect(next_url)
+    return redirect(url_for('admin_dashboard', contest=contest_status))
 
 
 @app.route('/admin/tickets.csv')

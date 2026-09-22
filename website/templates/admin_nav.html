@@ -1,4 +1,4 @@
-        <nav class="flex flex-wrap gap-2 mb-6 text-sm">
+        <nav class="flex flex-wrap gap-2 mb-6 text-sm items-center">
             <a href="{{ url_for('admin_dashboard') }}"
                class="px-3 py-1.5 rounded-lg border {% if request.endpoint == 'admin_dashboard' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500{% endif %}">
                 Tickets
@@ -11,4 +11,16 @@
                class="px-3 py-1.5 rounded-lg border {% if request.endpoint == 'admin_mailing_list' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500{% endif %}">
                 Mailing Lists
             </a>
+            <a href="{{ url_for('costumes') }}"
+               class="px-3 py-1.5 rounded-lg border {% if request.endpoint == 'costumes' %}border-white bg-white text-black{% else %}border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500{% endif %}">
+                Costume contest
+            </a>
+            <form method="POST" action="{{ url_for('admin_costume_contest_toggle') }}" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ request.path }}">
+                <button type="submit"
+                        class="px-3 py-1.5 rounded-lg border font-medium {% if costume_contest_open %}border-zinc-500 text-zinc-200 hover:border-white hover:text-white{% else %}border-emerald-600 bg-emerald-500/15 text-emerald-300 hover:border-emerald-400 hover:text-emerald-200{% endif %}">
+                    {% if costume_contest_open %}Hide contest{% else %}Show contest{% endif %}
+                </button>
+            </form>
         </nav>

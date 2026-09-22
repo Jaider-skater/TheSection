@@ -9,12 +9,12 @@
                 </svg>
             </button>
             <div data-site-menu-dropdown
-                 class="hidden absolute right-0 mt-2 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-lg py-2 text-left">
+                 class="hidden absolute right-0 mt-2 w-64 bg-zinc-900 border border-zinc-700 rounded-xl shadow-lg py-2 text-left">
                 {% if request.endpoint != 'home' %}
                 <a href="/" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Home</a>
                 {% endif %}
                 <a href="{{ url_for('legacy_portal') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Member Portal</a>
-                {% if costume_contest_open %}
+                {% if costume_contest_open and not show_staff_nav %}
                 <a href="{{ url_for('costumes') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Costume contest</a>
                 {% endif %}
                 {% if show_staff_nav %}
@@ -22,6 +22,15 @@
                 <a href="{{ url_for('admin_dashboard') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Tickets</a>
                 <a href="{{ url_for('admin_events') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Events</a>
                 <a href="{{ url_for('admin_mailing_list') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Mailing Lists</a>
+                <a href="{{ url_for('costumes') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Costume contest</a>
+                <form method="POST" action="{{ url_for('admin_costume_contest_toggle') }}" class="border-t border-zinc-800 mt-1 pt-1">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="next" value="{{ request.path }}">
+                    <button type="submit"
+                            class="w-full text-left block px-4 py-3 text-sm {% if costume_contest_open %}text-zinc-300{% else %}text-emerald-300{% endif %} hover:bg-zinc-800 hover:text-white transition-colors">
+                        {% if costume_contest_open %}Hide costume contest{% else %}Show costume contest{% endif %}
+                    </button>
+                </form>
                 {% endif %}
                 <form id="menu-logout-form"
                       method="POST"
