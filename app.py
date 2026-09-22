@@ -931,51 +931,127 @@ COSTUME_PHOTO_MAX_DIMENSION = 1200
 COSTUME_PHOTO_JPEG_QUALITY = 82
 
 
+COSTUME_MAX_RANKS = 3
+COSTUME_RANK_POINTS = (3, 2, 1)  # Borda: 1st=3, 2nd=2, 3rd=1
+
+
 def _empty_costumes_store():
-    return {'entries': []}
+    return {'entries': [], 'ballots': {}}
+
+
+def _migrate_costumes_store(store):
+    """Normalize store shape. Legacy per-entry `votes` arrays are discarded;
+    ranked-choice ballots live in top-level `ballots` (start fresh).
+    """
+    if isinstance(store, list):
+        store = {'entries': store}
+    if not isinstance(store, dict):
+        return _empty_costumes_store()
+    entries = store.get('entries')
+    if not isinstance(entries, list):
+        entries = []
+    cleaned_entries = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        cleaned = dict(entry)
+        cleaned.pop('votes', None)
+        cleaned_entries.append(cleaned)
+    raw_ballots = store.get('ballots')
+    if not isinstance(raw_ballots, dict):
+        raw_ballots = {}
+    cleaned_ballots = {}
+    for voter, ranks in raw_ballots.items():
+        key = (voter or '').strip().lower()
+        if not key or not isinstance(ranks, list):
+            continue
+        cleaned_ranks = []
+        seen = set()
+        for eid in ranks:
+            eid = (eid or '').strip()
+            if not eid or eid in seen:
+                continue
+            cleaned_ranks.append(eid)
+            seen.add(eid)
+            if len(cleaned_ranks) >= COSTUME_MAX_RANKS:
+                break
+        if cleaned_ranks:
+            cleaned_ballots[key] = cleaned_ranks
+    return {'entries': cleaned_entries, 'ballots': cleaned_ballots}
 
 
 def load_costumes():
     if not ensure_data_dir(costumes_file):
         return _empty_costumes_store()
     data = _locked_json_read(costumes_file, _empty_costumes_store())
-    if isinstance(data, dict) and isinstance(data.get('entries'), list):
-        return data
-    if isinstance(data, list):
-        return {'entries': data}
-    return _empty_costumes_store()
+    return _migrate_costumes_store(data)
 
 
 def save_costumes(store):
     if not ensure_data_dir(costumes_file):
         return False
-    if not isinstance(store, dict):
-        store = {'entries': list(store) if isinstance(store, list) else []}
-    if not isinstance(store.get('entries'), list):
-        store = {'entries': []}
+    store = _migrate_costumes_store(store)
     return _locked_json_write(costumes_file, store)
 
 
+def costume_borda_scores(store=None):
+    """Map entry_id -> Borda score from ranked ballots (3/2/1)."""
+    store = store if store is not None else load_costumes()
+    scores = {}
+    for ranks in (store.get('ballots') or {}).values():
+        if not isinstance(ranks, list):
+            continue
+        for i, eid in enumerate(ranks[:COSTUME_MAX_RANKS]):
+            eid = (eid or '').strip()
+            if not eid:
+                continue
+            scores[eid] = scores.get(eid, 0) + COSTUME_RANK_POINTS[i]
+    return scores
+
+
+def get_costume_ballot(voter_email, store=None):
+    """Return voter's ranked entry ids (up to 3), or []."""
+    email = (voter_email or '').strip().lower()
+    if not email:
+        return []
+    store = store if store is not None else load_costumes()
+    ranks = (store.get('ballots') or {}).get(email) or []
+    if not isinstance(ranks, list):
+        return []
+    return [str(eid).strip() for eid in ranks if (eid or '').strip()][:COSTUME_MAX_RANKS]
+
+
+def costume_entry_score(entry_id, store=None):
+    if not entry_id:
+        return 0
+    return int(costume_borda_scores(store).get(entry_id, 0))
+
+
 def list_costume_entries_public(viewer_email=None):
-    """Public-safe costume listings: no emails. Sorted by votes desc, then newest."""
+    """Public-safe costume listings: no emails. Sorted by Borda score desc, then newest."""
     viewer = (viewer_email or '').strip().lower()
-    entries = list((load_costumes().get('entries') or []))
-    # Sort by votes desc, then updated_at desc (ISO-8601 lexicographic).
+    store = load_costumes()
+    entries = list(store.get('entries') or [])
+    scores = costume_borda_scores(store)
+    my_ballot = get_costume_ballot(viewer, store) if viewer else []
+    my_rank_by_id = {eid: (i + 1) for i, eid in enumerate(my_ballot)}
     entries.sort(key=lambda e: (
-        len(e.get('votes') if isinstance(e.get('votes'), list) else []),
+        scores.get(e.get('id') or '', 0),
         e.get('updated_at') or e.get('created_at') or '',
     ), reverse=True)
     public = []
     for entry in entries:
-        votes = entry.get('votes') if isinstance(entry.get('votes'), list) else []
+        eid = entry.get('id') or ''
         owner = (entry.get('owner_email') or '').strip().lower()
+        score = int(scores.get(eid, 0))
         public.append({
-            'id': entry.get('id') or '',
+            'id': eid,
             'display_name': entry.get('display_name') or '',
             'costume': entry.get('costume') or '',
             'photo_url': costume_photo_url(entry.get('photo')),
-            'vote_count': len(votes),
-            'voted_by_me': bool(viewer and viewer in votes),
+            'score': score,
+            'vote_count': score,  # alias for templates/tests that expect a count-like field
+            'my_rank': my_rank_by_id.get(eid),
             'is_mine': bool(viewer and viewer == owner),
             'created_at': entry.get('created_at') or '',
             'updated_at': entry.get('updated_at') or '',
@@ -1021,8 +1097,7 @@ def submit_costume_entry(owner_email, display_name, costume):
             existing['display_name'] = name
             existing['costume'] = desc
             existing['updated_at'] = now
-            if not isinstance(existing.get('votes'), list):
-                existing['votes'] = []
+            existing.pop('votes', None)
             if not existing.get('id'):
                 existing['id'] = secrets.token_hex(16)
             saved = existing
@@ -1034,7 +1109,6 @@ def submit_costume_entry(owner_email, display_name, costume):
                 'costume': desc,
                 'created_at': now,
                 'updated_at': now,
-                'votes': [],
             }
             entries.append(saved)
         if not save_costumes(store):
@@ -1042,40 +1116,71 @@ def submit_costume_entry(owner_email, display_name, costume):
         return True, saved
 
 
-def toggle_costume_vote(entry_id, voter_email):
-    """Toggle a vote on a costume. Returns (ok, error_message, voted_now)."""
+def set_costume_ballot(voter_email, ranked_entry_ids):
+    """Set a member's ranked-choice ballot (up to 3 distinct other entries).
+
+    Partial ballots are OK (e.g. only 1st). Empty list clears the ballot.
+    Returns (ok, error_message).
+    """
     email = (voter_email or '').strip().lower()
-    target_id = (entry_id or '').strip()
     if not email:
-        return False, 'You must be signed in to vote.', None
-    if not target_id:
-        return False, 'Missing costume entry.', None
+        return False, 'You must be signed in to vote.'
+    raw = ranked_entry_ids if isinstance(ranked_entry_ids, (list, tuple)) else []
+    cleaned = []
+    seen = set()
+    for eid in raw:
+        eid = (eid or '').strip()
+        if not eid:
+            continue
+        if eid in seen:
+            return False, 'Each costume can only appear once in your rankings.'
+        cleaned.append(eid)
+        seen.add(eid)
+        if len(cleaned) > COSTUME_MAX_RANKS:
+            return False, f'You can rank at most {COSTUME_MAX_RANKS} costumes.'
     with costumes_lock:
         store = load_costumes()
         entries = store.get('entries') or []
-        target = None
-        for entry in entries:
-            if entry.get('id') == target_id:
-                target = entry
-                break
-        if not target:
-            return False, 'That costume entry was not found.', None
-        owner = (target.get('owner_email') or '').strip().lower()
-        if owner == email:
-            return False, 'You cannot vote for your own costume.', None
-        votes = target.get('votes')
-        if not isinstance(votes, list):
-            votes = []
-            target['votes'] = votes
-        if email in votes:
-            target['votes'] = [v for v in votes if v != email]
-            voted_now = False
+        by_id = {e.get('id'): e for e in entries if e.get('id')}
+        for eid in cleaned:
+            target = by_id.get(eid)
+            if not target:
+                return False, 'That costume entry was not found.'
+            owner = (target.get('owner_email') or '').strip().lower()
+            if owner == email:
+                return False, 'You cannot vote for your own costume.'
+        ballots = store.setdefault('ballots', {})
+        if cleaned:
+            ballots[email] = cleaned
         else:
-            votes.append(email)
-            voted_now = True
+            ballots.pop(email, None)
         if not save_costumes(store):
-            return False, 'Could not save your vote. Try again.', None
-        return True, None, voted_now
+            return False, 'Could not save your rankings. Try again.'
+        return True, None
+
+
+def _purge_entry_from_ballots(store, entry_id):
+    """Remove an entry id from every ballot (after delete). Mutates store."""
+    eid = (entry_id or '').strip()
+    if not eid:
+        return
+    ballots = store.get('ballots')
+    if not isinstance(ballots, dict):
+        return
+    for voter, ranks in list(ballots.items()):
+        if not isinstance(ranks, list):
+            ballots.pop(voter, None)
+            continue
+        cleaned = [r for r in ranks if (r or '').strip() != eid]
+        if cleaned:
+            ballots[voter] = cleaned
+        else:
+            ballots.pop(voter, None)
+
+
+def toggle_costume_vote(entry_id, voter_email):
+    """Legacy helper removed; ranked ballots replace toggle votes."""
+    return False, 'Costume voting now uses ranked choice (1st–3rd).', None
 
 
 def costume_photo_is_safe_filename(filename):
@@ -1139,6 +1244,7 @@ def delete_costume_entry(entry_id):
         if removed is None:
             return False, 'That costume entry was not found.'
         store['entries'] = kept
+        _purge_entry_from_ballots(store, target_id)
         if not save_costumes(store):
             return False, 'Could not remove that costume. Try again.'
     photo = (removed.get('photo') or '').strip()
@@ -1166,6 +1272,7 @@ def delete_own_costume_entry(owner_email):
         if removed is None:
             return False, 'You do not have a costume entry.'
         store['entries'] = kept
+        _purge_entry_from_ballots(store, removed.get('id'))
         if not save_costumes(store):
             return False, 'Could not delete your costume. Try again.'
     photo = (removed.get('photo') or '').strip()
@@ -6511,10 +6618,12 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
     has_returning = member_has_returning_guest_discount(logged_in) if logged_in else False
     my_costume_entry = None
     my_costume_photo_url = None
+    my_costume_score = 0
     if logged_in:
         my_costume_entry = find_costume_entry_for_email(logged_in.get('email'))
         if my_costume_entry:
             my_costume_photo_url = costume_photo_url(my_costume_entry.get('photo'))
+            my_costume_score = costume_entry_score(my_costume_entry.get('id'))
     return {
         'error': error,
         'success': success,
@@ -6538,6 +6647,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'show_scanner_link': is_scanner_admin_member(),
         'my_costume_entry': my_costume_entry,
         'my_costume_photo_url': my_costume_photo_url,
+        'my_costume_score': my_costume_score,
         'display_name_max': COSTUME_DISPLAY_NAME_MAX,
         'costume_max': COSTUME_DESCRIPTION_MAX,
     }
@@ -7584,7 +7694,7 @@ def legacy_member_invite_signup():
 
 @app.route('/costumes', methods=['GET', 'POST'])
 def costumes():
-    """Costume contest: members enter a costume and vote on favorites."""
+    """Costume voting: members enter a costume and rank favorites (1st–3rd)."""
     member = get_logged_in_member()
     is_admin = require_admin()
     error = None
@@ -7631,20 +7741,22 @@ def costumes():
                     if ok:
                         return redirect(url_for('costumes', saved=1))
                     error = result or 'Could not save your costume.'
-        elif action in ('vote', 'unvote'):
+        elif action in ('rank', 'ballot', 'vote', 'unvote'):
+            # vote/unvote aliases kept so old forms fail softly into ranked save UX
             if not rate_limit_allow('costume_vote', 60, 60):
                 error = 'Too many votes too quickly. Slow down a second.'
                 status = 429
             else:
-                ok, vote_error, voted_now = toggle_costume_vote(
-                    request.form.get('entry_id', ''),
-                    member.get('email'),
-                )
+                ranks = [
+                    request.form.get('rank_1', ''),
+                    request.form.get('rank_2', ''),
+                    request.form.get('rank_3', ''),
+                ]
+                ok, vote_error = set_costume_ballot(member.get('email'), ranks)
                 if not ok:
-                    error = vote_error or 'Could not update your vote.'
+                    error = vote_error or 'Could not update your rankings.'
                 else:
-                    # PRG so refresh does not re-POST
-                    return redirect(url_for('costumes'))
+                    return redirect(url_for('costumes', ranked=1))
         else:
             error = 'Unknown action.'
 
@@ -7652,11 +7764,17 @@ def costumes():
         success = 'Costume saved. Good luck!'
     elif request.args.get('removed') == '1' and not error:
         success = 'Costume entry removed.'
+    elif request.args.get('ranked') == '1' and not error:
+        success = 'Rankings saved.'
 
     viewer_email = (member or {}).get('email') if member else None
     entries = list_costume_entries_public(viewer_email)
     my_entry = find_costume_entry_for_email(viewer_email) if viewer_email else None
     my_photo_url = costume_photo_url((my_entry or {}).get('photo')) if my_entry else None
+    my_ballot_ids = get_costume_ballot(viewer_email) if viewer_email else []
+    entry_by_id = {e['id']: e for e in entries if e.get('id')}
+    my_ballot = [entry_by_id[eid] for eid in my_ballot_ids if eid in entry_by_id]
+    rankable_entries = [e for e in entries if not e.get('is_mine')]
     return render_template(
         'costumes.html',
         entries=entries,
@@ -7664,6 +7782,9 @@ def costumes():
         is_admin=is_admin,
         my_entry=my_entry,
         my_photo_url=my_photo_url,
+        my_ballot=my_ballot,
+        my_ballot_ids=my_ballot_ids,
+        rankable_entries=rankable_entries,
         error=error,
         success=success,
         display_name_max=COSTUME_DISPLAY_NAME_MAX,

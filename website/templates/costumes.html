@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Costume Contest • The Section</title>
+    <title>Costume voting • The Section</title>
     <meta name="csrf-token" content="{{ csrf_token }}">
     <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
 </head>
@@ -26,12 +26,12 @@
 
     <main class="max-w-3xl mx-auto px-6 pt-10 pb-20">
         <div class="text-center mb-10">
-            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-2">Contest</div>
-            <h1 class="text-4xl font-bold tracking-tight mb-3">Costume Contest</h1>
+            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-2">Costumes</div>
+            <h1 class="text-4xl font-bold tracking-tight mb-3">Costume voting</h1>
             <p class="text-zinc-400 max-w-xl mx-auto">
-                Members enter a costume, then vote for your favorites.
+                Members enter a costume, then rank up to three favorites (1st, 2nd, 3rd).
                 One entry per account — update anytime. Optional photo welcome.
-                Vote for as many looks as you love (just not your own).
+                You cannot rank your own costume. Ranked by 3–2–1 points.
             </p>
         </div>
 
@@ -50,7 +50,7 @@
         {% if member %}
         <section class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 mb-12">
             <h2 class="text-xl font-semibold mb-1">
-                {% if my_entry %}Update your costume{% else %}Enter the contest{% endif %}
+                {% if my_entry %}Update your costume{% else %}Enter a costume{% endif %}
             </h2>
             <p class="text-sm text-zinc-400 mb-6">
                 Show up as who you want to be. Display name is what voters see — not your email.
@@ -114,7 +114,7 @@
         <section class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 mb-12 text-center">
             <h2 class="text-xl font-semibold mb-2">Members only</h2>
             <p class="text-zinc-400 mb-6">
-                Sign in to enter a costume or vote. You can still browse the board below.
+                Sign in to enter a costume or rank favorites. You can still browse the board below.
             </p>
             <a href="{{ url_for('legacy_portal', next='/costumes') }}"
                class="inline-block px-6 py-3 rounded-2xl border-2 border-white bg-black text-white font-semibold
@@ -124,11 +124,63 @@
         </section>
         {% endif %}
 
+        {% if member and rankable_entries %}
+        <section class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 mb-12" id="your-rankings">
+            <h2 class="text-xl font-semibold mb-1">Your rankings</h2>
+            <p class="text-sm text-zinc-400 mb-6">
+                Pick up to three different costumes. Partial ballots are fine — leave a slot blank to clear it.
+            </p>
+            {% if my_ballot %}
+            <div class="mb-5 text-sm text-zinc-300">
+                <span class="text-zinc-500 uppercase tracking-wider text-xs mr-2">Current</span>
+                {% for pick in my_ballot %}
+                <span class="inline-flex items-center gap-1 mr-3 mb-1">
+                    <span class="text-zinc-500">{{ loop.index }}.</span>
+                    <span class="font-medium">{{ pick.display_name }}</span>
+                </span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            <form method="POST" action="{{ url_for('costumes') }}" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="rank">
+                {% set rank_labels = ['1st place', '2nd place', '3rd place'] %}
+                {% for label in rank_labels %}
+                {% set idx = loop.index %}
+                {% set selected = my_ballot_ids[idx - 1] if my_ballot_ids|length >= idx else '' %}
+                <div>
+                    <label for="rank_{{ idx }}" class="block text-sm text-zinc-300 mb-2">{{ label }}</label>
+                    <select id="rank_{{ idx }}"
+                            name="rank_{{ idx }}"
+                            class="w-full rounded-xl bg-zinc-950 border border-zinc-600 px-4 py-3 text-white focus:outline-none focus:border-white">
+                        <option value="">— none —</option>
+                        {% for entry in rankable_entries %}
+                        <option value="{{ entry.id }}" {% if selected == entry.id %}selected{% endif %}>
+                            {{ entry.display_name }} — {{ entry.costume }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endfor %}
+                <button type="submit"
+                        class="w-full py-3.5 rounded-2xl border-2 border-white bg-black text-white font-semibold
+                               hover:bg-white hover:text-black transition-colors">
+                    Save rankings
+                </button>
+            </form>
+        </section>
+        {% elif member and entries and not rankable_entries %}
+        <section class="bg-zinc-900 border border-zinc-700 rounded-3xl p-6 mb-12 text-center text-zinc-400 text-sm">
+            You're the only entry so far — rankings unlock when other costumes appear.
+        </section>
+        {% endif %}
+
         <section>
-            <div class="flex items-end justify-between gap-4 mb-6">
+            <div class="flex items-end justify-between gap-4 mb-2">
                 <h2 class="text-2xl font-bold">The board</h2>
                 <span class="text-sm text-zinc-500">{{ entries|length }} entr{{ 'y' if entries|length == 1 else 'ies' }}</span>
             </div>
+            <p class="text-xs text-zinc-500 mb-6">Ranked by 3–2–1 points</p>
 
             {% if not entries %}
             <div class="border border-dashed border-zinc-700 rounded-3xl p-10 text-center text-zinc-500">
@@ -155,37 +207,25 @@
                                 {% if entry.is_mine %}
                                 <span class="text-[10px] uppercase tracking-wider rounded-full bg-zinc-800 border border-zinc-600 px-2 py-0.5 text-zinc-300">You</span>
                                 {% endif %}
+                                {% if entry.my_rank %}
+                                <span class="text-[10px] uppercase tracking-wider rounded-full bg-emerald-950 border border-emerald-600/50 px-2 py-0.5 text-emerald-200">Your {{ entry.my_rank }}{{ 'st' if entry.my_rank == 1 else ('nd' if entry.my_rank == 2 else 'rd') }}</span>
+                                {% endif %}
                             </div>
                             <p class="text-zinc-300">{{ entry.costume }}</p>
                         </div>
                     </div>
                     <div class="flex items-center gap-3 shrink-0">
                         <div class="text-center min-w-[3.5rem]">
-                            <div class="text-2xl font-bold tabular-nums">{{ entry.vote_count }}</div>
-                            <div class="text-[10px] uppercase tracking-wider text-zinc-500">vote{{ '' if entry.vote_count == 1 else 's' }}</div>
+                            <div class="text-2xl font-bold tabular-nums">{{ entry.score }}</div>
+                            <div class="text-[10px] uppercase tracking-wider text-zinc-500">pt{{ '' if entry.score == 1 else 's' }}</div>
                         </div>
-                        {% if member and not entry.is_mine %}
-                        <form method="POST" action="{{ url_for('costumes') }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <input type="hidden" name="action" value="{% if entry.voted_by_me %}unvote{% else %}vote{% endif %}">
-                            <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                            <button type="submit"
-                                    class="px-4 py-2 rounded-xl border text-sm font-semibold transition-colors
-                                           {% if entry.voted_by_me %}
-                                           border-emerald-500 bg-emerald-950 text-emerald-200 hover:bg-emerald-900
-                                           {% else %}
-                                           border-zinc-500 bg-zinc-950 text-white hover:border-white
-                                           {% endif %}">
-                                {% if entry.voted_by_me %}Voted{% else %}Vote{% endif %}
-                            </button>
-                        </form>
-                        {% elif entry.is_mine %}
-                        <span class="text-xs text-zinc-500 px-2">Can't vote own</span>
+                        {% if entry.is_mine %}
+                        <span class="text-xs text-zinc-500 px-2">Can't rank own</span>
                         {% endif %}
                         {% if is_admin %}
                         <form method="POST"
                               action="{{ url_for('costumes') }}"
-                              onsubmit="return confirm('Remove this costume entry from the contest?');">
+                              onsubmit="return confirm('Remove this costume entry from the board?');">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <input type="hidden" name="action" value="admin_remove">
                             <input type="hidden" name="entry_id" value="{{ entry.id }}">
