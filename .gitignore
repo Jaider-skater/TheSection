@@ -18,3 +18,5 @@ data/mailing_list_log.json
 data/flyers/
 data/*.tmp.*
 *.pkpass
+data/costume_photos/*
+!data/costume_photos/.gitkeep

@@ -144,6 +144,10 @@ flyers_dir = os.getenv(
     'FLYERS_DIR',
     os.path.join(os.path.dirname(__file__), 'data', 'flyers'),
 )
+costume_photos_dir = os.getenv(
+    'COSTUME_PHOTOS_DIR',
+    os.path.join(os.path.dirname(__file__), 'data', 'costume_photos'),
+)
 INVITE_EXPIRY_DAYS = int(os.getenv('INVITE_EXPIRY_DAYS', '14'))
 PROTECTED_MAILING_LIST_EMAILS = frozenset({
     'hallieworkshop@gmail.com',
@@ -922,6 +926,9 @@ def save_members(members):
 
 COSTUME_DISPLAY_NAME_MAX = 80
 COSTUME_DESCRIPTION_MAX = 200
+COSTUME_PHOTO_MAX_BYTES = 8 * 1024 * 1024
+COSTUME_PHOTO_MAX_DIMENSION = 1200
+COSTUME_PHOTO_JPEG_QUALITY = 82
 
 
 def _empty_costumes_store():
@@ -966,6 +973,7 @@ def list_costume_entries_public(viewer_email=None):
             'id': entry.get('id') or '',
             'display_name': entry.get('display_name') or '',
             'costume': entry.get('costume') or '',
+            'photo_url': costume_photo_url(entry.get('photo')),
             'vote_count': len(votes),
             'voted_by_me': bool(viewer and viewer in votes),
             'is_mine': bool(viewer and viewer == owner),
@@ -1068,6 +1076,119 @@ def toggle_costume_vote(entry_id, voter_email):
         if not save_costumes(store):
             return False, 'Could not save your vote. Try again.', None
         return True, None, voted_now
+
+
+def costume_photo_is_safe_filename(filename):
+    """Same basename rules as event flyers (no path traversal)."""
+    return flyer_is_safe_filename(filename)
+
+
+def costume_photo_url(filename):
+    name = (filename or '').strip()
+    if name and costume_photo_is_safe_filename(name):
+        return f'/costume-photos/{name}'
+    return None
+
+
+def delete_costume_photo_file(filename):
+    if not costume_photo_is_safe_filename(filename):
+        return
+    path = os.path.join(costume_photos_dir, filename)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def set_costume_entry_photo(entry_id, photo_filename):
+    """Set or clear photo on an entry by id. Returns (ok, error_or_entry)."""
+    target_id = (entry_id or '').strip()
+    if not target_id:
+        return False, 'Missing costume entry.'
+    with costumes_lock:
+        store = load_costumes()
+        for entry in (store.get('entries') or []):
+            if entry.get('id') == target_id:
+                if photo_filename:
+                    entry['photo'] = photo_filename
+                else:
+                    entry.pop('photo', None)
+                entry['updated_at'] = datetime.now(timezone.utc).isoformat()
+                if not save_costumes(store):
+                    return False, 'Could not save photo. Try again.'
+                return True, entry
+        return False, 'That costume entry was not found.'
+
+
+def save_costume_photo(entry_id, file_storage):
+    """Validate, resize, and compress a costume photo to JPEG on disk.
+
+    Accepts jpeg/png/webp/gif. Animated GIFs use the first frame only.
+    Max upload 8MB; longest side capped at 1200px; saved as JPEG quality 82.
+    """
+    from PIL import Image
+
+    if not file_storage or not getattr(file_storage, 'filename', None):
+        return None
+    raw = file_storage.read()
+    if not raw:
+        return None
+    if len(raw) > COSTUME_PHOTO_MAX_BYTES:
+        raise ValueError('Photo must be 8MB or smaller.')
+    if not detect_image_extension(raw):
+        raise ValueError('Photo must be a JPG, PNG, WEBP, or GIF image.')
+
+    try:
+        img = Image.open(BytesIO(raw))
+        img.load()
+    except Exception as exc:
+        raise ValueError('Could not read that image. Try another file.') from exc
+
+    # Animated / multi-frame: keep first frame only.
+    try:
+        if getattr(img, 'n_frames', 1) > 1:
+            img.seek(0)
+            img = img.copy()
+    except Exception:
+        pass
+
+    if img.mode in ('RGBA', 'LA'):
+        background = Image.new('RGB', img.size, (24, 24, 27))
+        alpha = img.split()[-1]
+        background.paste(img.convert('RGBA'), mask=alpha)
+        img = background
+    elif img.mode == 'P':
+        img = img.convert('RGBA')
+        background = Image.new('RGB', img.size, (24, 24, 27))
+        background.paste(img, mask=img.split()[-1])
+        img = background
+    elif img.mode != 'RGB':
+        img = img.convert('RGB')
+
+    width, height = img.size
+    longest = max(width, height)
+    if longest > COSTUME_PHOTO_MAX_DIMENSION:
+        scale = COSTUME_PHOTO_MAX_DIMENSION / float(longest)
+        new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.LANCZOS)
+        img = img.resize(new_size, resample)
+
+    if not ensure_data_dir(os.path.join(costume_photos_dir, 'placeholder')):
+        raise ValueError('Could not save photo.')
+
+    safe_id = secure_filename(str(entry_id or '')) or secrets.token_hex(8)
+    filename = f'{safe_id}_{secrets.token_hex(6)}.jpg'
+    if not costume_photo_is_safe_filename(filename):
+        raise ValueError('Could not save photo.')
+    path = os.path.join(costume_photos_dir, filename)
+
+    buffer = BytesIO()
+    img.save(buffer, format='JPEG', quality=COSTUME_PHOTO_JPEG_QUALITY, optimize=True)
+    with open(path, 'wb') as handle:
+        handle.write(buffer.getvalue())
+    return filename
+
 
 
 def bootstrap_legacy_members():
@@ -6626,6 +6747,13 @@ def serve_event_flyer(filename):
     return send_from_directory(flyers_dir, filename)
 
 
+@app.route('/costume-photos/<filename>')
+def serve_costume_photo(filename):
+    if not costume_photo_is_safe_filename(filename):
+        abort(404)
+    return send_from_directory(costume_photos_dir, filename)
+
+
 @app.route('/admin/events', methods=['GET', 'POST'])
 def admin_events():
     if not require_admin():
@@ -7289,14 +7417,49 @@ def costumes():
                 error = 'Too many attempts. Please wait a few minutes.'
                 status = 429
             else:
-                ok, result = submit_costume_entry(
-                    member.get('email'),
-                    request.form.get('display_name', ''),
-                    request.form.get('costume', ''),
+                upload = request.files.get('photo')
+                has_upload = bool(upload and getattr(upload, 'filename', None))
+                remove_photo = (request.form.get('remove_photo') or '').strip().lower() in (
+                    '1', 'on', 'true', 'yes',
                 )
-                if ok:
-                    return redirect(url_for('costumes', saved=1))
-                error = result or 'Could not save your costume.'
+                if has_upload and not rate_limit_allow('costume_photo_upload', 10, 300):
+                    error = 'Too many photo uploads. Please wait a few minutes.'
+                    status = 429
+                else:
+                    ok, result = submit_costume_entry(
+                        member.get('email'),
+                        request.form.get('display_name', ''),
+                        request.form.get('costume', ''),
+                    )
+                    if ok:
+                        entry = result
+                        try:
+                            if has_upload:
+                                filename = save_costume_photo(entry.get('id'), upload)
+                                if filename:
+                                    old_photo = (entry.get('photo') or '').strip()
+                                    photo_ok, photo_result = set_costume_entry_photo(
+                                        entry.get('id'), filename,
+                                    )
+                                    if not photo_ok:
+                                        error = photo_result or 'Could not save photo.'
+                                    elif old_photo and old_photo != filename:
+                                        delete_costume_photo_file(old_photo)
+                            elif remove_photo and entry.get('photo'):
+                                old_photo = entry.get('photo')
+                                photo_ok, photo_result = set_costume_entry_photo(
+                                    entry.get('id'), None,
+                                )
+                                if not photo_ok:
+                                    error = photo_result or 'Could not remove photo.'
+                                else:
+                                    delete_costume_photo_file(old_photo)
+                        except ValueError as exc:
+                            error = str(exc)
+                        if not error:
+                            return redirect(url_for('costumes', saved=1))
+                    else:
+                        error = result or 'Could not save your costume.'
         elif action in ('vote', 'unvote'):
             if not rate_limit_allow('costume_vote', 60, 60):
                 error = 'Too many votes too quickly. Slow down a second.'
@@ -7320,16 +7483,19 @@ def costumes():
     viewer_email = (member or {}).get('email') if member else None
     entries = list_costume_entries_public(viewer_email)
     my_entry = find_costume_entry_for_email(viewer_email) if viewer_email else None
+    my_photo_url = costume_photo_url((my_entry or {}).get('photo')) if my_entry else None
     return render_template(
         'costumes.html',
         entries=entries,
         member=member,
         my_entry=my_entry,
+        my_photo_url=my_photo_url,
         error=error,
         success=success,
         display_name_max=COSTUME_DISPLAY_NAME_MAX,
         costume_max=COSTUME_DESCRIPTION_MAX,
     ), status
+
 
 
 if __name__ == '__main__':
