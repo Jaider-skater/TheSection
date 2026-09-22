@@ -754,6 +754,7 @@ def inject_security_template_globals():
         'csrf_field': f'<input type="hidden" name="csrf_token" value="{ensure_csrf_token()}">',
         'show_staff_nav': is_staff_user(),
         'member_logged_in': bool(get_logged_in_member()),
+        'costume_contest_open': is_costume_contest_open(),
     }
 
 
@@ -936,7 +937,7 @@ COSTUME_RANK_POINTS = (3, 2, 1)  # Borda: 1st=3, 2nd=2, 3rd=1
 
 
 def _empty_costumes_store():
-    return {'entries': [], 'ballots': {}}
+    return {'entries': [], 'ballots': {}, 'contest_open': True}
 
 
 def _migrate_costumes_store(store):
@@ -977,7 +978,15 @@ def _migrate_costumes_store(store):
                 break
         if cleaned_ranks:
             cleaned_ballots[key] = cleaned_ranks
-    return {'entries': cleaned_entries, 'ballots': cleaned_ballots}
+    # Default True so existing live stores stay visible until an admin hides the contest.
+    contest_open = store.get('contest_open')
+    if not isinstance(contest_open, bool):
+        contest_open = True
+    return {
+        'entries': cleaned_entries,
+        'ballots': cleaned_ballots,
+        'contest_open': contest_open,
+    }
 
 
 def load_costumes():
@@ -992,6 +1001,20 @@ def save_costumes(store):
         return False
     store = _migrate_costumes_store(store)
     return _locked_json_write(costumes_file, store)
+
+
+def is_costume_contest_open(store=None):
+    """Whether the public costume contest menu/page is visible."""
+    store = store if store is not None else load_costumes()
+    return bool(store.get('contest_open', True))
+
+
+def set_costume_contest_open(open_flag):
+    """Persist contest visibility. Returns True on success."""
+    with costumes_lock:
+        store = load_costumes()
+        store['contest_open'] = bool(open_flag)
+        return save_costumes(store)
 
 
 def costume_borda_scores(store=None):
@@ -6650,6 +6673,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'my_costume_score': my_costume_score,
         'display_name_max': COSTUME_DISPLAY_NAME_MAX,
         'costume_max': COSTUME_DESCRIPTION_MAX,
+        'show_costume_entry': is_costume_contest_open() or require_admin(),
     }
 
 
@@ -6887,6 +6911,8 @@ def legacy_portal():
         if action == 'costume_submit':
             if not member:
                 return redirect(url_for('legacy_portal'))
+            if not is_costume_contest_open() and not require_admin():
+                return redirect(url_for('legacy_portal'))
             if not rate_limit_allow('costume_submit', 20, 300):
                 return render_template(
                     'legacy_portal.html',
@@ -6927,6 +6953,8 @@ def legacy_portal():
 
         if action == 'costume_delete':
             if not member:
+                return redirect(url_for('legacy_portal'))
+            if not is_costume_contest_open() and not require_admin():
                 return redirect(url_for('legacy_portal'))
             if not rate_limit_allow('costume_delete_own', 20, 300):
                 return render_template(
@@ -7200,6 +7228,11 @@ def admin_dashboard():
     except Exception as e:
         print('Signup/invite count failed:', e)
         signup_count, invite_count = 0, 0
+    contest_flash = None
+    if request.args.get('contest') == 'shown':
+        contest_flash = 'Costume contest is now visible in the menu.'
+    elif request.args.get('contest') == 'hidden':
+        contest_flash = 'Costume contest is now hidden from the public menu.'
     return render_template(
         'admin.html',
         tickets=safe_tickets,
@@ -7208,7 +7241,20 @@ def admin_dashboard():
         unique_buyers=unique_buyers,
         signup_count=signup_count,
         invite_count=invite_count,
+        costume_contest_open=is_costume_contest_open(),
+        contest_flash=contest_flash,
     )
+
+
+@app.route('/admin/costume-contest', methods=['POST'])
+def admin_costume_contest_toggle():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    currently_open = is_costume_contest_open()
+    new_open = not currently_open
+    if not set_costume_contest_open(new_open):
+        return redirect(url_for('admin_dashboard', contest='error'))
+    return redirect(url_for('admin_dashboard', contest='shown' if new_open else 'hidden'))
 
 
 @app.route('/admin/tickets.csv')
@@ -7700,6 +7746,9 @@ def costumes():
     error = None
     success = None
     status = 200
+
+    if not is_costume_contest_open() and not is_admin:
+        return redirect(url_for('home'))
 
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip().lower()
