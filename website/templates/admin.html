@@ -3,38 +3,50 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ticket Admin • The Section</title>
+    <title>Admin Dashboard • The Section</title>
     <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-6">
     <div class="max-w-5xl mx-auto">
         {% include 'staff_nav.html' %}
         {% include 'admin_nav.html' %}
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-            <div>
-                <h1 class="text-3xl font-bold">Ticket Sales</h1>
-                <p class="text-zinc-400 mt-1">
-                    {{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}
-                    · {{ signup_count|default(0) }} signup{{ '' if signup_count|default(0) == 1 else 's' }} vs {{ invite_count|default(0) }} invite{{ '' if invite_count|default(0) == 1 else 's' }}
-                    · <span id="live-viewing">0</span>
-                    <span id="live-viewing-label">people viewing</span>
-                </p>
-            </div>
-            <div class="flex flex-wrap gap-3 items-center">
-                <a href="/admin/tickets.csv"
-                   class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm">
-                    Download CSV
-                </a>
-                <a href="/admin/tickets.json"
-                   download="thesection-tickets.json"
-                   class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
-                    Download JSON
-                </a>
-                <a href="/admin/mailing-list"
-                   class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-black font-semibold rounded-xl text-sm">
-                    Mailing Lists
-                </a>
-            </div>
+
+        <div class="mb-8">
+            <h1 class="text-3xl font-bold">Admin Dashboard</h1>
+            <p class="text-zinc-400 mt-1">
+                {{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}
+                · {{ signup_count|default(0) }} signup{{ '' if signup_count|default(0) == 1 else 's' }} vs {{ invite_count|default(0) }} invite{{ '' if invite_count|default(0) == 1 else 's' }}
+                · <span id="live-viewing">0</span>
+                <span id="live-viewing-label">people viewing</span>
+            </p>
+        </div>
+
+        <div class="flex flex-wrap gap-3 items-center mb-8">
+            <a href="/admin/tickets.csv"
+               class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm">
+                Download CSV
+            </a>
+            <a href="/admin/tickets.json"
+               download="thesection-tickets.json"
+               class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">
+                Download JSON
+            </a>
+            <a href="{{ url_for('admin_events') }}"
+               class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
+                Events
+            </a>
+            <a href="{{ url_for('admin_mailing_list') }}"
+               class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-black font-semibold rounded-xl text-sm">
+                Mailing Lists
+            </a>
+            <a href="{{ url_for('verify_ticket') }}"
+               class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
+                Door Scanner
+            </a>
+            <a href="{{ url_for('costumes') }}"
+               class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
+                Costume contest
+            </a>
         </div>
 
         {% if contest_flash %}
@@ -70,18 +82,10 @@
             </div>
         </div>
 
+        <h2 class="text-xl font-semibold mb-4">Ticket sales</h2>
+
         {% if tickets %}
-        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden">
-            <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-                <h2 class="font-semibold">Ticket JSON</h2>
-                <button onclick="copyJson()"
-                        class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs">
-                    Copy JSON
-                </button>
-            </div>
-            <pre id="ticket-json" class="p-4 text-xs text-emerald-300 overflow-x-auto max-h-80">{{ tickets_json }}</pre>
-        </div>
-        <div class="overflow-x-auto rounded-2xl border border-zinc-800">
+        <div class="mb-8 overflow-x-auto rounded-2xl border border-zinc-800">
             <table class="w-full text-left text-sm">
                 <thead class="bg-zinc-900 text-zinc-400">
                     <tr>
@@ -127,6 +131,17 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+
+        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                <h2 class="font-semibold">Ticket JSON</h2>
+                <button onclick="copyJson()"
+                        class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs">
+                    Copy JSON
+                </button>
+            </div>
+            <pre id="ticket-json" class="p-4 text-xs text-emerald-300 overflow-x-auto max-h-80">{{ tickets_json }}</pre>
         </div>
         {% else %}
         <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-10 text-center text-zinc-400">
