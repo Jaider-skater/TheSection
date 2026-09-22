@@ -182,6 +182,20 @@
                         {% elif entry.is_mine %}
                         <span class="text-xs text-zinc-500 px-2">Can't vote own</span>
                         {% endif %}
+                        {% if is_admin %}
+                        <form method="POST"
+                              action="{{ url_for('costumes') }}"
+                              onsubmit="return confirm('Remove this costume entry from the contest?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="admin_remove">
+                            <input type="hidden" name="entry_id" value="{{ entry.id }}">
+                            <button type="submit"
+                                    class="px-4 py-2 rounded-xl border border-red-500/50 bg-red-950 text-red-200 text-sm font-semibold
+                                           hover:bg-red-900 hover:border-red-400 transition-colors">
+                                Remove
+                            </button>
+                        </form>
+                        {% endif %}
                     </div>
                 </li>
                 {% endfor %}

@@ -398,6 +398,116 @@ class CostumeVotingTests(unittest.TestCase):
         self.assertFalse(os.path.isfile(os.path.join(thesection.costume_photos_dir, second)))
 
 
+    def _admin_client(self):
+        client = self.app.test_client()
+        token = client.get('/admin/login').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/login',
+            data={'password': thesection.admin_key, 'csrf_token': token},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        return client
+
+    def _seed_entry(self, entry_id='entry1', owner='owner@example.com', photo=None):
+        entry = {
+            'id': entry_id,
+            'owner_email': owner,
+            'display_name': 'Owner',
+            'costume': 'Witch',
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+            'votes': [],
+        }
+        if photo:
+            entry['photo'] = photo
+        thesection.save_costumes({'entries': [entry]})
+        return entry
+
+    def test_admin_can_remove_costume_entry(self):
+        self._seed_entry()
+        admin = self._admin_client()
+        page = admin.get('/costumes')
+        html = page.get_data(as_text=True)
+        self.assertIn('Remove', html)
+        self.assertIn('admin_remove', html)
+        token = page.headers.get('X-CSRF-Token')
+        resp = admin.post(
+            '/costumes',
+            data={
+                'action': 'admin_remove',
+                'entry_id': 'entry1',
+                'csrf_token': token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/costumes', resp.headers.get('Location', ''))
+        self.assertEqual(thesection.load_costumes().get('entries'), [])
+
+    def test_non_admin_member_cannot_remove_costume(self):
+        self._seed_entry()
+        member = self._login('member@example.com')
+        page = member.get('/costumes')
+        html = page.get_data(as_text=True)
+        self.assertNotIn('admin_remove', html)
+        self.assertNotIn('>Remove<', html.replace('Remove current photo', ''))
+        token = self._csrf(member)
+        resp = member.post(
+            '/costumes',
+            data={
+                'action': 'admin_remove',
+                'entry_id': 'entry1',
+                'csrf_token': token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(len(thesection.load_costumes()['entries']), 1)
+
+    def test_anonymous_cannot_remove_costume(self):
+        self._seed_entry()
+        client = self.app.test_client()
+        page = client.get('/costumes')
+        html = page.get_data(as_text=True)
+        self.assertNotIn('admin_remove', html)
+        token = page.headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/costumes',
+            data={
+                'action': 'admin_remove',
+                'entry_id': 'entry1',
+                'csrf_token': token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(len(thesection.load_costumes()['entries']), 1)
+
+    def test_admin_remove_deletes_photo_file(self):
+        os.makedirs(thesection.costume_photos_dir, exist_ok=True)
+        photo_name = 'entry1_abc123.jpg'
+        photo_path = os.path.join(thesection.costume_photos_dir, photo_name)
+        with open(photo_path, 'wb') as handle:
+            handle.write(self._tiny_jpeg_bytes())
+        self.assertTrue(os.path.isfile(photo_path))
+        self._seed_entry(photo=photo_name)
+
+        admin = self._admin_client()
+        token = self._csrf(admin)
+        resp = admin.post(
+            '/costumes',
+            data={
+                'action': 'admin_remove',
+                'entry_id': 'entry1',
+                'csrf_token': token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(thesection.load_costumes().get('entries'), [])
+        self.assertFalse(os.path.isfile(photo_path))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1121,6 +1121,32 @@ def set_costume_entry_photo(entry_id, photo_filename):
         return False, 'That costume entry was not found.'
 
 
+def delete_costume_entry(entry_id):
+    """Admin moderation: remove a costume entry and its photo. Returns (ok, error_or_removed)."""
+    target_id = (entry_id or '').strip()
+    if not target_id:
+        return False, 'Missing costume entry.'
+    removed = None
+    with costumes_lock:
+        store = load_costumes()
+        entries = store.get('entries') if isinstance(store.get('entries'), list) else []
+        kept = []
+        for entry in entries:
+            if entry.get('id') == target_id and removed is None:
+                removed = entry
+                continue
+            kept.append(entry)
+        if removed is None:
+            return False, 'That costume entry was not found.'
+        store['entries'] = kept
+        if not save_costumes(store):
+            return False, 'Could not remove that costume. Try again.'
+    photo = (removed.get('photo') or '').strip()
+    if photo:
+        delete_costume_photo_file(photo)
+    return True, removed
+
+
 def save_costume_photo(entry_id, file_storage):
     """Validate, resize, and compress a costume photo to JPEG on disk.
 
@@ -7404,15 +7430,28 @@ def legacy_member_invite_signup():
 def costumes():
     """Costume contest: members enter a costume and vote on favorites."""
     member = get_logged_in_member()
+    is_admin = require_admin()
     error = None
     success = None
     status = 200
 
     if request.method == 'POST':
-        if not member:
-            return redirect(url_for('legacy_portal', next='/costumes'))
         action = (request.form.get('action') or '').strip().lower()
-        if action == 'submit':
+        if action == 'admin_remove':
+            if not is_admin:
+                abort(403)
+            if not rate_limit_allow('costume_admin_remove', 30, 300):
+                error = 'Too many removals. Please wait a few minutes.'
+                status = 429
+            else:
+                ok, result = delete_costume_entry(request.form.get('entry_id', ''))
+                if not ok:
+                    error = result or 'Could not remove that costume.'
+                else:
+                    return redirect(url_for('costumes', removed=1))
+        elif not member:
+            return redirect(url_for('legacy_portal', next='/costumes'))
+        elif action == 'submit':
             if not rate_limit_allow('costume_submit', 20, 300):
                 error = 'Too many attempts. Please wait a few minutes.'
                 status = 429
@@ -7479,6 +7518,8 @@ def costumes():
 
     if request.args.get('saved') == '1' and not error:
         success = 'Costume saved. Good luck!'
+    elif request.args.get('removed') == '1' and not error:
+        success = 'Costume entry removed.'
 
     viewer_email = (member or {}).get('email') if member else None
     entries = list_costume_entries_public(viewer_email)
@@ -7488,6 +7529,7 @@ def costumes():
         'costumes.html',
         entries=entries,
         member=member,
+        is_admin=is_admin,
         my_entry=my_entry,
         my_photo_url=my_photo_url,
         error=error,
