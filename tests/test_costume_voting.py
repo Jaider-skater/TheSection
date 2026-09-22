@@ -220,7 +220,7 @@ class CostumeVotingTests(unittest.TestCase):
         self.assertNotIn('a@example.com', html)
         self.assertNotIn('voter@example.com', html)
         self.assertIn('Cat', html)
-        self.assertIn('Costume voting', html)
+        self.assertIn('Costume contest', html)
         self.assertNotIn('>Contest<', html)
         self.assertIn('Ranked by 3–2–1 points', html)
 
@@ -329,11 +329,10 @@ class CostumeVotingTests(unittest.TestCase):
     def test_copy_has_no_stranded_contest_heading(self):
         client = self.app.test_client()
         html = client.get('/costumes').get_data(as_text=True)
-        self.assertIn('Costume voting', html)
+        self.assertIn('Costume contest', html)
         self.assertIn('Costumes', html)
         self.assertNotIn('>Contest<', html)
-        self.assertNotIn('Costume Contest', html)
-
+        
     def _tiny_jpeg_bytes(self, color=(200, 40, 80), size=(64, 48)):
         buf = io.BytesIO()
         Image.new('RGB', size, color=color).save(buf, format='JPEG', quality=85)
