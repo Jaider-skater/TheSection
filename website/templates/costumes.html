@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Costume voting • The Section</title>
+    <title>Costume contest • The Section</title>
     <meta name="csrf-token" content="{{ csrf_token }}">
     <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
 </head>
@@ -26,13 +26,13 @@
 
     <main class="max-w-3xl mx-auto px-6 pt-10 pb-20">
         <div class="text-center mb-10">
-            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-2">Costumes</div>
-            <h1 class="text-4xl font-bold tracking-tight mb-3">Costume voting</h1>
-            <p class="text-zinc-400 max-w-xl mx-auto">
-                Members enter a costume, then rank up to three favorites (1st, 2nd, 3rd).
-                One entry per account — update anytime. Optional photo welcome.
-                You cannot rank your own costume. Ranked by 3–2–1 points.
-            </p>
+            <h1 class="text-4xl font-bold tracking-tight mb-4">Costume contest</h1>
+            <ul class="text-zinc-400 max-w-md mx-auto text-left list-disc pl-5 space-y-1">
+                <li>One entry per account (photo optional)</li>
+                <li>Rank up to three favorites — 1st, 2nd, 3rd</li>
+                <li>No ranking your own costume</li>
+                <li>Scored 3–2–1</li>
+            </ul>
         </div>
 
         {% if error %}
