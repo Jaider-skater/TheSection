@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Costume Contest • The Section</title>
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen">
+
+    <header class="bg-zinc-900">
+        <div class="max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
+            <div class="w-9"></div>
+            <div>
+                <a href="/">
+                    <img id="site-logo"
+                         src="{{ url_for('static', filename='images/TheSectionLogoDark.png') }}"
+                         alt="The Section Logo"
+                         class="h-20 w-auto">
+                </a>
+            </div>
+            {% include 'site_menu.html' %}
+        </div>
+    </header>
+
+    <main class="max-w-3xl mx-auto px-6 pt-10 pb-20">
+        <div class="text-center mb-10">
+            <div class="uppercase tracking-[2px] text-xs text-zinc-400 font-medium mb-2">Contest</div>
+            <h1 class="text-4xl font-bold tracking-tight mb-3">Costume Contest</h1>
+            <p class="text-zinc-400 max-w-xl mx-auto">
+                Members enter a costume, then vote for your favorites.
+                One entry per account — update anytime. Vote for as many looks as you love
+                (just not your own).
+            </p>
+        </div>
+
+        {% if error %}
+        <div class="mb-8 bg-red-900/40 border border-red-500/50 rounded-2xl p-5 text-red-200">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        {% if success %}
+        <div class="mb-8 bg-emerald-900/30 border border-emerald-500/40 rounded-2xl p-5 text-emerald-200">
+            {{ success }}
+        </div>
+        {% endif %}
+
+        {% if member %}
+        <section class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 mb-12">
+            <h2 class="text-xl font-semibold mb-1">
+                {% if my_entry %}Update your costume{% else %}Enter the contest{% endif %}
+            </h2>
+            <p class="text-sm text-zinc-400 mb-6">
+                Show up as who you want to be. Display name is what voters see — not your email.
+            </p>
+            <form method="POST" action="{{ url_for('costumes') }}" class="space-y-5">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="submit">
+                <div>
+                    <label for="display_name" class="block text-sm text-zinc-300 mb-2">Display name</label>
+                    <input type="text"
+                           id="display_name"
+                           name="display_name"
+                           maxlength="{{ display_name_max }}"
+                           required
+                           value="{{ my_entry.display_name if my_entry else '' }}"
+                           class="w-full rounded-xl bg-zinc-950 border border-zinc-600 px-4 py-3 text-white focus:outline-none focus:border-white"
+                           placeholder="Alex">
+                </div>
+                <div>
+                    <label for="costume" class="block text-sm text-zinc-300 mb-2">Costume</label>
+                    <input type="text"
+                           id="costume"
+                           name="costume"
+                           maxlength="{{ costume_max }}"
+                           required
+                           value="{{ my_entry.costume if my_entry else '' }}"
+                           class="w-full rounded-xl bg-zinc-950 border border-zinc-600 px-4 py-3 text-white focus:outline-none focus:border-white"
+                           placeholder="Vampire pirate">
+                </div>
+                <button type="submit"
+                        class="w-full py-3.5 rounded-2xl border-2 border-white bg-black text-white font-semibold
+                               hover:bg-white hover:text-black transition-colors">
+                    {% if my_entry %}Save changes{% else %}Submit costume{% endif %}
+                </button>
+            </form>
+        </section>
+        {% else %}
+        <section class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 mb-12 text-center">
+            <h2 class="text-xl font-semibold mb-2">Members only</h2>
+            <p class="text-zinc-400 mb-6">
+                Sign in to enter a costume or vote. You can still browse the board below.
+            </p>
+            <a href="{{ url_for('legacy_portal', next='/costumes') }}"
+               class="inline-block px-6 py-3 rounded-2xl border-2 border-white bg-black text-white font-semibold
+                      hover:bg-white hover:text-black transition-colors">
+                Sign in at Member Portal
+            </a>
+        </section>
+        {% endif %}
+
+        <section>
+            <div class="flex items-end justify-between gap-4 mb-6">
+                <h2 class="text-2xl font-bold">The board</h2>
+                <span class="text-sm text-zinc-500">{{ entries|length }} entr{{ 'y' if entries|length == 1 else 'ies' }}</span>
+            </div>
+
+            {% if not entries %}
+            <div class="border border-dashed border-zinc-700 rounded-3xl p-10 text-center text-zinc-500">
+                No costumes yet. Be the first.
+            </div>
+            {% else %}
+            <ul class="space-y-4">
+                {% for entry in entries %}
+                <li class="bg-zinc-900 border border-zinc-700 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2 flex-wrap mb-1">
+                            <span class="font-semibold text-lg truncate">{{ entry.display_name }}</span>
+                            {% if entry.is_mine %}
+                            <span class="text-[10px] uppercase tracking-wider rounded-full bg-zinc-800 border border-zinc-600 px-2 py-0.5 text-zinc-300">You</span>
+                            {% endif %}
+                        </div>
+                        <p class="text-zinc-300">{{ entry.costume }}</p>
+                    </div>
+                    <div class="flex items-center gap-3 shrink-0">
+                        <div class="text-center min-w-[3.5rem]">
+                            <div class="text-2xl font-bold tabular-nums">{{ entry.vote_count }}</div>
+                            <div class="text-[10px] uppercase tracking-wider text-zinc-500">vote{{ '' if entry.vote_count == 1 else 's' }}</div>
+                        </div>
+                        {% if member and not entry.is_mine %}
+                        <form method="POST" action="{{ url_for('costumes') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="{% if entry.voted_by_me %}unvote{% else %}vote{% endif %}">
+                            <input type="hidden" name="entry_id" value="{{ entry.id }}">
+                            <button type="submit"
+                                    class="px-4 py-2 rounded-xl border text-sm font-semibold transition-colors
+                                           {% if entry.voted_by_me %}
+                                           border-emerald-500 bg-emerald-950 text-emerald-200 hover:bg-emerald-900
+                                           {% else %}
+                                           border-zinc-500 bg-zinc-950 text-white hover:border-white
+                                           {% endif %}">
+                                {% if entry.voted_by_me %}Voted{% else %}Vote{% endif %}
+                            </button>
+                        </form>
+                        {% elif entry.is_mine %}
+                        <span class="text-xs text-zinc-500 px-2">Can't vote own</span>
+                        {% endif %}
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

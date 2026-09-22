@@ -132,6 +132,10 @@ exclusive_holds_file = os.getenv(
     'EXCLUSIVE_HOLDS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'exclusive_holds.json'),
 )
+costumes_file = os.getenv(
+    'COSTUMES_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'costumes.json'),
+)
 events_file = os.getenv(
     'EVENTS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'events.json'),
@@ -203,6 +207,7 @@ full_list_lock = threading.Lock()
 mailing_list_log_lock = threading.Lock()
 _mailing_send_lock = threading.Lock()
 exclusive_holds_lock = threading.Lock()
+costumes_lock = threading.Lock()
 _presence_lock = threading.Lock()
 _presence_seen = {}
 PRESENCE_TTL_SECONDS = 90
@@ -913,6 +918,156 @@ def save_members(members):
     if not ensure_data_dir(members_file):
         return False
     return _locked_json_write(members_file, members)
+
+
+COSTUME_DISPLAY_NAME_MAX = 80
+COSTUME_DESCRIPTION_MAX = 200
+
+
+def _empty_costumes_store():
+    return {'entries': []}
+
+
+def load_costumes():
+    if not ensure_data_dir(costumes_file):
+        return _empty_costumes_store()
+    data = _locked_json_read(costumes_file, _empty_costumes_store())
+    if isinstance(data, dict) and isinstance(data.get('entries'), list):
+        return data
+    if isinstance(data, list):
+        return {'entries': data}
+    return _empty_costumes_store()
+
+
+def save_costumes(store):
+    if not ensure_data_dir(costumes_file):
+        return False
+    if not isinstance(store, dict):
+        store = {'entries': list(store) if isinstance(store, list) else []}
+    if not isinstance(store.get('entries'), list):
+        store = {'entries': []}
+    return _locked_json_write(costumes_file, store)
+
+
+def list_costume_entries_public(viewer_email=None):
+    """Public-safe costume listings: no emails. Sorted by votes desc, then newest."""
+    viewer = (viewer_email or '').strip().lower()
+    entries = list((load_costumes().get('entries') or []))
+    # Sort by votes desc, then updated_at desc (ISO-8601 lexicographic).
+    entries.sort(key=lambda e: (
+        len(e.get('votes') if isinstance(e.get('votes'), list) else []),
+        e.get('updated_at') or e.get('created_at') or '',
+    ), reverse=True)
+    public = []
+    for entry in entries:
+        votes = entry.get('votes') if isinstance(entry.get('votes'), list) else []
+        owner = (entry.get('owner_email') or '').strip().lower()
+        public.append({
+            'id': entry.get('id') or '',
+            'display_name': entry.get('display_name') or '',
+            'costume': entry.get('costume') or '',
+            'vote_count': len(votes),
+            'voted_by_me': bool(viewer and viewer in votes),
+            'is_mine': bool(viewer and viewer == owner),
+            'created_at': entry.get('created_at') or '',
+            'updated_at': entry.get('updated_at') or '',
+        })
+    return public
+
+
+def find_costume_entry_for_email(email):
+    target = (email or '').strip().lower()
+    if not target:
+        return None
+    for entry in (load_costumes().get('entries') or []):
+        if (entry.get('owner_email') or '').strip().lower() == target:
+            return entry
+    return None
+
+
+def submit_costume_entry(owner_email, display_name, costume):
+    """Create or update the member's single costume entry. Returns (ok, error_or_entry)."""
+    email = (owner_email or '').strip().lower()
+    name = ' '.join((display_name or '').split())
+    desc = ' '.join((costume or '').split())
+    if not email:
+        return False, 'You must be signed in.'
+    if not name:
+        return False, 'Enter a display name.'
+    if not desc:
+        return False, 'Describe your costume.'
+    if len(name) > COSTUME_DISPLAY_NAME_MAX:
+        return False, f'Display name must be {COSTUME_DISPLAY_NAME_MAX} characters or fewer.'
+    if len(desc) > COSTUME_DESCRIPTION_MAX:
+        return False, f'Costume description must be {COSTUME_DESCRIPTION_MAX} characters or fewer.'
+    now = datetime.now(timezone.utc).isoformat()
+    with costumes_lock:
+        store = load_costumes()
+        entries = store.setdefault('entries', [])
+        existing = None
+        for entry in entries:
+            if (entry.get('owner_email') or '').strip().lower() == email:
+                existing = entry
+                break
+        if existing:
+            existing['display_name'] = name
+            existing['costume'] = desc
+            existing['updated_at'] = now
+            if not isinstance(existing.get('votes'), list):
+                existing['votes'] = []
+            if not existing.get('id'):
+                existing['id'] = secrets.token_hex(16)
+            saved = existing
+        else:
+            saved = {
+                'id': secrets.token_hex(16),
+                'owner_email': email,
+                'display_name': name,
+                'costume': desc,
+                'created_at': now,
+                'updated_at': now,
+                'votes': [],
+            }
+            entries.append(saved)
+        if not save_costumes(store):
+            return False, 'Could not save your costume. Try again.'
+        return True, saved
+
+
+def toggle_costume_vote(entry_id, voter_email):
+    """Toggle a vote on a costume. Returns (ok, error_message, voted_now)."""
+    email = (voter_email or '').strip().lower()
+    target_id = (entry_id or '').strip()
+    if not email:
+        return False, 'You must be signed in to vote.', None
+    if not target_id:
+        return False, 'Missing costume entry.', None
+    with costumes_lock:
+        store = load_costumes()
+        entries = store.get('entries') or []
+        target = None
+        for entry in entries:
+            if entry.get('id') == target_id:
+                target = entry
+                break
+        if not target:
+            return False, 'That costume entry was not found.', None
+        owner = (target.get('owner_email') or '').strip().lower()
+        if owner == email:
+            return False, 'You cannot vote for your own costume.', None
+        votes = target.get('votes')
+        if not isinstance(votes, list):
+            votes = []
+            target['votes'] = votes
+        if email in votes:
+            target['votes'] = [v for v in votes if v != email]
+            voted_now = False
+        else:
+            votes.append(email)
+            voted_now = True
+        if not save_costumes(store):
+            return False, 'Could not save your vote. Try again.', None
+        return True, None, voted_now
 
 
 def bootstrap_legacy_members():
@@ -7114,6 +7269,67 @@ def legacy_member_invite_signup():
         member_discount_percent=int(member_discount * 100),
         returning_guest_discount_percent=int(returning_guest_discount * 100),
     )
+
+
+
+@app.route('/costumes', methods=['GET', 'POST'])
+def costumes():
+    """Costume contest: members enter a costume and vote on favorites."""
+    member = get_logged_in_member()
+    error = None
+    success = None
+    status = 200
+
+    if request.method == 'POST':
+        if not member:
+            return redirect(url_for('legacy_portal', next='/costumes'))
+        action = (request.form.get('action') or '').strip().lower()
+        if action == 'submit':
+            if not rate_limit_allow('costume_submit', 20, 300):
+                error = 'Too many attempts. Please wait a few minutes.'
+                status = 429
+            else:
+                ok, result = submit_costume_entry(
+                    member.get('email'),
+                    request.form.get('display_name', ''),
+                    request.form.get('costume', ''),
+                )
+                if ok:
+                    return redirect(url_for('costumes', saved=1))
+                error = result or 'Could not save your costume.'
+        elif action in ('vote', 'unvote'):
+            if not rate_limit_allow('costume_vote', 60, 60):
+                error = 'Too many votes too quickly. Slow down a second.'
+                status = 429
+            else:
+                ok, vote_error, voted_now = toggle_costume_vote(
+                    request.form.get('entry_id', ''),
+                    member.get('email'),
+                )
+                if not ok:
+                    error = vote_error or 'Could not update your vote.'
+                else:
+                    # PRG so refresh does not re-POST
+                    return redirect(url_for('costumes'))
+        else:
+            error = 'Unknown action.'
+
+    if request.args.get('saved') == '1' and not error:
+        success = 'Costume saved. Good luck!'
+
+    viewer_email = (member or {}).get('email') if member else None
+    entries = list_costume_entries_public(viewer_email)
+    my_entry = find_costume_entry_for_email(viewer_email) if viewer_email else None
+    return render_template(
+        'costumes.html',
+        entries=entries,
+        member=member,
+        my_entry=my_entry,
+        error=error,
+        success=success,
+        display_name_max=COSTUME_DISPLAY_NAME_MAX,
+        costume_max=COSTUME_DESCRIPTION_MAX,
+    ), status
 
 
 if __name__ == '__main__':

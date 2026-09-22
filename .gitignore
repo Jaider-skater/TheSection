@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 .idea/
 data/tickets.json
+data/costumes.json
 data/legacy_members.json
 data/scanner_settings.json
 data/events.json
