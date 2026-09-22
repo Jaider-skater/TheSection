@@ -1147,6 +1147,81 @@ def delete_costume_entry(entry_id):
     return True, removed
 
 
+def delete_own_costume_entry(owner_email):
+    """Member deletes their own costume entry (by session email). Returns (ok, error_or_removed)."""
+    email = (owner_email or '').strip().lower()
+    if not email:
+        return False, 'You must be signed in.'
+    removed = None
+    with costumes_lock:
+        store = load_costumes()
+        entries = store.get('entries') if isinstance(store.get('entries'), list) else []
+        kept = []
+        for entry in entries:
+            owner = (entry.get('owner_email') or '').strip().lower()
+            if owner == email and removed is None:
+                removed = entry
+                continue
+            kept.append(entry)
+        if removed is None:
+            return False, 'You do not have a costume entry.'
+        store['entries'] = kept
+        if not save_costumes(store):
+            return False, 'Could not delete your costume. Try again.'
+    photo = (removed.get('photo') or '').strip()
+    if photo:
+        delete_costume_photo_file(photo)
+    return True, removed
+
+
+def apply_costume_photo_upload_or_remove(entry, upload=None, remove_photo=False):
+    """Apply optional photo upload or removal to an existing entry.
+
+    Shared by /costumes and the member portal so validation stays in sync.
+    Returns (ok, error_message_or_None).
+    """
+    if not entry or not entry.get('id'):
+        return False, 'Missing costume entry.'
+    has_upload = bool(upload and getattr(upload, 'filename', None))
+    if has_upload:
+        try:
+            filename = save_costume_photo(entry.get('id'), upload)
+        except ValueError as exc:
+            return False, str(exc)
+        if filename:
+            old_photo = (entry.get('photo') or '').strip()
+            photo_ok, photo_result = set_costume_entry_photo(entry.get('id'), filename)
+            if not photo_ok:
+                return False, photo_result or 'Could not save photo.'
+            if old_photo and old_photo != filename:
+                delete_costume_photo_file(old_photo)
+        return True, None
+    if remove_photo and entry.get('photo'):
+        old_photo = entry.get('photo')
+        photo_ok, photo_result = set_costume_entry_photo(entry.get('id'), None)
+        if not photo_ok:
+            return False, photo_result or 'Could not remove photo.'
+        delete_costume_photo_file(old_photo)
+    return True, None
+
+
+def submit_costume_entry_with_photo(
+    owner_email, display_name, costume, upload=None, remove_photo=False,
+):
+    """Create/update costume text then apply photo changes. Returns (ok, error_or_entry)."""
+    ok, result = submit_costume_entry(owner_email, display_name, costume)
+    if not ok:
+        return False, result
+    entry = result
+    photo_ok, photo_error = apply_costume_photo_upload_or_remove(
+        entry, upload=upload, remove_photo=remove_photo,
+    )
+    if not photo_ok:
+        return False, photo_error
+    refreshed = find_costume_entry_for_email(owner_email) or entry
+    return True, refreshed
+
+
 def save_costume_photo(entry_id, file_storage):
     """Validate, resize, and compress a costume photo to JPEG on disk.
 
@@ -6434,6 +6509,12 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         logged_in = get_logged_in_member() or logged_in
     discount_eligible = member_discount_eligible(logged_in) if logged_in else False
     has_returning = member_has_returning_guest_discount(logged_in) if logged_in else False
+    my_costume_entry = None
+    my_costume_photo_url = None
+    if logged_in:
+        my_costume_entry = find_costume_entry_for_email(logged_in.get('email'))
+        if my_costume_entry:
+            my_costume_photo_url = costume_photo_url(my_costume_entry.get('photo'))
     return {
         'error': error,
         'success': success,
@@ -6455,6 +6536,10 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'next_url': next_url,
         'active_tab': active_tab,
         'show_scanner_link': is_scanner_admin_member(),
+        'my_costume_entry': my_costume_entry,
+        'my_costume_photo_url': my_costume_photo_url,
+        'display_name_max': COSTUME_DISPLAY_NAME_MAX,
+        'costume_max': COSTUME_DESCRIPTION_MAX,
     }
 
 
@@ -6689,7 +6774,78 @@ def legacy_portal():
             remove_saved_ticket_for_member(member['email'], ticket_id)
             return redirect(url_for('legacy_portal'))
 
-    return render_template('legacy_portal.html', **portal_context(next_url=next_url))
+        if action == 'costume_submit':
+            if not member:
+                return redirect(url_for('legacy_portal'))
+            if not rate_limit_allow('costume_submit', 20, 300):
+                return render_template(
+                    'legacy_portal.html',
+                    **portal_context(
+                        error='Too many attempts. Please wait a few minutes.',
+                        next_url=next_url,
+                    ),
+                ), 429
+            upload = request.files.get('photo')
+            has_upload = bool(upload and getattr(upload, 'filename', None))
+            remove_photo = (request.form.get('remove_photo') or '').strip().lower() in (
+                '1', 'on', 'true', 'yes',
+            )
+            if has_upload and not rate_limit_allow('costume_photo_upload', 10, 300):
+                return render_template(
+                    'legacy_portal.html',
+                    **portal_context(
+                        error='Too many photo uploads. Please wait a few minutes.',
+                        next_url=next_url,
+                    ),
+                ), 429
+            ok, result = submit_costume_entry_with_photo(
+                member.get('email'),
+                request.form.get('display_name', ''),
+                request.form.get('costume', ''),
+                upload=upload if has_upload else None,
+                remove_photo=remove_photo,
+            )
+            if not ok:
+                return render_template(
+                    'legacy_portal.html',
+                    **portal_context(
+                        error=result or 'Could not save your costume.',
+                        next_url=next_url,
+                    ),
+                )
+            return redirect(url_for('legacy_portal', costume_saved=1))
+
+        if action == 'costume_delete':
+            if not member:
+                return redirect(url_for('legacy_portal'))
+            if not rate_limit_allow('costume_delete_own', 20, 300):
+                return render_template(
+                    'legacy_portal.html',
+                    **portal_context(
+                        error='Too many attempts. Please wait a few minutes.',
+                        next_url=next_url,
+                    ),
+                ), 429
+            ok, result = delete_own_costume_entry(member.get('email'))
+            if not ok:
+                return render_template(
+                    'legacy_portal.html',
+                    **portal_context(
+                        error=result or 'Could not delete your costume.',
+                        next_url=next_url,
+                    ),
+                )
+            return redirect(url_for('legacy_portal', costume_deleted=1))
+
+    success = None
+    if request.args.get('costume_saved') == '1':
+        success = 'Costume saved. Good luck!'
+    elif request.args.get('costume_deleted') == '1':
+        success = 'Costume entry deleted.'
+    return render_template(
+        'legacy_portal.html',
+        **portal_context(next_url=next_url, success=success),
+    )
 
 
 @app.route('/admin/login', methods=['GET', 'POST'])
@@ -7465,40 +7621,16 @@ def costumes():
                     error = 'Too many photo uploads. Please wait a few minutes.'
                     status = 429
                 else:
-                    ok, result = submit_costume_entry(
+                    ok, result = submit_costume_entry_with_photo(
                         member.get('email'),
                         request.form.get('display_name', ''),
                         request.form.get('costume', ''),
+                        upload=upload if has_upload else None,
+                        remove_photo=remove_photo,
                     )
                     if ok:
-                        entry = result
-                        try:
-                            if has_upload:
-                                filename = save_costume_photo(entry.get('id'), upload)
-                                if filename:
-                                    old_photo = (entry.get('photo') or '').strip()
-                                    photo_ok, photo_result = set_costume_entry_photo(
-                                        entry.get('id'), filename,
-                                    )
-                                    if not photo_ok:
-                                        error = photo_result or 'Could not save photo.'
-                                    elif old_photo and old_photo != filename:
-                                        delete_costume_photo_file(old_photo)
-                            elif remove_photo and entry.get('photo'):
-                                old_photo = entry.get('photo')
-                                photo_ok, photo_result = set_costume_entry_photo(
-                                    entry.get('id'), None,
-                                )
-                                if not photo_ok:
-                                    error = photo_result or 'Could not remove photo.'
-                                else:
-                                    delete_costume_photo_file(old_photo)
-                        except ValueError as exc:
-                            error = str(exc)
-                        if not error:
-                            return redirect(url_for('costumes', saved=1))
-                    else:
-                        error = result or 'Could not save your costume.'
+                        return redirect(url_for('costumes', saved=1))
+                    error = result or 'Could not save your costume.'
         elif action in ('vote', 'unvote'):
             if not rate_limit_allow('costume_vote', 60, 60):
                 error = 'Too many votes too quickly. Slow down a second.'
