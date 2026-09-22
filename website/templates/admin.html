@@ -36,6 +36,39 @@
             </div>
         </div>
 
+        {% if contest_flash %}
+        <div class="mb-6 rounded-xl border border-emerald-700/60 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
+            {{ contest_flash }}
+        </div>
+        {% endif %}
+
+        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+                <h2 class="font-semibold">Costume contest</h2>
+                <p class="text-sm text-zinc-400 mt-1">
+                    Menu status:
+                    {% if costume_contest_open %}
+                    <span class="text-emerald-400 font-medium">Visible</span>
+                    {% else %}
+                    <span class="text-zinc-300 font-medium">Hidden</span>
+                    {% endif %}
+                </p>
+            </div>
+            <div class="flex flex-wrap gap-3 items-center">
+                <a href="{{ url_for('costumes') }}"
+                   class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
+                    Open contest page
+                </a>
+                <form method="POST" action="{{ url_for('admin_costume_contest_toggle') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 {% if costume_contest_open %}bg-zinc-100 hover:bg-white text-black{% else %}bg-emerald-500 hover:bg-emerald-400 text-black{% endif %} font-semibold rounded-xl text-sm">
+                        {% if costume_contest_open %}Hide costume contest{% else %}Show costume contest{% endif %}
+                    </button>
+                </form>
+            </div>
+        </div>
+
         {% if tickets %}
         <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden">
             <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">

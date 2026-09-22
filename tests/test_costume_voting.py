@@ -330,7 +330,7 @@ class CostumeVotingTests(unittest.TestCase):
         client = self.app.test_client()
         html = client.get('/costumes').get_data(as_text=True)
         self.assertIn('Costume contest', html)
-        self.assertIn('Costumes', html)
+        self.assertIn('The board', html)
         self.assertNotIn('>Contest<', html)
         
     def _tiny_jpeg_bytes(self, color=(200, 40, 80), size=(64, 48)):
@@ -559,6 +559,193 @@ class CostumeVotingTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(thesection.load_costumes().get('entries'), [])
         self.assertFalse(os.path.isfile(photo_path))
+
+
+
+
+class CostumeContestVisibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = self.tmp.name
+        self.patches = [
+            mock.patch.object(thesection, 'tickets_file', os.path.join(root, 'tickets.json')),
+            mock.patch.object(thesection, 'members_file', os.path.join(root, 'members.json')),
+            mock.patch.object(thesection, 'invites_file', os.path.join(root, 'invites.json')),
+            mock.patch.object(thesection, 'exclusive_holds_file', os.path.join(root, 'holds.json')),
+            mock.patch.object(thesection, 'events_file', os.path.join(root, 'events.json')),
+            mock.patch.object(thesection, 'full_mailing_list_file', os.path.join(root, 'full.json')),
+            mock.patch.object(thesection, 'costume_photos_dir', os.path.join(root, 'costume_photos')),
+            mock.patch.object(thesection, 'scanner_settings_file', os.path.join(root, 'scanner.json')),
+            mock.patch.object(thesection, 'costumes_file', os.path.join(root, 'costumes.json')),
+            mock.patch.object(thesection, 'get_display_timezone', return_value=timezone.utc),
+        ]
+        for patcher in self.patches:
+            patcher.start()
+        thesection.save_tickets([])
+        thesection.save_members([])
+        thesection.save_costumes({'entries': [], 'ballots': {}})
+        thesection._rate_limit_buckets.clear()
+        self.app = thesection.app
+        self.app.config['TESTING'] = True
+
+    def tearDown(self):
+        for patcher in self.patches:
+            patcher.stop()
+        self.tmp.cleanup()
+
+    def _admin_client(self):
+        client = self.app.test_client()
+        token = client.get('/admin/login').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/admin/login',
+            data={'password': thesection.admin_key, 'csrf_token': token},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        return client
+
+    def _login(self, email='guest@example.com', password='password123'):
+        members = thesection.load_members()
+        if not any(m.get('email') == email for m in members):
+            members.append({
+                'email': email,
+                'password_hash': thesection.hash_password(password),
+                'saved_tickets': [],
+                'discount_code': 'TEST-ABCD',
+                'joined_at': datetime.now(timezone.utc).isoformat(),
+            })
+            thesection.save_members(members)
+        client = self.app.test_client()
+        token = client.get('/legacy').headers.get('X-CSRF-Token')
+        resp = client.post(
+            '/legacy',
+            data={
+                'action': 'login',
+                'email': email,
+                'password': password,
+                'csrf_token': token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        return client
+
+    def test_migrated_store_defaults_contest_open(self):
+        store = thesection._migrate_costumes_store({'entries': [], 'ballots': {}})
+        self.assertTrue(store['contest_open'])
+        self.assertTrue(thesection.is_costume_contest_open())
+        empty = thesection._empty_costumes_store()
+        self.assertTrue(empty['contest_open'])
+
+    def test_menu_and_page_accessible_when_open(self):
+        client = self.app.test_client()
+        page = client.get('/costumes')
+        self.assertEqual(page.status_code, 200)
+        home = client.get('/')
+        self.assertIn('Costume contest', home.get_data(as_text=True))
+        with self.app.test_request_context('/'):
+            thesection.app.preprocess_request()
+            injected = thesection.inject_security_template_globals()
+            self.assertTrue(injected['costume_contest_open'])
+
+    def test_closed_redirects_non_admin_and_hides_menu(self):
+        self.assertTrue(thesection.set_costume_contest_open(False))
+        self.assertFalse(thesection.is_costume_contest_open())
+
+        guest = self.app.test_client()
+        resp = guest.get('/costumes', follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers.get('Location', '').endswith('/'))
+
+        post = guest.post(
+            '/costumes',
+            data={
+                'action': 'submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire',
+                'csrf_token': guest.get('/').headers.get('X-CSRF-Token'),
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(post.status_code, 302)
+        self.assertTrue(post.headers.get('Location', '').endswith('/'))
+
+        member = self._login()
+        member_resp = member.get('/costumes', follow_redirects=False)
+        self.assertEqual(member_resp.status_code, 302)
+
+        home = guest.get('/')
+        self.assertNotIn('Costume contest', home.get_data(as_text=True))
+        with self.app.test_request_context('/'):
+            thesection.app.preprocess_request()
+            injected = thesection.inject_security_template_globals()
+            self.assertFalse(injected['costume_contest_open'])
+
+    def test_admin_can_toggle_and_access_when_closed(self):
+        admin = self._admin_client()
+        dash = admin.get('/admin')
+        html = dash.get_data(as_text=True)
+        self.assertIn('Costume contest', html)
+        self.assertIn('Visible', html)
+        self.assertIn('Hide costume contest', html)
+        self.assertIn('/admin/costume-contest', html)
+        self.assertIn('Open contest page', html)
+
+        token = dash.headers.get('X-CSRF-Token')
+        hide = admin.post(
+            '/admin/costume-contest',
+            data={'csrf_token': token},
+            follow_redirects=False,
+        )
+        self.assertEqual(hide.status_code, 302)
+        self.assertIn('contest=hidden', hide.headers.get('Location', ''))
+        self.assertFalse(thesection.is_costume_contest_open())
+
+        closed_page = admin.get('/costumes')
+        self.assertEqual(closed_page.status_code, 200)
+
+        dash2 = admin.get('/admin?contest=hidden')
+        html2 = dash2.get_data(as_text=True)
+        self.assertIn('Hidden', html2)
+        self.assertIn('Show costume contest', html2)
+        self.assertIn('now hidden', html2)
+
+        token2 = dash2.headers.get('X-CSRF-Token')
+        show = admin.post(
+            '/admin/costume-contest',
+            data={'csrf_token': token2},
+            follow_redirects=False,
+        )
+        self.assertEqual(show.status_code, 302)
+        self.assertIn('contest=shown', show.headers.get('Location', ''))
+        self.assertTrue(thesection.is_costume_contest_open())
+
+    def test_portal_hides_costume_when_closed(self):
+        member = self._login()
+        open_page = member.get('/legacy')
+        self.assertIn('id="costume-entry"', open_page.get_data(as_text=True))
+        self.assertIn('View board', open_page.get_data(as_text=True))
+
+        thesection.set_costume_contest_open(False)
+        closed_page = member.get('/legacy')
+        html = closed_page.get_data(as_text=True)
+        self.assertNotIn('id="costume-entry"', html)
+        self.assertNotIn('View board', html)
+
+        token = closed_page.headers.get('X-CSRF-Token')
+        resp = member.post(
+            '/legacy',
+            data={
+                'action': 'costume_submit',
+                'display_name': 'Alex',
+                'costume': 'Vampire',
+                'csrf_token': token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(thesection.load_costumes().get('entries'), [])
+
 
 
 if __name__ == '__main__':
