@@ -688,6 +688,7 @@ class CostumeContestVisibilityTests(unittest.TestCase):
         self.assertIn('Costume contest', html)
         self.assertIn('Visible', html)
         self.assertIn('Hide costume contest', html)
+        self.assertIn('Hide contest', html)
         self.assertIn('/admin/costume-contest', html)
         self.assertIn('Open contest page', html)
 
@@ -719,6 +720,79 @@ class CostumeContestVisibilityTests(unittest.TestCase):
         self.assertEqual(show.status_code, 302)
         self.assertIn('contest=shown', show.headers.get('Location', ''))
         self.assertTrue(thesection.is_costume_contest_open())
+
+
+    def test_admin_nav_and_menu_toggle_when_closed(self):
+        """Staff menus always link to costumes and expose show/hide, even when closed."""
+        thesection.set_costume_contest_open(False)
+        admin = self._admin_client()
+
+        dash = admin.get('/admin')
+        html = dash.get_data(as_text=True)
+        self.assertIn('Show contest', html)
+        self.assertIn('Show costume contest', html)
+        self.assertIn('/costumes', html)
+        self.assertIn('Hidden', html)
+
+        events = admin.get('/admin/events')
+        events_html = events.get_data(as_text=True)
+        self.assertIn('Show contest', events_html)
+        self.assertIn('/admin/costume-contest', events_html)
+        self.assertIn('Costume contest', events_html)
+
+        home = admin.get('/')
+        home_html = home.get_data(as_text=True)
+        # ADMIN_KEY session counts as staff nav → contest link + toggle when closed
+        self.assertIn('Costume contest', home_html)
+        self.assertIn('Show costume contest', home_html)
+
+        guest = self.app.test_client()
+        guest_home = guest.get('/').get_data(as_text=True)
+        self.assertNotIn('Costume contest', guest_home)
+        self.assertNotIn('Show costume contest', guest_home)
+
+        token = events.headers.get('X-CSRF-Token')
+        show = admin.post(
+            '/admin/costume-contest',
+            data={'csrf_token': token, 'next': '/admin/events'},
+            follow_redirects=False,
+        )
+        self.assertEqual(show.status_code, 302)
+        self.assertTrue(show.headers.get('Location', '').endswith('/admin/events'))
+        self.assertTrue(thesection.is_costume_contest_open())
+
+        token2 = admin.get('/admin/events').headers.get('X-CSRF-Token')
+        hide = admin.post(
+            '/admin/costume-contest',
+            data={'csrf_token': token2, 'next': '/admin/events'},
+            follow_redirects=False,
+        )
+        self.assertEqual(hide.status_code, 302)
+        self.assertTrue(hide.headers.get('Location', '').endswith('/admin/events'))
+        self.assertFalse(thesection.is_costume_contest_open())
+
+        token3 = admin.get('/admin').headers.get('X-CSRF-Token')
+        again = admin.post(
+            '/admin/costume-contest',
+            data={'csrf_token': token3},
+            follow_redirects=False,
+        )
+        self.assertEqual(again.status_code, 302)
+        self.assertIn('contest=shown', again.headers.get('Location', ''))
+
+    def test_toggle_rejects_unsafe_next(self):
+        admin = self._admin_client()
+        token = admin.get('/admin').headers.get('X-CSRF-Token')
+        resp = admin.post(
+            '/admin/costume-contest',
+            data={'csrf_token': token, 'next': 'https://evil.example/phish'},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        loc = resp.headers.get('Location', '')
+        self.assertIn('/admin', loc)
+        self.assertNotIn('evil.example', loc)
+
 
     def test_portal_hides_costume_when_closed(self):
         member = self._login()
