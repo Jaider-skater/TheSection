@@ -6618,7 +6618,6 @@ def verify_ticket():
     return render_template(
         'verify.html',
         admission_totals=get_admission_totals(),
-        stripe_publishable_key=stripe_publishable_key,
     )
 
 
