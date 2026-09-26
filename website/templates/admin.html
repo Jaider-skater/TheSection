@@ -15,6 +15,7 @@
             <p class="text-zinc-400 mt-1">
                 {{ tickets|length }} orders · {{ total_admissions }} admissions · {{ unique_buyers|default(0) }} buyer{{ '' if unique_buyers|default(0) == 1 else 's' }}
                 · {{ signup_count|default(0) }} signup{{ '' if signup_count|default(0) == 1 else 's' }} vs {{ invite_count|default(0) }} invite{{ '' if invite_count|default(0) == 1 else 's' }}
+                · <a href="{{ url_for('admin_promos') }}" class="hover:text-white underline-offset-2 hover:underline">{{ planned_promo_count|default(0) }} planned promo{{ '' if planned_promo_count|default(0) == 1 else 's' }}</a>
                 · <span id="live-viewing">0</span>
                 <span id="live-viewing-label">people viewing</span>
             </p>
@@ -37,6 +38,10 @@
             <a href="{{ url_for('admin_mailing_list') }}"
                class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-black font-semibold rounded-xl text-sm">
                 Mailing Lists
+            </a>
+            <a href="{{ url_for('admin_promos') }}"
+               class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
+                Promo emails
             </a>
             <a href="{{ url_for('verify_ticket') }}"
                class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">

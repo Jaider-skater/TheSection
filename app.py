@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort, send_from_directory, has_request_context
+from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort, send_from_directory, has_request_context, flash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -22,6 +22,11 @@ import zipfile
 import subprocess
 import tempfile
 import time
+import sys
+import ssl
+import smtplib
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, make_msgid
 try:
     import fcntl
 except ImportError:  # Windows
@@ -29,6 +34,7 @@ except ImportError:  # Windows
         LOCK_SH = 1
         LOCK_EX = 2
         LOCK_UN = 8
+        LOCK_NB = 4
 
         @staticmethod
         def flock(_fd, _op):
@@ -148,6 +154,10 @@ costume_photos_dir = os.getenv(
     'COSTUME_PHOTOS_DIR',
     os.path.join(os.path.dirname(__file__), 'data', 'costume_photos'),
 )
+promos_file = os.getenv(
+    'PROMOS_FILE',
+    os.path.join(os.path.dirname(__file__), 'data', 'promos.json'),
+)
 INVITE_EXPIRY_DAYS = int(os.getenv('INVITE_EXPIRY_DAYS', '14'))
 PROTECTED_MAILING_LIST_EMAILS = frozenset({
     'hallieworkshop@gmail.com',
@@ -212,6 +222,7 @@ mailing_list_log_lock = threading.Lock()
 _mailing_send_lock = threading.Lock()
 exclusive_holds_lock = threading.Lock()
 costumes_lock = threading.Lock()
+promos_lock = threading.Lock()
 _presence_lock = threading.Lock()
 _presence_seen = {}
 PRESENCE_TTL_SECONDS = 90
@@ -7243,6 +7254,7 @@ def admin_dashboard():
         invite_count=invite_count,
         costume_contest_open=is_costume_contest_open(),
         contest_flash=contest_flash,
+        planned_promo_count=planned_promo_count(),
     )
 
 
@@ -7694,6 +7706,1185 @@ def admin_mailing_list_log_download():
     )
 
 
+# ---------------------------------------------------------------------------
+# Promo emails: drafted and approved by admins, sent from the events Gmail.
+# ---------------------------------------------------------------------------
+PROMO_TIMEZONE_NAME = 'America/Denver'
+PROMO_DEFAULT_SENDER = 'thesectionevents@gmail.com'
+PROMO_SMTP_HOST = 'smtp.gmail.com'
+PROMO_SMTP_PORT = 587
+PROMO_STATUSES = ('draft', 'approved', 'sending', 'sent', 'failed')
+PROMO_PLANNED_STATUSES = ('draft', 'approved')
+PROMO_AUDIENCES = {
+    'all': 'Everyone (exclusive + full list)',
+    'full': 'Full list',
+    'exclusive': 'Exclusive list',
+}
+PROMO_AUDIENCE_LISTS = {
+    'all': {'exclusive', 'full'},
+    'full': {'full'},
+    'exclusive': {'exclusive'},
+}
+PROMO_DEFAULT_AUDIENCE = 'all'
+PROMO_SUBJECT_MAX = 200
+PROMO_BODY_MAX = 20000
+PROMO_IMAGE_URL_MAX = 1000
+PROMO_SCHEDULER_INTERVAL_SECONDS = 60
+PROMO_STUCK_SENDING_MINUTES = 30
+PROMO_PROGRESS_SAVE_EVERY = 10
+PROMO_MAX_CONSECUTIVE_FAILURES = 5
+PROMO_DAYS_BEFORE_EVENT = 3
+PROMO_DEFAULT_SEND_HOUR = 10
+PROMO_UNSUBSCRIBE_LINE = (
+    "Don't want these emails? Reply to this email with \"unsubscribe\" "
+    "and we'll take you off the list."
+)
+_PROMO_URL_RE = re.compile(r'(https?://[^\s<>"\']+)')
+_PROMO_IMAGE_URL_RE = re.compile(r'^https?://[^\s<>"\']+$', re.IGNORECASE)
+
+_promo_tz = None
+_promo_sender_thread_lock = threading.Lock()
+_promo_scheduler_thread = None
+_promo_scheduler_start_lock = threading.Lock()
+
+
+def get_promo_timezone():
+    """Promo send times are always America/Denver, whatever APP_TIMEZONE says."""
+    global _promo_tz
+    if _promo_tz is None:
+        try:
+            _promo_tz = ZoneInfo(PROMO_TIMEZONE_NAME)
+        except Exception:
+            _promo_tz = timezone(timedelta(hours=-7), 'MST')
+    return _promo_tz
+
+
+def promo_now():
+    return datetime.now(timezone.utc)
+
+
+def promo_email_address():
+    return (os.getenv('PROMO_EMAIL_ADDRESS') or '').strip() or PROMO_DEFAULT_SENDER
+
+
+def promo_app_password():
+    # Gmail shows app passwords in groups of four; spaces are not part of it.
+    return re.sub(r'\s+', '', os.getenv('GMAIL_APP_PASSWORD') or '')
+
+
+def promo_sending_configured():
+    return bool(promo_app_password()) and is_valid_email(promo_email_address())
+
+
+def new_promo_id():
+    return f'promo_{secrets.token_hex(6)}'
+
+
+def promo_send_delay_seconds():
+    try:
+        return max(0.0, float(os.getenv('PROMO_SEND_DELAY', '0.3')))
+    except (TypeError, ValueError):
+        return 0.3
+
+
+@contextmanager
+def _promo_file_lock(suffix, blocking=True):
+    """Cross-process lock (all gunicorn workers) on a sidecar file next to promos.json."""
+    path = f'{promos_file}.{suffix}'
+    ensure_data_dir(path)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = False
+    try:
+        if blocking:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            acquired = True
+        else:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | getattr(fcntl, 'LOCK_NB', 4))
+                acquired = True
+            except (BlockingIOError, OSError):
+                acquired = False
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        os.close(fd)
+
+
+@contextmanager
+def promo_store_lock():
+    """Serialize every read-modify-write of promos.json across threads and workers."""
+    with promos_lock:
+        with _promo_file_lock('lock'):
+            yield
+
+
+@contextmanager
+def _promo_sender_guard():
+    """Only one scheduled-send pass at a time, across threads and workers."""
+    acquired_thread = _promo_sender_thread_lock.acquire(blocking=False)
+    if not acquired_thread:
+        yield False
+        return
+    try:
+        with _promo_file_lock('sender.lock', blocking=False) as acquired_file:
+            yield acquired_file
+    finally:
+        _promo_sender_thread_lock.release()
+
+
+def _promo_iso(dt):
+    if not dt:
+        return None
+    return dt.astimezone(get_promo_timezone()).isoformat(timespec='seconds')
+
+
+def _promo_clean_iso(raw):
+    dt = parse_iso_datetime(raw)
+    return _promo_iso(dt) if dt else None
+
+
+def clean_promo_image_url(raw):
+    value = str(raw or '').strip()
+    if not value or len(value) > PROMO_IMAGE_URL_MAX:
+        return ''
+    return value if _PROMO_IMAGE_URL_RE.match(value) else ''
+
+
+def _promo_int(raw):
+    try:
+        return max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_promo(raw):
+    data = raw if isinstance(raw, dict) else {}
+    status = str(data.get('status') or 'draft').strip().lower()
+    if status == 'scheduled':
+        status = 'approved'
+    if status not in PROMO_STATUSES:
+        status = 'draft'
+    audience = str(data.get('audience') or '').strip().lower()
+    if audience not in PROMO_AUDIENCES:
+        audience = PROMO_DEFAULT_AUDIENCE
+    delivered = []
+    seen = set()
+    for email in data.get('delivered_to') or []:
+        if not isinstance(email, str):
+            continue
+        normalized = email.strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            delivered.append(normalized)
+    now_iso = promo_now().isoformat()
+    error = data.get('error')
+    return {
+        'id': str(data.get('id') or '').strip() or new_promo_id(),
+        'subject': str(data.get('subject') or '').strip()[:PROMO_SUBJECT_MAX],
+        'body': str(data.get('body') or '').replace('\r\n', '\n').strip()[:PROMO_BODY_MAX],
+        'image_url': clean_promo_image_url(data.get('image_url')),
+        'audience': audience,
+        'status': status,
+        'scheduled_for': _promo_clean_iso(data.get('scheduled_for')),
+        'event_id': str(data.get('event_id') or '').strip() or None,
+        'created_at': data.get('created_at') or now_iso,
+        'updated_at': data.get('updated_at') or data.get('created_at') or now_iso,
+        'approved_at': data.get('approved_at') or None,
+        'approved_by': data.get('approved_by') or None,
+        'sending_started_at': data.get('sending_started_at') or None,
+        'sent_at': data.get('sent_at') or None,
+        'finished_at': data.get('finished_at') or None,
+        'recipient_count': _promo_int(data.get('recipient_count')),
+        'failed_count': _promo_int(data.get('failed_count')),
+        'delivered_to': delivered,
+        'error': str(error).strip()[:1000] if error else None,
+    }
+
+
+def load_promos():
+    if not ensure_data_dir(promos_file):
+        return []
+    data = _locked_json_read(promos_file, {'promos': []})
+    if isinstance(data, dict):
+        items = data.get('promos') or []
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+    return [normalize_promo(item) for item in items if isinstance(item, dict)]
+
+
+def save_promos(promos):
+    if not ensure_data_dir(promos_file):
+        return False
+    cleaned = [normalize_promo(item) for item in promos if isinstance(item, dict)]
+    return _locked_json_write(promos_file, {'promos': cleaned})
+
+
+def get_promo(promo_id):
+    target = (promo_id or '').strip()
+    if not target:
+        return None
+    for promo in load_promos():
+        if promo.get('id') == target:
+            return promo
+    return None
+
+
+def _mutate_promo(promo_id, mutate):
+    """Load, mutate one promo under the store lock, save. mutate returns an error or None."""
+    target = (promo_id or '').strip()
+    if not target:
+        return None, 'Promo not found.'
+    with promo_store_lock():
+        promos = load_promos()
+        promo = next((p for p in promos if p.get('id') == target), None)
+        if promo is None:
+            return None, 'Promo not found.'
+        error = mutate(promo)
+        if error:
+            return None, error
+        promo['updated_at'] = promo_now().isoformat()
+        if not save_promos(promos):
+            return None, 'Could not save. Please try again.'
+        return dict(promo), None
+
+
+def parse_promo_local_datetime(raw):
+    """A datetime-local form value (no zone) read as America/Denver wall-clock time."""
+    value = (raw or '').strip()
+    if not value:
+        return None
+    value = value.replace(' ', 'T')
+    for fmt in ('%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            naive = datetime.strptime(value, fmt)
+            return naive.replace(tzinfo=get_promo_timezone())
+        except ValueError:
+            continue
+    parsed = parse_iso_datetime(value)
+    if parsed and ('+' in value[10:] or value.endswith('Z') or '-' in value[10:]):
+        return parsed
+    return None
+
+
+def promo_local_input_value(iso_raw):
+    dt = parse_iso_datetime(iso_raw)
+    if not dt:
+        return ''
+    return dt.astimezone(get_promo_timezone()).strftime('%Y-%m-%dT%H:%M')
+
+
+def format_promo_datetime(iso_raw):
+    dt = parse_iso_datetime(iso_raw)
+    if not dt:
+        return '—'
+    local = dt.astimezone(get_promo_timezone())
+    hour = local.strftime('%I').lstrip('0') or '12'
+    return f"{local.strftime('%a, %b')} {local.day}, {local.year} · {hour}:{local.strftime('%M %p')} {local.strftime('%Z')}"
+
+
+@app.template_filter('promo_time')
+def promo_time_filter(iso_raw):
+    return format_promo_datetime(iso_raw)
+
+
+def promo_today():
+    return datetime.now(get_promo_timezone()).date()
+
+
+def promo_form_fields(form):
+    """Validate the promo form. Returns (fields, error)."""
+    subject = (form.get('subject') or '').strip()
+    body = (form.get('body') or '').replace('\r\n', '\n').strip()
+    audience = (form.get('audience') or '').strip().lower()
+    scheduled = parse_promo_local_datetime(form.get('scheduled_for'))
+    raw_image = (form.get('image_url') or '').strip()
+    image_url = clean_promo_image_url(raw_image)
+    event_id = (form.get('event_id') or '').strip() or None
+    if not subject:
+        return None, 'Add a subject line.'
+    if any(c in subject for c in '\r\n'):
+        return None, 'The subject must be a single line.'
+    if len(subject) > PROMO_SUBJECT_MAX:
+        return None, f'Keep the subject under {PROMO_SUBJECT_MAX} characters.'
+    if not body:
+        return None, 'Write the email body.'
+    if len(body) > PROMO_BODY_MAX:
+        return None, 'That email body is too long.'
+    if audience not in PROMO_AUDIENCES:
+        return None, 'Pick who should get this email.'
+    if not scheduled:
+        return None, 'Pick a send date and time (Denver time).'
+    if raw_image and not image_url:
+        return None, 'The image URL must start with http:// or https://.'
+    if event_id and not get_event(event_id):
+        event_id = None
+    return {
+        'subject': subject,
+        'body': body,
+        'audience': audience,
+        'scheduled_for': _promo_iso(scheduled),
+        'image_url': image_url,
+        'event_id': event_id,
+    }, None
+
+
+def create_promo(fields):
+    now_iso = promo_now().isoformat()
+    promo = normalize_promo({
+        **fields,
+        'id': new_promo_id(),
+        'status': 'draft',
+        'created_at': now_iso,
+        'updated_at': now_iso,
+    })
+    with promo_store_lock():
+        promos = load_promos()
+        promos.append(promo)
+        if not save_promos(promos):
+            return None, 'Could not save the promo. Please try again.'
+    return promo, None
+
+
+def update_promo_content(promo_id, fields):
+    """Edit a planned promo. An approved promo goes back to draft and must be re-approved.
+
+    Returns (promo, error, was_unapproved).
+    """
+    state = {'was_unapproved': False}
+
+    def mutate(promo):
+        if promo['status'] not in PROMO_PLANNED_STATUSES:
+            return 'Only drafts and approved promos can be edited.'
+        if promo['status'] == 'approved':
+            state['was_unapproved'] = True
+            promo['status'] = 'draft'
+            promo['approved_at'] = None
+            promo['approved_by'] = None
+        for key in ('subject', 'body', 'audience', 'scheduled_for', 'image_url', 'event_id'):
+            promo[key] = fields.get(key)
+        return None
+
+    promo, error = _mutate_promo(promo_id, mutate)
+    return promo, error, state['was_unapproved']
+
+
+def promo_content_problem(promo):
+    if not promo.get('subject'):
+        return 'Add a subject before approving.'
+    if not promo.get('body'):
+        return 'Write the email body before approving.'
+    if promo.get('audience') not in PROMO_AUDIENCES:
+        return 'Pick an audience before approving.'
+    if not parse_iso_datetime(promo.get('scheduled_for')):
+        return 'Pick a send time before approving.'
+    return None
+
+
+def approve_promo(promo_id, approved_by=None, now=None):
+    now = now or promo_now()
+
+    def mutate(promo):
+        if promo['status'] != 'draft':
+            return 'Only drafts can be approved.'
+        problem = promo_content_problem(promo)
+        if problem:
+            return problem
+        if parse_iso_datetime(promo['scheduled_for']) <= now:
+            return 'That send time has already passed. Edit it to a future time, then approve.'
+        promo['status'] = 'approved'
+        promo['approved_at'] = now.isoformat()
+        promo['approved_by'] = (approved_by or 'admin')[:254]
+        promo['error'] = None
+        return None
+
+    return _mutate_promo(promo_id, mutate)
+
+
+def unapprove_promo(promo_id):
+    def mutate(promo):
+        if promo['status'] != 'approved':
+            return 'Only approved promos can go back to draft.'
+        promo['status'] = 'draft'
+        promo['approved_at'] = None
+        promo['approved_by'] = None
+        return None
+
+    return _mutate_promo(promo_id, mutate)
+
+
+def failed_promo_back_to_draft(promo_id):
+    """A failed promo can be fixed and re-approved. Addresses that already got it are skipped."""
+    def mutate(promo):
+        if promo['status'] != 'failed':
+            return 'Only failed promos can be moved back to draft.'
+        promo['status'] = 'draft'
+        promo['approved_at'] = None
+        promo['approved_by'] = None
+        return None
+
+    return _mutate_promo(promo_id, mutate)
+
+
+def promo_is_stuck(promo, now=None):
+    if promo.get('status') != 'sending':
+        return False
+    started = parse_iso_datetime(promo.get('sending_started_at'))
+    if not started:
+        return True
+    now = now or promo_now()
+    return now - started >= timedelta(minutes=PROMO_STUCK_SENDING_MINUTES)
+
+
+def mark_stuck_promo_failed(promo_id, now=None):
+    now = now or promo_now()
+
+    def mutate(promo):
+        if not promo_is_stuck(promo, now):
+            return 'Only a promo stuck in sending for a while can be marked failed.'
+        promo['status'] = 'failed'
+        promo['finished_at'] = now.isoformat()
+        promo['error'] = (
+            'Sending stopped before it finished (the server probably restarted). '
+            f"{len(promo.get('delivered_to') or [])} address(es) are recorded as delivered."
+        )
+        return None
+
+    return _mutate_promo(promo_id, mutate)
+
+
+def delete_promo(promo_id):
+    target = (promo_id or '').strip()
+    with promo_store_lock():
+        promos = load_promos()
+        promo = next((p for p in promos if p.get('id') == target), None)
+        if promo is None:
+            return False, 'Promo not found.'
+        if promo['status'] not in ('draft', 'approved', 'failed'):
+            return False, 'Sent promos stay in the history and cannot be deleted.'
+        remaining = [p for p in promos if p.get('id') != target]
+        if not save_promos(remaining):
+            return False, 'Could not delete. Please try again.'
+    return True, None
+
+
+# ----- Event pre-fill ------------------------------------------------------
+
+def upcoming_events_for_promos(today=None):
+    today_value = (today or promo_today()).isoformat()
+    events = [
+        event for event in load_events()
+        if event.get('date') and event.get('date') >= today_value
+    ]
+    events.sort(key=event_sort_key)
+    return events
+
+
+def _event_start_datetime(event):
+    day = parse_event_date(event.get('date'))
+    if not day:
+        return None
+    start_raw = (event.get('time_start') or '').strip()
+    hour, minute = 20, 0
+    for fmt in ('%H:%M', '%H:%M:%S', '%I:%M %p', '%I:%M%p'):
+        try:
+            parsed = datetime.strptime(start_raw, fmt)
+            hour, minute = parsed.hour, parsed.minute
+            break
+        except ValueError:
+            continue
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=get_promo_timezone())
+
+
+def default_promo_send_time(event=None, now=None):
+    """A few days before the event at 10:00 AM Denver. Never in the past."""
+    tz = get_promo_timezone()
+    now_local = (now or promo_now()).astimezone(tz)
+
+    def at_ten(day):
+        return datetime(day.year, day.month, day.day, PROMO_DEFAULT_SEND_HOUR, 0, tzinfo=tz)
+
+    next_ten = at_ten(now_local.date())
+    if next_ten <= now_local + timedelta(minutes=30):
+        next_ten = at_ten(now_local.date() + timedelta(days=1))
+    if not event:
+        return next_ten
+    event_day = parse_event_date(event.get('date'))
+    if not event_day:
+        return next_ten
+    candidate = at_ten(event_day - timedelta(days=PROMO_DAYS_BEFORE_EVENT))
+    if candidate > now_local + timedelta(minutes=30):
+        return candidate
+    event_start = _event_start_datetime(event)
+    if event_start and next_ten < event_start:
+        return next_ten
+    fallback = (now_local + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return fallback
+
+
+def build_event_promo_fields(event, now=None):
+    site = get_public_base_url().rstrip('/')
+    name = (event.get('name') or 'The Section').strip()
+    date_line = format_event_date_line(event.get('date'))
+    time_line = format_event_time_line(event.get('time_start'), event.get('time_end'))
+    venue = (event.get('venue') or '').strip()
+    description = (event.get('description') or '').strip()
+    details = (event.get('details') or '').strip()
+    flyer_path = event_flyer_url(event)
+    image_url = f'{site}{flyer_path}' if flyer_path else ''
+    ticket_url = f'{site}/'
+
+    subject = f'{name} at The Section — {date_line}' if date_line else f'{name} at The Section'
+    lines = [
+        'Hey!',
+        '',
+        f"{name} is coming up at The Section and we want you there.",
+        '',
+    ]
+    if date_line:
+        lines.append(f'When: {date_line}' + (f' · {time_line}' if time_line else ''))
+    elif time_line:
+        lines.append(f'Time: {time_line}')
+    if venue:
+        lines.append(f'Where: {venue}')
+    if description:
+        lines.extend(['', description])
+    if details:
+        lines.extend(['', details])
+    lines.extend([
+        '',
+        "Tickets are limited, so grab yours before they're gone:",
+        ticket_url,
+    ])
+    if image_url:
+        lines.extend(['', f'Flyer: {image_url}'])
+    lines.extend(['', 'See you there!', '— The Section'])
+    return {
+        'subject': subject[:PROMO_SUBJECT_MAX],
+        'body': '\n'.join(lines),
+        'audience': PROMO_DEFAULT_AUDIENCE,
+        'scheduled_for': _promo_iso(default_promo_send_time(event, now=now)),
+        'image_url': clean_promo_image_url(image_url),
+        'event_id': event.get('id'),
+    }
+
+
+def draft_promo_from_event(event_id, now=None):
+    event = get_event(event_id)
+    if not event:
+        return None, 'Pick an event to draft a promo for.'
+    return create_promo(build_event_promo_fields(event, now=now))
+
+
+# ----- Rendering -----------------------------------------------------------
+
+def _promo_linkify(escaped_text):
+    def repl(match):
+        url = match.group(1)
+        trailing = ''
+        while url and url[-1] in '.,!?)':
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        return f'<a href="{url}" style="color:#111;font-weight:bold;">{url}</a>{trailing}'
+    return _PROMO_URL_RE.sub(repl, escaped_text)
+
+
+def promo_plain_body(promo):
+    body = (promo.get('body') or '').strip()
+    return f'{body}\n\n--\n{PROMO_UNSUBSCRIBE_LINE}\n'
+
+
+def promo_html_body(promo):
+    """Simple HTML version of the plain-text body. All user text is escaped."""
+    body = (promo.get('body') or '').strip()
+    paragraphs = [chunk for chunk in re.split(r'\n\s*\n', body) if chunk.strip()]
+    rendered = []
+    for chunk in paragraphs:
+        lines = [_promo_linkify(html.escape(line, quote=False)) for line in chunk.split('\n')]
+        rendered.append(f'<p style="margin:0 0 14px;">{"<br>".join(lines)}</p>')
+    image = ''
+    image_url = clean_promo_image_url(promo.get('image_url'))
+    if image_url:
+        image = (
+            f'<p style="margin:0 0 16px;"><img src="{html.escape(image_url, quote=True)}" '
+            'alt="Event flyer" style="max-width:100%;height:auto;border-radius:8px;display:block;"></p>'
+        )
+    return (
+        '<div style="font-family:Arial,sans-serif;color:#111;max-width:560px;margin:0 auto;line-height:1.5;">'
+        '<h2 style="margin:0 0 12px;">The Section</h2>'
+        + image
+        + ''.join(rendered)
+        + '<hr style="border:none;border-top:1px solid #ddd;margin:24px 0 12px;">'
+        f'<p style="color:#777;font-size:12px;margin:0;">{html.escape(PROMO_UNSUBSCRIBE_LINE, quote=False)}</p>'
+        '</div>'
+    )
+
+
+def build_promo_email_message(promo, recipient, plain_body, html_body, sender):
+    msg = EmailMessage()
+    msg['Subject'] = promo['subject']
+    msg['From'] = formataddr(('The Section', sender))
+    msg['To'] = recipient
+    msg['Reply-To'] = sender
+    msg['Date'] = formatdate(localtime=False)
+    msg['Message-ID'] = make_msgid(domain=sender.split('@')[-1] or 'thesection')
+    msg['List-Unsubscribe'] = f'<mailto:{sender}?subject=unsubscribe>'
+    msg.set_content(plain_body)
+    msg.add_alternative(html_body, subtype='html')
+    return msg
+
+
+# ----- Sending -------------------------------------------------------------
+
+def promo_recipients(promo):
+    lists = PROMO_AUDIENCE_LISTS.get(promo.get('audience'), PROMO_AUDIENCE_LISTS[PROMO_DEFAULT_AUDIENCE])
+    return [email for email in resolve_broadcast_recipients(lists) if is_valid_email(email)]
+
+
+def promo_audience_counts():
+    counts = {}
+    for key, lists in PROMO_AUDIENCE_LISTS.items():
+        try:
+            counts[key] = len([e for e in resolve_broadcast_recipients(lists) if is_valid_email(e)])
+        except Exception as e:
+            print('Promo audience count failed:', e)
+            counts[key] = 0
+    return counts
+
+
+def promo_event_has_passed(promo, today=None):
+    event_id = promo.get('event_id')
+    if not event_id:
+        return False
+    event = get_event(event_id)
+    if not event or not event.get('date'):
+        return False
+    return event['date'] < (today or promo_today()).isoformat()
+
+
+def promo_is_due(promo, now=None):
+    if promo.get('status') != 'approved':
+        return False
+    scheduled = parse_iso_datetime(promo.get('scheduled_for'))
+    if not scheduled:
+        return False
+    return scheduled <= (now or promo_now())
+
+
+def claim_promo_for_sending(promo_id, require_due=True, now=None):
+    """Flip approved -> sending under the store lock. Only the caller that wins may send.
+
+    Drafts (or anything not approved) are never claimed.
+    """
+    now = now or promo_now()
+    target = (promo_id or '').strip()
+    with promo_store_lock():
+        promos = load_promos()
+        promo = next((p for p in promos if p.get('id') == target), None)
+        if promo is None or promo['status'] != 'approved' or not promo.get('approved_at'):
+            return None
+        if promo_content_problem(promo):
+            return None
+        if require_due and not promo_is_due(promo, now):
+            return None
+        promo['status'] = 'sending'
+        promo['sending_started_at'] = now.isoformat()
+        promo['updated_at'] = now.isoformat()
+        promo['error'] = None
+        if not save_promos(promos):
+            return None
+        return dict(promo)
+
+
+def _record_promo_progress(promo_id, delivered_now):
+    if not delivered_now:
+        return
+    try:
+        with promo_store_lock():
+            promos = load_promos()
+            promo = next((p for p in promos if p.get('id') == promo_id), None)
+            if promo is None or promo['status'] != 'sending':
+                return
+            merged = list(promo.get('delivered_to') or [])
+            seen = set(merged)
+            for email in delivered_now:
+                if email not in seen:
+                    seen.add(email)
+                    merged.append(email)
+            promo['delivered_to'] = merged
+            promo['recipient_count'] = len(merged)
+            save_promos(promos)
+    except Exception as e:
+        print('Could not record promo progress:', e)
+
+
+def _finish_promo(promo_id, delivered_now, failed, error=None):
+    now_iso = promo_now().isoformat()
+    with promo_store_lock():
+        promos = load_promos()
+        promo = next((p for p in promos if p.get('id') == promo_id), None)
+        if promo is None:
+            return None
+        merged = list(promo.get('delivered_to') or [])
+        seen = set(merged)
+        for email in delivered_now:
+            if email not in seen:
+                seen.add(email)
+                merged.append(email)
+        promo['delivered_to'] = merged
+        promo['recipient_count'] = len(merged)
+        promo['failed_count'] = len(failed)
+        promo['finished_at'] = now_iso
+        promo['updated_at'] = now_iso
+        if delivered_now or (merged and not failed and not error):
+            promo['status'] = 'sent'
+            promo['sent_at'] = now_iso
+            if failed:
+                promo['error'] = (
+                    f'{len(failed)} address(es) failed. Last error: {error}' if error
+                    else f'{len(failed)} address(es) failed.'
+                )
+            else:
+                promo['error'] = None
+        else:
+            promo['status'] = 'failed'
+            promo['error'] = error or 'Nothing was sent.'
+        save_promos(promos)
+        return dict(promo)
+
+
+def _short_error(exc):
+    text = str(exc) or exc.__class__.__name__
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        text = 'Gmail rejected the login. Check GMAIL_APP_PASSWORD (it must be a Gmail app password).'
+    return text.replace('\n', ' ')[:300]
+
+
+def _open_promo_smtp(sender, password):
+    smtp = smtplib.SMTP(PROMO_SMTP_HOST, PROMO_SMTP_PORT, timeout=30)
+    try:
+        smtp.ehlo()
+        smtp.starttls(context=ssl.create_default_context())
+        smtp.ehlo()
+        smtp.login(sender, password)
+    except Exception:
+        try:
+            smtp.close()
+        except Exception:
+            pass
+        raise
+    return smtp
+
+
+def deliver_promo(promo):
+    """Send a claimed (status=sending) promo, one message per recipient. Returns final promo."""
+    promo_id = promo['id']
+    try:
+        recipients = promo_recipients(promo)
+    except Exception as e:
+        return _finish_promo(promo_id, [], [], error=f'Could not load the mailing list: {_short_error(e)}')
+    already = set(promo.get('delivered_to') or [])
+    to_send = [email for email in recipients if email not in already]
+    if not recipients:
+        return _finish_promo(promo_id, [], [], error='Nobody is on that mailing list, so nothing was sent.')
+    if not to_send:
+        return _finish_promo(promo_id, [], [], error=None)
+    sender = promo_email_address()
+    password = promo_app_password()
+    if not password:
+        return _finish_promo(promo_id, [], to_send, error='Sending is not connected (GMAIL_APP_PASSWORD is missing).')
+    plain_body = promo_plain_body(promo)
+    html_body = promo_html_body(promo)
+    delay = promo_send_delay_seconds()
+    delivered = []
+    failed = []
+    last_error = None
+    consecutive_failures = 0
+    unsaved = 0
+    try:
+        smtp = _open_promo_smtp(sender, password)
+    except Exception as e:
+        print('Promo SMTP login failed:', e.__class__.__name__)
+        return _finish_promo(promo_id, [], to_send, error=f'Could not connect to Gmail: {_short_error(e)}')
+    try:
+        for index, email in enumerate(to_send):
+            msg = build_promo_email_message(promo, email, plain_body, html_body, sender)
+            try:
+                try:
+                    smtp.send_message(msg)
+                except smtplib.SMTPServerDisconnected:
+                    smtp = _open_promo_smtp(sender, password)
+                    smtp.send_message(msg)
+                delivered.append(email)
+                unsaved += 1
+                consecutive_failures = 0
+            except Exception as e:
+                failed.append(email)
+                last_error = _short_error(e)
+                consecutive_failures += 1
+                print(f'Promo email failed for one recipient: {last_error}')
+                if consecutive_failures >= PROMO_MAX_CONSECUTIVE_FAILURES:
+                    remaining = to_send[index + 1:]
+                    failed.extend(remaining)
+                    last_error = f'Stopped after {consecutive_failures} errors in a row: {last_error}'
+                    break
+            if unsaved >= PROMO_PROGRESS_SAVE_EVERY:
+                _record_promo_progress(promo_id, delivered)
+                unsaved = 0
+            if delay and index + 1 < len(to_send):
+                time.sleep(delay)
+    finally:
+        try:
+            smtp.quit()
+        except Exception:
+            pass
+    return _finish_promo(promo_id, delivered, failed, error=last_error)
+
+
+def _deliver_promo_safely(promo):
+    try:
+        with app.app_context():
+            return deliver_promo(promo)
+    except Exception as e:
+        print('Promo delivery crashed:', e)
+        try:
+            return _finish_promo(promo['id'], [], [], error=f'Sending crashed: {_short_error(e)}')
+        except Exception as inner:
+            print('Could not record promo failure:', inner)
+    return None
+
+
+def run_due_promos(now=None):
+    """Send every approved promo whose send time has passed. Safe to call from any worker."""
+    if not promo_sending_configured():
+        return []
+    results = []
+    with _promo_sender_guard() as acquired:
+        if not acquired:
+            return []
+        now = now or promo_now()
+        today = now.astimezone(get_promo_timezone()).date()
+        due_ids = [
+            promo['id'] for promo in load_promos()
+            if promo_is_due(promo, now) and not promo_event_has_passed(promo, today)
+        ]
+        for promo_id in due_ids:
+            claimed = claim_promo_for_sending(promo_id, require_due=True, now=now)
+            if not claimed:
+                continue
+            final = _deliver_promo_safely(claimed)
+            if final:
+                results.append(final)
+    return results
+
+
+def send_promo_now(promo_id, background=True):
+    """Admin 'Send now' for an approved promo. Returns (ok, message)."""
+    if not promo_sending_configured():
+        return False, 'Sending isn’t connected yet. Add GMAIL_APP_PASSWORD on Render first.'
+    claimed = claim_promo_for_sending(promo_id, require_due=False)
+    if not claimed:
+        return False, 'Only approved promos can be sent (it may already be sending).'
+    if background:
+        thread = threading.Thread(
+            target=_deliver_promo_safely, args=(claimed,), name='promo-send-now', daemon=True,
+        )
+        thread.start()
+        return True, 'Sending started. Refresh in a minute to see the result under Sent.'
+    final = _deliver_promo_safely(claimed) or {}
+    if final.get('status') == 'sent':
+        return True, f"Sent to {final.get('recipient_count', 0)} address(es)."
+    return False, final.get('error') or 'Sending failed.'
+
+
+def promo_scheduler_enabled():
+    if app.config.get('TESTING') or 'pytest' in sys.modules:
+        return False
+    return (os.getenv('PROMO_SCHEDULER') or 'on').strip().lower() not in ('0', 'off', 'false', 'no')
+
+
+def _promo_scheduler_loop():
+    time.sleep(10)
+    while True:
+        try:
+            with app.app_context():
+                run_due_promos()
+        except Exception as e:
+            print('Promo scheduler pass failed:', e)
+        time.sleep(PROMO_SCHEDULER_INTERVAL_SECONDS)
+
+
+def ensure_promo_scheduler_started():
+    """One daemon thread per worker; the file locks + status claim stop double sends."""
+    global _promo_scheduler_thread
+    thread = _promo_scheduler_thread
+    if thread is not None and thread.is_alive():
+        return thread
+    if not promo_scheduler_enabled():
+        return None
+    with _promo_scheduler_start_lock:
+        thread = _promo_scheduler_thread
+        if thread is not None and thread.is_alive():
+            return thread
+        thread = threading.Thread(target=_promo_scheduler_loop, name='promo-scheduler', daemon=True)
+        _promo_scheduler_thread = thread
+        thread.start()
+        return thread
+
+
+@app.before_request
+def promo_scheduler_before_request():
+    try:
+        ensure_promo_scheduler_started()
+    except Exception as e:
+        print('Could not start promo scheduler:', e)
+    return None
+
+
+# ----- Admin UI ------------------------------------------------------------
+
+def _promo_actor():
+    return (
+        (session.get('verify_login_email') or '').strip().lower()
+        or (session.get('legacy_member_email') or '').strip().lower()
+        or 'admin'
+    )
+
+
+def promo_display(promo, events_by_id, configured, now=None):
+    now = now or promo_now()
+    event = events_by_id.get(promo.get('event_id')) if promo.get('event_id') else None
+    status = promo['status']
+    event_passed = bool(event and event.get('date') and event['date'] < now.astimezone(get_promo_timezone()).date().isoformat())
+    overdue = promo_is_due(promo, now)
+    if status == 'draft':
+        label, tone = 'Draft', 'zinc'
+    elif status == 'approved':
+        if not configured:
+            label, tone = 'Approved · waiting for email setup', 'amber'
+        elif event_passed:
+            label, tone = 'Approved · event has passed, won’t auto-send', 'amber'
+        elif overdue:
+            label, tone = 'Approved · going out within a minute', 'emerald'
+        else:
+            label, tone = 'Approved · scheduled', 'emerald'
+    elif status == 'sending':
+        label, tone = 'Sending…', 'sky'
+    elif status == 'sent':
+        label, tone = ('Sent · some failed', 'amber') if promo.get('failed_count') else ('Sent', 'emerald')
+    else:
+        label, tone = 'Failed', 'red'
+    display = {k: v for k, v in promo.items() if k != 'delivered_to'}
+    display.update({
+        'status_label': label,
+        'status_tone': tone,
+        'audience_label': PROMO_AUDIENCES.get(promo.get('audience'), 'Everyone'),
+        'event_name': (event or {}).get('name') or '',
+        'event_passed': event_passed,
+        'overdue': overdue,
+        'stuck': promo_is_stuck(promo, now),
+        'preview_html': promo_html_body(promo),
+        'preview_plain': promo_plain_body(promo),
+    })
+    return display
+
+
+def planned_promo_count():
+    try:
+        return sum(1 for p in load_promos() if p['status'] in PROMO_PLANNED_STATUSES)
+    except Exception as e:
+        print('Planned promo count failed:', e)
+        return 0
+
+
+@app.route('/admin/promos', methods=['GET', 'POST'])
+def admin_promos():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+
+    if request.method == 'POST':
+        action = (request.form.get('action') or '').strip()
+        promo_id = (request.form.get('promo_id') or '').strip()
+        error = None
+        success = None
+        try:
+            if action == 'approve':
+                promo, error = approve_promo(promo_id, approved_by=_promo_actor())
+                if promo:
+                    if promo_sending_configured():
+                        success = f"Approved. It will send {format_promo_datetime(promo['scheduled_for'])}."
+                    else:
+                        success = 'Approved. It will wait until email sending is connected.'
+            elif action == 'unapprove':
+                promo, error = unapprove_promo(promo_id)
+                if promo:
+                    success = 'Moved back to draft. It will not send until approved again.'
+            elif action == 'delete':
+                ok, error = delete_promo(promo_id)
+                if ok:
+                    success = 'Promo deleted.'
+            elif action == 'send_now':
+                ok, message = send_promo_now(promo_id)
+                if ok:
+                    success = message
+                else:
+                    error = message
+            elif action == 'draft_from_event':
+                promo, error = draft_promo_from_event(request.form.get('event_id'))
+                if promo:
+                    flash('Draft created from the event. Review it, then approve it from the list.', 'success')
+                    return redirect(url_for('admin_promo_edit', promo_id=promo['id']))
+            elif action == 'retry_draft':
+                promo, error = failed_promo_back_to_draft(promo_id)
+                if promo:
+                    success = 'Moved back to draft. Addresses that already got it will be skipped.'
+            elif action == 'mark_failed':
+                promo, error = mark_stuck_promo_failed(promo_id)
+                if promo:
+                    success = 'Marked as failed.'
+            else:
+                error = 'Unknown action.'
+        except Exception as e:
+            error = public_error_message(e, 'Could not complete that promo action. Please try again.')
+        if error:
+            flash(error, 'error')
+        elif success:
+            flash(success, 'success')
+        return redirect(url_for('admin_promos'))
+
+    now = promo_now()
+    configured = promo_sending_configured()
+    load_error = None
+    try:
+        promos = load_promos()
+        events = load_events()
+    except Exception as e:
+        load_error = public_error_message(e, 'Could not load promos. Please try again.')
+        promos, events = [], []
+    events_by_id = {event['id']: event for event in events}
+    rows = [promo_display(promo, events_by_id, configured, now) for promo in promos]
+    planned = sorted(
+        [row for row in rows if row['status'] in PROMO_PLANNED_STATUSES],
+        key=lambda row: (row.get('scheduled_for') is None, parse_iso_datetime(row.get('scheduled_for')) or now),
+    )
+    sent = sorted(
+        [row for row in rows if row['status'] not in PROMO_PLANNED_STATUSES],
+        key=lambda row: (
+            row['status'] == 'sending',
+            row.get('sent_at') or row.get('finished_at') or row.get('sending_started_at') or '',
+        ),
+        reverse=True,
+    )
+    upcoming = [
+        {
+            'id': event['id'],
+            'label': ' · '.join(part for part in (
+                event.get('name'), format_event_date_line(event.get('date')),
+            ) if part),
+        }
+        for event in upcoming_events_for_promos()
+    ]
+    return render_template(
+        'promos.html',
+        planned=planned,
+        sent=sent,
+        upcoming_events=upcoming,
+        sending_configured=configured,
+        promo_sender=promo_email_address(),
+        audience_counts=promo_audience_counts(),
+        load_error=load_error,
+    )
+
+
+def _promo_form_page(existing=None):
+    error = None
+    if request.method == 'POST':
+        fields, error = promo_form_fields(request.form)
+        if fields:
+            if existing:
+                promo, error, was_unapproved = update_promo_content(existing['id'], fields)
+                if promo:
+                    if was_unapproved:
+                        flash('Changes saved. It’s back to draft — approve it again to schedule it.', 'success')
+                    else:
+                        flash('Changes saved.', 'success')
+                    return redirect(url_for('admin_promos'))
+            else:
+                promo, error = create_promo(fields)
+                if promo:
+                    flash('Draft saved. Approve it from the list when it’s ready.', 'success')
+                    return redirect(url_for('admin_promos'))
+        form = {
+            'subject': request.form.get('subject') or '',
+            'body': request.form.get('body') or '',
+            'audience': request.form.get('audience') or PROMO_DEFAULT_AUDIENCE,
+            'scheduled_for_input': request.form.get('scheduled_for') or '',
+            'image_url': request.form.get('image_url') or '',
+            'event_id': request.form.get('event_id') or '',
+        }
+    elif existing:
+        form = {
+            'subject': existing['subject'],
+            'body': existing['body'],
+            'audience': existing['audience'],
+            'scheduled_for_input': promo_local_input_value(existing['scheduled_for']),
+            'image_url': existing['image_url'],
+            'event_id': existing.get('event_id') or '',
+        }
+    else:
+        form = {
+            'subject': '',
+            'body': '',
+            'audience': PROMO_DEFAULT_AUDIENCE,
+            'scheduled_for_input': promo_local_input_value(_promo_iso(default_promo_send_time())),
+            'image_url': '',
+            'event_id': '',
+        }
+    preview = None
+    if existing:
+        preview = promo_html_body(existing)
+    event = get_event(form.get('event_id')) if form.get('event_id') else None
+    return render_template(
+        'promo_form.html',
+        promo=existing,
+        form=form,
+        is_new=existing is None,
+        error=error,
+        preview_html=preview,
+        audiences=PROMO_AUDIENCES,
+        audience_counts=promo_audience_counts(),
+        event_name=(event or {}).get('name') or '',
+        timezone_label=datetime.now(get_promo_timezone()).strftime('%Z'),
+        unsubscribe_line=PROMO_UNSUBSCRIBE_LINE,
+    )
+
+
+@app.route('/admin/promos/new', methods=['GET', 'POST'])
+def admin_promo_new():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    return _promo_form_page()
+
+
+@app.route('/admin/promos/<promo_id>', methods=['GET', 'POST'])
+def admin_promo_edit(promo_id):
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    promo = get_promo(promo_id)
+    if not promo:
+        flash('Promo not found.', 'error')
+        return redirect(url_for('admin_promos'))
+    if promo['status'] not in PROMO_PLANNED_STATUSES:
+        flash('Sent promos can’t be edited.', 'error')
+        return redirect(url_for('admin_promos'))
+    return _promo_form_page(promo)
+
+
 @app.route('/legacy/join', methods=['GET', 'POST'])
 def legacy_member_invite_signup():
     email = (
@@ -7848,6 +9039,15 @@ def costumes():
         costume_max=COSTUME_DESCRIPTION_MAX,
     ), status
 
+
+
+# Start the promo sender in each gunicorn worker as soon as it boots (also started lazily
+# on the first request, e.g. if the app is ever preloaded before forking).
+if IS_PRODUCTION:
+    try:
+        ensure_promo_scheduler_started()
+    except Exception as _promo_scheduler_error:
+        print('Could not start promo scheduler:', _promo_scheduler_error)
 
 
 if __name__ == '__main__':

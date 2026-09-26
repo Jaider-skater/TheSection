@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Promo emails • The Section</title>
+    <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen p-6">
+    {% macro status_badge(promo) -%}
+        {% set tones = {
+            'zinc': 'bg-zinc-700/60 text-zinc-200',
+            'amber': 'bg-amber-400/20 text-amber-300',
+            'emerald': 'bg-emerald-400/20 text-emerald-300',
+            'sky': 'bg-sky-400/20 text-sky-300',
+            'red': 'bg-red-500/20 text-red-300',
+        } %}
+        <span class="text-[11px] uppercase tracking-wider px-2 py-1 rounded-full font-semibold {{ tones.get(promo.status_tone, tones['zinc']) }}">{{ promo.status_label }}</span>
+    {%- endmacro %}
+
+    {% macro preview(promo, label='Preview email') -%}
+        <details class="mt-3 group">
+            <summary class="cursor-pointer select-none text-sm text-zinc-400 hover:text-white">{{ label }}</summary>
+            <div class="mt-3 grid gap-3">
+                <div class="rounded-xl bg-white text-black p-4 overflow-x-auto">
+                    <p class="text-xs text-zinc-500 mb-3 border-b border-zinc-200 pb-2">
+                        From: The Section &lt;{{ promo_sender }}&gt;<br>
+                        Subject: <span class="font-semibold text-black">{{ promo.subject }}</span>
+                    </p>
+                    {{ promo.preview_html|safe }}
+                </div>
+                <details>
+                    <summary class="cursor-pointer select-none text-xs text-zinc-500 hover:text-zinc-300">Plain-text version</summary>
+                    <pre class="mt-2 whitespace-pre-wrap text-xs text-zinc-300 bg-zinc-950 border border-zinc-800 rounded-xl p-3">{{ promo.preview_plain }}</pre>
+                </details>
+            </div>
+        </details>
+    {%- endmacro %}
+
+    <div class="max-w-5xl mx-auto">
+        {% include 'staff_nav.html' %}
+
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+            <div>
+                <h1 class="text-3xl font-bold">Promo emails</h1>
+                <p class="text-zinc-400 mt-1">Write or draft a promo, approve it, and it goes out from {{ promo_sender }} at its send time (Denver time). Nothing sends without approval.</p>
+            </div>
+            <a href="{{ url_for('admin_promo_new') }}"
+               class="px-4 py-2 bg-white text-black font-semibold rounded-xl text-sm text-center shrink-0">
+                New promo
+            </a>
+        </div>
+
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+            {% if category == 'error' %}
+            <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ message }}</div>
+            {% else %}
+            <div class="bg-emerald-900/40 border border-emerald-500/50 px-4 py-3 rounded-xl mb-4 text-emerald-100 text-sm">{{ message }}</div>
+            {% endif %}
+        {% endfor %}
+        {% if load_error %}
+        <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ load_error }}</div>
+        {% endif %}
+
+        {% if not sending_configured %}
+        <div class="mb-6 rounded-xl border border-amber-500/50 bg-amber-950/40 px-4 py-3 text-sm text-amber-100" data-testid="promo-not-connected">
+            <p class="font-semibold">Email sending isn’t connected yet.</p>
+            <p class="mt-1 text-amber-200/80">You can write, preview, and approve promos now. Approved promos wait (“approved, waiting for email setup”) until a Gmail app password for {{ promo_sender }} is added on Render as <code class="font-mono text-amber-100">GMAIL_APP_PASSWORD</code>.</p>
+        </div>
+        {% else %}
+        <div class="mb-6 rounded-xl border border-emerald-700/60 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
+            Sending is connected. Approved promos go out automatically at their send time (checked about once a minute), one email per person.
+        </div>
+        {% endif %}
+
+        <section class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+            <div>
+                <h2 class="font-semibold">Draft promo for event</h2>
+                <p class="text-sm text-zinc-400 mt-1">Pre-fills a draft from the event’s details, flyer, and ticket link, set to send 3 days before at 10:00 AM. You review it before anything is approved.</p>
+            </div>
+            {% if upcoming_events %}
+            <form method="POST" class="flex flex-col sm:flex-row gap-2 sm:items-center shrink-0">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="draft_from_event">
+                <select name="event_id" required
+                        class="bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white">
+                    {% for event in upcoming_events %}
+                    <option value="{{ event.id }}">{{ event.label }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-black font-semibold rounded-xl text-sm">
+                    Draft promo
+                </button>
+            </form>
+            {% else %}
+            <p class="text-sm text-zinc-500 shrink-0">No upcoming events. <a href="{{ url_for('admin_events') }}" class="underline hover:text-white">Add one</a> first.</p>
+            {% endif %}
+        </section>
+
+        <h2 class="text-xl font-semibold mb-1">Planned <span class="text-zinc-500 font-normal text-base">({{ planned|length }})</span></h2>
+        <p class="text-sm text-zinc-500 mb-4">Drafts and approved promos, soonest first.</p>
+        {% if planned %}
+        <div class="space-y-4 mb-10">
+            {% for promo in planned %}
+            <article class="rounded-2xl border border-zinc-800 bg-zinc-900 p-5" data-promo-id="{{ promo.id }}">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <h3 class="text-lg font-bold break-words">{{ promo.subject or '(no subject)' }}</h3>
+                        <p class="text-zinc-400 text-sm mt-1">
+                            Sends {{ promo.scheduled_for|promo_time }}
+                            · {{ promo.audience_label }} ({{ audience_counts.get(promo.audience, 0) }})
+                            {% if promo.event_name %} · {{ promo.event_name }}{% endif %}
+                        </p>
+                        {% if promo.status == 'approved' and promo.approved_at %}
+                        <p class="text-zinc-500 text-xs mt-1">Approved {{ promo.approved_at|promo_time }}{% if promo.approved_by %} by {{ promo.approved_by }}{% endif %}</p>
+                        {% endif %}
+                    </div>
+                    {{ status_badge(promo) }}
+                </div>
+                {% if promo.error %}
+                <p class="mt-3 text-xs text-amber-300">Last attempt: {{ promo.error }}</p>
+                {% endif %}
+                <div class="flex flex-wrap gap-2 mt-4">
+                    <a href="{{ url_for('admin_promo_edit', promo_id=promo.id) }}"
+                       class="px-3 py-1.5 rounded-lg border border-zinc-600 text-sm hover:border-white transition-colors">
+                        Edit
+                    </a>
+                    {% if promo.status == 'draft' %}
+                    <form method="POST" class="inline" onsubmit="return confirm('Approve this promo? It will send to {{ promo.audience_label }} at {{ promo.scheduled_for|promo_time }}.');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="approve">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-sm">
+                            Approve
+                        </button>
+                    </form>
+                    {% elif promo.status == 'approved' %}
+                    <form method="POST" class="inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="unapprove">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg border border-zinc-600 text-sm hover:border-white transition-colors">
+                            Back to draft
+                        </button>
+                    </form>
+                    {% if sending_configured %}
+                    <form method="POST" class="inline" onsubmit="return confirm('Send this promo to {{ promo.audience_label }} right now?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="send_now">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg bg-white hover:bg-amber-200 text-black font-semibold text-sm">
+                            Send now
+                        </button>
+                    </form>
+                    {% else %}
+                    <button type="button" disabled title="Connect email sending first"
+                            class="px-3 py-1.5 rounded-lg border border-zinc-800 text-sm text-zinc-600 cursor-not-allowed">
+                        Send now
+                    </button>
+                    {% endif %}
+                    {% endif %}
+                    <form method="POST" class="inline" onsubmit="return confirm('Delete this promo?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg border border-zinc-800 text-sm text-zinc-500 hover:text-red-400 hover:border-red-400/40 transition-colors">
+                            Delete
+                        </button>
+                    </form>
+                </div>
+                {{ preview(promo) }}
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center text-zinc-400 mb-10">
+            Nothing planned. Start a new promo or draft one from an event.
+        </div>
+        {% endif %}
+
+        <h2 class="text-xl font-semibold mb-1">Sent <span class="text-zinc-500 font-normal text-base">({{ sent|length }})</span></h2>
+        <p class="text-sm text-zinc-500 mb-4">Newest first. Failed sends are marked in red.</p>
+        {% if sent %}
+        <div class="space-y-4">
+            {% for promo in sent %}
+            <article class="rounded-2xl border {% if promo.status == 'failed' %}border-red-500/40{% else %}border-zinc-800{% endif %} bg-zinc-900 p-5" data-promo-id="{{ promo.id }}">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <h3 class="text-lg font-bold break-words">{{ promo.subject }}</h3>
+                        <p class="text-zinc-400 text-sm mt-1">
+                            {% if promo.status == 'sent' %}
+                            Sent {{ promo.sent_at|promo_time }} · {{ promo.recipient_count }} recipient{{ '' if promo.recipient_count == 1 else 's' }}
+                            {% elif promo.status == 'sending' %}
+                            Started {{ promo.sending_started_at|promo_time }}{% if promo.recipient_count %} · {{ promo.recipient_count }} sent so far{% endif %}
+                            {% else %}
+                            Failed {{ (promo.finished_at or promo.updated_at)|promo_time }}{% if promo.recipient_count %} · {{ promo.recipient_count }} delivered before it failed{% endif %}
+                            {% endif %}
+                            · {{ promo.audience_label }}
+                            {% if promo.event_name %} · {{ promo.event_name }}{% endif %}
+                        </p>
+                    </div>
+                    {{ status_badge(promo) }}
+                </div>
+                {% if promo.error %}
+                <p class="mt-3 text-sm {% if promo.status == 'failed' %}text-red-300{% else %}text-amber-300{% endif %}">{{ promo.error }}</p>
+                {% endif %}
+                {% if promo.status == 'failed' or promo.stuck %}
+                <div class="flex flex-wrap gap-2 mt-4">
+                    {% if promo.status == 'failed' %}
+                    <form method="POST" class="inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="retry_draft">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg border border-zinc-600 text-sm hover:border-white transition-colors">
+                            Move back to draft
+                        </button>
+                    </form>
+                    <form method="POST" class="inline" onsubmit="return confirm('Delete this failed promo?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg border border-zinc-800 text-sm text-zinc-500 hover:text-red-400 hover:border-red-400/40 transition-colors">
+                            Delete
+                        </button>
+                    </form>
+                    {% elif promo.stuck %}
+                    <form method="POST" class="inline" onsubmit="return confirm('Mark this stuck send as failed?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="action" value="mark_failed">
+                        <input type="hidden" name="promo_id" value="{{ promo.id }}">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg border border-zinc-600 text-sm hover:border-white transition-colors">
+                            Mark as failed
+                        </button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {{ preview(promo, 'View email') }}
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center text-zinc-400">
+            No promos sent yet.
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

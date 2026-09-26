@@ -50,6 +50,12 @@ services:
         value: /opt/render/project/src/data/events.json
       - key: FLYERS_DIR
         value: /opt/render/project/src/data/flyers
+      - key: PROMOS_FILE
+        value: /opt/render/project/src/data/promos.json
+      - key: PROMO_EMAIL_ADDRESS
+        value: thesectionevents@gmail.com
+      - key: GMAIL_APP_PASSWORD
+        sync: false
       - key: LEGACY_BOOTSTRAP_EMAIL
         value: hallieworkshop@gmail.com
       - key: LEGACY_BOOTSTRAP_PASSWORD

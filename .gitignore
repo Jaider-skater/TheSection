@@ -16,6 +16,8 @@ data/full_mailing_list.json
 data/member_invites.json
 data/mailing_list_log.json
 data/flyers/
+data/promos.json
+data/promos.json.*
 data/*.tmp.*
 *.pkpass
 data/costume_photos/*
