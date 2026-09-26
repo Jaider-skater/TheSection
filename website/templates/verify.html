@@ -6,7 +6,6 @@
     <title>Door Scanner • The Section</title>
     <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
     <script src="{{ url_for('static', filename='js/html5-qrcode.min.js') }}"></script>
-    <script src="https://js.stripe.com/v3/"></script>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
     <div class="max-w-lg mx-auto text-center">
@@ -48,38 +47,6 @@
                         onclick="addFreeGirl(-1)"
                         class="px-4 py-3.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:hover:bg-zinc-800 text-zinc-300 rounded-xl text-sm">
                     Undo
-                </button>
-            </div>
-        </div>
-
-        <div class="bg-zinc-900 border border-amber-900/40 rounded-2xl p-3 mb-3">
-            <div class="flex items-center justify-between gap-3 mb-2">
-                <div class="text-left min-w-0">
-                    <p class="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Door sale</p>
-                    <p class="text-[11px] text-zinc-500">+$5 vs online · or charge $15 GA / $30 VIP in the Stripe app</p>
-                </div>
-                <div class="flex items-center gap-3">
-                    <button type="button"
-                            onclick="changeDoorQty(-1)"
-                            class="w-9 h-9 flex items-center justify-center border border-zinc-600 rounded-lg text-xl font-bold">−</button>
-                    <span id="door-qty" class="text-2xl font-black tabular-nums w-6 text-center">1</span>
-                    <button type="button"
-                            onclick="changeDoorQty(1)"
-                            class="w-9 h-9 flex items-center justify-center border border-zinc-600 rounded-lg text-xl font-bold">+</button>
-                </div>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-                <button type="button"
-                        id="door-ga-btn"
-                        onclick="startDoorCheckout('general')"
-                        class="py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold rounded-xl">
-                    GA $<span id="door-ga-price">15</span>
-                </button>
-                <button type="button"
-                        id="door-vip-btn"
-                        onclick="startDoorCheckout('vip')"
-                        class="py-3.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold rounded-xl">
-                    VIP $<span id="door-vip-price">30</span>
                 </button>
             </div>
         </div>
@@ -133,24 +100,6 @@
             Scan Another Ticket
         </button>
 
-        <div id="door-pay-overlay"
-             class="hidden fixed inset-0 z-[80] bg-zinc-950 overflow-y-auto overscroll-y-contain"
-             style="-webkit-overflow-scrolling: touch;">
-            <div class="w-full max-w-lg mx-auto px-4 pt-5 pb-10 text-left">
-                <p class="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">Tap to pay</p>
-                <p id="door-pay-title" class="text-2xl font-black mt-1">GA $15</p>
-                <p id="door-pay-sub" class="text-sm text-zinc-400 mt-1 mb-2">Apple Pay, Google Pay, or card</p>
-                <p id="door-pay-wallet-hint" class="hidden mb-3 text-sm text-amber-200 bg-amber-400/10 border border-amber-400/30 rounded-xl px-3 py-2"></p>
-                <div id="door-pay-element" class="mb-4 w-full"></div>
-                <p id="door-pay-error" class="hidden text-sm text-red-400 mb-3"></p>
-                <button type="button"
-                        id="door-pay-cancel"
-                        class="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-sm">
-                    Cancel
-                </button>
-            </div>
-        </div>
-
         <div id="reset-history" class="hidden mt-8 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
             <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Count reset log</p>
             <p class="text-[11px] text-zinc-500 mb-3">Resets zero the live door counters only. Already-scanned tickets stay void. Create a new event in Admin to start the next sale.</p>
@@ -162,8 +111,6 @@
     const html5QrCode = new Html5Qrcode("reader");
     let scanning = false;
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-    const stripePublishableKey = {{ (stripe_publishable_key or '') | tojson }};
-    const stripe = (stripePublishableKey && window.Stripe) ? Stripe(stripePublishableKey) : null;
     function csrfHeaders(extra = {}) {
         return { 'X-CSRF-Token': csrfToken, ...extra };
     }
@@ -187,7 +134,6 @@
         if (freeEl) freeEl.textContent = freeGirls;
         const undoBtn = document.getElementById('undo-free-girl-btn');
         if (undoBtn) undoBtn.disabled = freeGirls <= 0;
-        updateDoorSaleUi(totals);
 
         const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
@@ -378,242 +324,6 @@
             return;
         }
         await saveScannerSetting({ door_event_id: value }, 'door event');
-    }
-
-    let doorQty = 1;
-    let doorCheckoutBusy = false;
-
-    function formatDoorDollars(cents) {
-        const n = Number(cents || 0) / 100;
-        return Number.isInteger(n) ? String(n) : n.toFixed(2);
-    }
-
-    function doorQtyCap(totals) {
-        const remaining = totals && totals.tickets_remaining;
-        const perOrder = 10;
-        if (remaining == null) return perOrder;
-        return Math.max(0, Math.min(perOrder, remaining));
-    }
-
-    function updateDoorSaleUi(totals) {
-        if (!totals) return;
-        const ga = document.getElementById('door-ga-price');
-        const vip = document.getElementById('door-vip-price');
-        if (ga && totals.door_ga_cents) ga.textContent = formatDoorDollars(totals.door_ga_cents);
-        if (vip && totals.door_vip_cents) vip.textContent = formatDoorDollars(totals.door_vip_cents);
-        const cap = doorQtyCap(totals);
-        window._lastDoorCap = cap || 10;
-        if (cap > 0 && doorQty > cap) doorQty = cap;
-        if (doorQty < 1) doorQty = 1;
-        const qtyEl = document.getElementById('door-qty');
-        if (qtyEl) qtyEl.textContent = doorQty;
-        const soldOut = !!totals.sold_out || cap < 1;
-        const gaBtn = document.getElementById('door-ga-btn');
-        const vipBtn = document.getElementById('door-vip-btn');
-        if (gaBtn) gaBtn.disabled = soldOut || doorCheckoutBusy;
-        if (vipBtn) vipBtn.disabled = soldOut || doorCheckoutBusy;
-    }
-
-    function changeDoorQty(delta) {
-        const cap = window._lastDoorCap || 10;
-        doorQty = Math.max(1, Math.min(cap, doorQty + delta));
-        const qtyEl = document.getElementById('door-qty');
-        if (qtyEl) qtyEl.textContent = doorQty;
-    }
-
-    let doorPayCleanup = null;
-
-    function setDoorPayError(message) {
-        const el = document.getElementById('door-pay-error');
-        if (!el) return;
-        if (!message) {
-            el.classList.add('hidden');
-            el.textContent = '';
-            return;
-        }
-        el.textContent = message;
-        el.classList.remove('hidden');
-    }
-
-    function closeDoorPaySheet() {
-        const overlay = document.getElementById('door-pay-overlay');
-        if (overlay) overlay.classList.add('hidden');
-        if (typeof doorPayCleanup === 'function') {
-            try { doorPayCleanup(); } catch (err) { console.warn(err); }
-            doorPayCleanup = null;
-        }
-        const payEl = document.getElementById('door-pay-element');
-        if (payEl) payEl.innerHTML = '';
-        setDoorPayError('');
-        document.body.style.overflow = '';
-        doorCheckoutBusy = false;
-        const gaBtn = document.getElementById('door-ga-btn');
-        const vipBtn = document.getElementById('door-vip-btn');
-        if (gaBtn) gaBtn.disabled = false;
-        if (vipBtn) vipBtn.disabled = false;
-    }
-
-    function showDoorAdmit(data) {
-        const resultEl = document.getElementById('result');
-        if (!resultEl || !data) return;
-        const typeLabel = data.is_vip ? 'VIP' : 'GA';
-        const typeColor = data.is_vip ? 'text-purple-400' : 'text-emerald-400';
-        const guestWord = data.quantity === 1 ? 'guest' : 'guests';
-        const vipNote = data.vip_overflow_note
-            ? `<div class="text-purple-300 text-sm mt-3">${data.vip_overflow_note}</div>`
-            : '';
-        resultEl.innerHTML = `
-            <div class="text-white text-2xl font-bold mb-1">✅ You're In!</div>
-            <div class="text-6xl font-black leading-none mb-2 ${typeColor}">${typeLabel}</div>
-            <div class="text-3xl font-bold text-white">${data.quantity} ${guestWord}</div>
-            ${vipNote}
-        `;
-        if (data.admission_totals) updateAdmissionTotals(data.admission_totals);
-        const again = document.getElementById('scan-again-btn');
-        if (again) again.classList.remove('hidden');
-    }
-
-    async function finishDoorPayment({ sessionId, paymentIntentId } = {}) {
-        const response = await fetch('/api/door-payment-complete', {
-            method: 'POST',
-            headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({
-                session_id: sessionId || '',
-                payment_intent_id: paymentIntentId || '',
-            }),
-        });
-        if (response.status === 401) {
-            redirectToScannerLogin();
-            return false;
-        }
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload.status !== 'accepted') {
-            throw new Error(payload.error || 'Payment recorded, but the door count did not update.');
-        }
-        closeDoorPaySheet();
-        showDoorAdmit(payload);
-        return true;
-    }
-
-    async function openDoorPaySheet(payload) {
-        if (!stripe) {
-            alert('Tap to pay is not configured. Set STRIPE_PUBLISHABLE_KEY on the server.');
-            return;
-        }
-        const overlay = document.getElementById('door-pay-overlay');
-        const title = document.getElementById('door-pay-title');
-        const sub = document.getElementById('door-pay-sub');
-        const typeLabel = payload.ticket_type === 'vip' ? 'VIP' : 'GA';
-        title.textContent = `${typeLabel} $${formatDoorDollars(payload.amount)}`;
-        sub.textContent = payload.quantity > 1
-            ? `${payload.quantity} guests · scroll to Apple Pay, Google Pay, or card`
-            : 'Scroll if you need to — Apple Pay is at the top in Safari';
-        const hint = document.getElementById('door-pay-wallet-hint');
-        const ua = navigator.userAgent || '';
-        const isiOS = /iPhone|iPad|iPod/i.test(ua);
-        const isChromeOniOS = /CriOS|FxiOS|EdgiOS/i.test(ua);
-        if (hint) {
-            if (isiOS && isChromeOniOS) {
-                hint.textContent = 'Apple Pay / tap to pay only works in Safari on iPhone. Open this scanner in Safari, or pay with card below.';
-                hint.classList.remove('hidden');
-            } else {
-                hint.classList.add('hidden');
-                hint.textContent = '';
-            }
-        }
-        setDoorPayError('');
-        document.body.style.overflow = 'hidden';
-        overlay.classList.remove('hidden');
-        overlay.scrollTop = 0;
-
-        const checkout = await stripe.initEmbeddedCheckout({
-            clientSecret: payload.client_secret,
-        });
-        checkout.mount('#door-pay-element');
-        document.querySelectorAll('#door-pay-element iframe').forEach((frame) => {
-            const allow = frame.getAttribute('allow') || '';
-            if (!/\bpayment\b/.test(allow)) {
-                frame.setAttribute('allow', allow ? allow + '; payment *' : 'payment *');
-            }
-        });
-        const onComplete = async () => {
-            try {
-                await finishDoorPayment({ sessionId: payload.session_id });
-            } catch (err) {
-                setDoorPayError(err.message || 'Paid, but could not admit. Refresh.');
-            }
-        };
-        if (typeof checkout.on === 'function') {
-            checkout.on('complete', onComplete);
-        }
-        const cancelBtn = document.getElementById('door-pay-cancel');
-        cancelBtn.onclick = () => {
-            try { checkout.destroy(); } catch (err) {}
-            closeDoorPaySheet();
-        };
-        doorPayCleanup = () => {
-            cancelBtn.onclick = null;
-            try { checkout.destroy(); } catch (err) {}
-        };
-    }
-
-    async function startDoorCheckout(ticketType) {
-        if (doorCheckoutBusy) return;
-        const doorSelect = document.getElementById('door-event-select');
-        if (doorSelect && !doorSelect.value) {
-            alert('Pick tonight’s event first.');
-            return;
-        }
-        if (!stripe) {
-            alert('Tap to pay is not configured. Add STRIPE_PUBLISHABLE_KEY on Render.');
-            return;
-        }
-        doorCheckoutBusy = true;
-        const gaBtn = document.getElementById('door-ga-btn');
-        const vipBtn = document.getElementById('door-vip-btn');
-        if (gaBtn) gaBtn.disabled = true;
-        if (vipBtn) vipBtn.disabled = true;
-        try {
-            const response = await fetch('/api/door-payment-intent', {
-                method: 'POST',
-                headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({
-                    ticket_type: ticketType,
-                    quantity: doorQty,
-                    event_id: doorSelect ? doorSelect.value : '',
-                }),
-            });
-            if (response.status === 401) {
-                redirectToScannerLogin();
-                return;
-            }
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                alert(payload.error || 'Could not start door checkout. Try again.');
-                doorCheckoutBusy = false;
-                if (gaBtn) gaBtn.disabled = false;
-                if (vipBtn) vipBtn.disabled = false;
-                return;
-            }
-            if (payload.url && !payload.client_secret) {
-                window.location.href = payload.url;
-                return;
-            }
-            if (!payload.client_secret) {
-                alert(payload.error || 'Could not start door checkout. Try again.');
-                doorCheckoutBusy = false;
-                if (gaBtn) gaBtn.disabled = false;
-                if (vipBtn) vipBtn.disabled = false;
-                return;
-            }
-            await openDoorPaySheet(payload);
-        } catch (err) {
-            console.warn('Door checkout failed', err);
-            alert('Could not start tap to pay. Check your connection.');
-            doorCheckoutBusy = false;
-            if (gaBtn) gaBtn.disabled = false;
-            if (vipBtn) vipBtn.disabled = false;
-        }
     }
 
     let freeGirlBusy = false;
@@ -871,23 +581,12 @@
             door_event_id: {{ (admission_totals.door_event_id or admission_totals.current_event_id or none) | tojson }},
             events: {{ (admission_totals.events or []) | tojson }},
             reset_history: {{ (admission_totals.reset_history or []) | tojson }},
-            door_surcharge_cents: {{ admission_totals.door_surcharge_cents or 500 }},
-            door_ga_cents: {{ admission_totals.door_ga_cents or 1500 }},
-            door_vip_cents: {{ admission_totals.door_vip_cents or 3000 }},
         });
         refreshAdmissionTotals();
         if (window.history.replaceState) {
             window.history.replaceState(null, '', window.location.pathname);
         }
-        const returnedIntent = new URLSearchParams(window.location.search).get('payment_intent');
-        if (returnedIntent) {
-            finishDoorPayment({ paymentIntentId: returnedIntent }).catch((err) => {
-                const resultEl = document.getElementById('result');
-                if (resultEl) {
-                    resultEl.innerHTML = `<span class="text-red-400">${err.message || 'Could not admit this door sale.'}</span>`;
-                }
-            });
-        } else if (shouldAutostartScanner()) {
+        if (shouldAutostartScanner()) {
             startScanner();
         }
     });
