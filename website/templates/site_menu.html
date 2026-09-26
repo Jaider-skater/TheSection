@@ -22,6 +22,7 @@
                 <a href="{{ url_for('admin_dashboard') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Admin Dashboard</a>
                 <a href="{{ url_for('admin_events') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Events</a>
                 <a href="{{ url_for('admin_mailing_list') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Mailing Lists</a>
+                <a href="{{ url_for('admin_promos') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Promo emails</a>
                 <a href="{{ url_for('costumes') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Costume contest</a>
                 <form method="POST" action="{{ url_for('admin_costume_contest_toggle') }}" class="border-t border-zinc-800 mt-1 pt-1">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

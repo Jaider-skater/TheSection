@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if is_new %}New promo{% else %}Edit promo{% endif %} • The Section</title>
+    <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
+    <style>
+        input[type="datetime-local"] {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            display: block;
+            box-sizing: border-box;
+            -webkit-appearance: none;
+            appearance: none;
+            min-height: 2.75rem;
+        }
+    </style>
+</head>
+<body class="bg-zinc-950 text-white min-h-screen p-6">
+    <div class="max-w-3xl mx-auto">
+        {% include 'staff_nav.html' %}
+
+        <h1 class="text-3xl font-bold mb-2">{% if is_new %}New promo{% else %}Edit promo{% endif %}</h1>
+        <p class="text-zinc-400 mb-8">
+            Saving keeps it as a draft. Approve it from the <a href="{{ url_for('admin_promos') }}" class="underline hover:text-white">Promo emails</a> list to schedule it.
+            {% if promo and promo.status == 'approved' %}
+            <span class="block mt-2 text-amber-300 text-sm">This promo is approved. Saving changes moves it back to draft so it has to be approved again.</span>
+            {% endif %}
+        </p>
+
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+            {% if category == 'error' %}
+            <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ message }}</div>
+            {% else %}
+            <div class="bg-emerald-900/40 border border-emerald-500/50 px-4 py-3 rounded-xl mb-4 text-emerald-100 text-sm">{{ message }}</div>
+            {% endif %}
+        {% endfor %}
+        {% if error %}
+        <div class="bg-red-900/40 border border-red-500/50 px-4 py-3 rounded-xl mb-4 text-red-100 text-sm">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" class="space-y-5">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="event_id" value="{{ form.event_id }}">
+            {% if event_name %}
+            <p class="text-sm text-zinc-400">For event: <span class="text-white font-medium">{{ event_name }}</span></p>
+            {% endif %}
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="subject">Subject</label>
+                <input id="subject" name="subject" required maxlength="200" value="{{ form.subject }}"
+                       class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                       placeholder="Halloween at The Section — Saturday, October 24th">
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="body">Email</label>
+                <textarea id="body" name="body" rows="14" required
+                          class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white font-mono text-sm"
+                          placeholder="Write it like a normal email. Links become clickable. Leave a blank line between paragraphs.">{{ form.body }}</textarea>
+                <p class="text-zinc-500 text-xs mt-1">Plain text. A simple styled version is sent too. This line is added at the bottom automatically: “{{ unsubscribe_line }}”</p>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 sm:gap-4">
+                <div class="min-w-0">
+                    <label class="block text-sm text-zinc-400 mb-1" for="audience">Send to</label>
+                    <select id="audience" name="audience"
+                            class="block w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white min-h-[2.75rem]">
+                        {% for key, label in audiences.items() %}
+                        <option value="{{ key }}" {% if form.audience == key %}selected{% endif %}>{{ label }} ({{ audience_counts.get(key, 0) }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="min-w-0">
+                    <label class="block text-sm text-zinc-400 mb-1" for="scheduled_for">Send time (Denver, {{ timezone_label }})</label>
+                    <input id="scheduled_for" name="scheduled_for" type="datetime-local" required value="{{ form.scheduled_for_input }}"
+                           class="block w-full min-w-0 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-base text-white focus:outline-none focus:border-white">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm text-zinc-400 mb-1" for="image_url">Image URL (optional)</label>
+                <input id="image_url" name="image_url" value="{{ form.image_url }}"
+                       class="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-white"
+                       placeholder="https://thesection.onrender.com/media/flyers/…">
+                <p class="text-zinc-500 text-xs mt-1">Shown at the top of the styled email, e.g. the event flyer.</p>
+            </div>
+
+            <div class="flex flex-wrap gap-3 pt-2">
+                <button type="submit" class="px-5 py-2.5 bg-white text-black font-semibold rounded-xl text-sm">
+                    Save draft
+                </button>
+                <a href="{{ url_for('admin_promos') }}" class="px-5 py-2.5 border border-zinc-600 rounded-xl text-sm hover:border-white transition-colors">
+                    Cancel
+                </a>
+            </div>
+        </form>
+
+        {% if preview_html %}
+        <section class="mt-10">
+            <h2 class="text-xl font-semibold mb-3">Preview (last saved version)</h2>
+            <div class="rounded-xl bg-white text-black p-4 overflow-x-auto">
+                <p class="text-xs text-zinc-500 mb-3 border-b border-zinc-200 pb-2">Subject: <span class="font-semibold text-black">{{ promo.subject }}</span></p>
+                {{ preview_html|safe }}
+            </div>
+        </section>
+        {% endif %}
+    </div>
+</body>
+</html>
