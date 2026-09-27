@@ -6,34 +6,44 @@
     <title>Door Scanner • The Section</title>
     <script src="{{ url_for('static', filename='js/tailwindcdn.js') }}"></script>
     <script src="{{ url_for('static', filename='js/html5-qrcode.min.js') }}"></script>
+    <style>
+        /* Desktop-only camera placeholder: shown in place of the hidden #reader
+           so the scanner column is not empty before the camera starts. */
+        .door-camera-placeholder { display: none; }
+        @media (min-width: 768px) {
+            #reader.hidden + .door-camera-placeholder { display: flex; }
+        }
+    </style>
 </head>
-<body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4">
-    <div class="max-w-lg mx-auto text-center">
+<body class="bg-zinc-950 text-white min-h-screen p-3 sm:p-4 md:p-6">
+    <div class="max-w-lg mx-auto text-center md:max-w-5xl">
         {% include 'staff_nav.html' %}
         <meta name="csrf-token" content="{{ csrf_token }}">
-        <div id="admission-totals" class="grid grid-cols-3 gap-2 mb-2">
-            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
-                <p class="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold">GA</p>
-                <p id="total-ga" class="text-3xl font-black tabular-nums">{{ admission_totals.ga }}</p>
+        <div id="door-layout" class="md:grid md:grid-cols-12 md:grid-rows-[auto_1fr] md:gap-x-8 md:gap-y-4 md:items-start">
+        <div id="door-controls" class="md:col-start-8 md:col-span-5 md:row-start-1">
+        <div id="admission-totals" class="grid grid-cols-3 gap-2 mb-2 md:gap-3 md:mb-3">
+            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3 md:p-4">
+                <p class="text-[10px] md:text-xs uppercase tracking-wider text-emerald-400 font-semibold">GA</p>
+                <p id="total-ga" class="text-3xl lg:text-4xl font-black tabular-nums">{{ admission_totals.ga }}</p>
             </div>
-            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
-                <p class="text-[10px] uppercase tracking-wider text-purple-400 font-semibold">VIP</p>
-                <p id="total-vip" class="text-3xl font-black tabular-nums">{{ admission_totals.vip }}</p>
-                <p id="vip-capacity-progress" class="hidden text-[10px] text-zinc-500 mt-1 tabular-nums"></p>
+            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3 md:p-4">
+                <p class="text-[10px] md:text-xs uppercase tracking-wider text-purple-400 font-semibold">VIP</p>
+                <p id="total-vip" class="text-3xl lg:text-4xl font-black tabular-nums">{{ admission_totals.vip }}</p>
+                <p id="vip-capacity-progress" class="hidden text-[10px] md:text-xs text-zinc-500 mt-1 tabular-nums"></p>
             </div>
-            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
-                <p class="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">Total</p>
-                <p id="total-all" class="text-3xl font-black tabular-nums">{{ admission_totals.total }}</p>
+            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3 md:p-4">
+                <p class="text-[10px] md:text-xs uppercase tracking-wider text-zinc-400 font-semibold">Total</p>
+                <p id="total-all" class="text-3xl lg:text-4xl font-black tabular-nums">{{ admission_totals.total }}</p>
             </div>
         </div>
 
-        <div class="bg-zinc-900 border border-rose-900/50 rounded-2xl p-3 mb-3">
+        <div class="bg-zinc-900 border border-rose-900/50 rounded-2xl p-3 mb-3 md:p-4">
             <div class="flex items-center justify-between gap-3 mb-2">
                 <div class="text-left min-w-0">
-                    <p class="text-[10px] uppercase tracking-wider text-rose-400 font-semibold">Free girls</p>
-                    <p class="text-[11px] text-zinc-500">First-hour comps · counted in GA + Total</p>
+                    <p class="text-[10px] md:text-xs uppercase tracking-wider text-rose-400 font-semibold">Free girls</p>
+                    <p class="text-[11px] md:text-xs text-zinc-500">First-hour comps · counted in GA + Total</p>
                 </div>
-                <p id="total-free-girls" class="text-3xl font-black tabular-nums text-rose-300">{{ admission_totals.free_girls or 0 }}</p>
+                <p id="total-free-girls" class="text-3xl lg:text-4xl font-black tabular-nums text-rose-300">{{ admission_totals.free_girls or 0 }}</p>
             </div>
             <div class="flex items-center gap-2">
                 <button type="button"
@@ -60,16 +70,16 @@
             VIP area full — new VIP scans admit as GA.
         </div>
 
-        <div class="mb-4 flex flex-col items-center gap-2 text-xs">
+        <div class="mb-4 flex flex-col items-center gap-2 text-xs md:mb-0 md:text-sm">
             <div id="door-event-banner" class="w-full mb-1 rounded-2xl border-2 border-white bg-zinc-900 px-4 py-3">
-                <p class="text-[10px] uppercase tracking-[2px] text-zinc-400">Scanning for</p>
+                <p class="text-[10px] md:text-xs uppercase tracking-[2px] text-zinc-400">Scanning for</p>
                 <p id="door-event-label" class="text-2xl font-bold leading-tight">Pick tonight’s event</p>
             </div>
             <div class="flex items-center justify-center gap-2 flex-wrap">
                 <label for="door-event-select" class="text-zinc-500">Door event</label>
                 <select id="door-event-select"
                         onchange="saveDoorEvent()"
-                        class="max-w-[220px] bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
+                        class="max-w-[220px] md:max-w-[260px] bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-center focus:outline-none focus:border-zinc-500">
                 </select>
             </div>
             <div class="flex items-center justify-center gap-3 flex-wrap">
@@ -80,15 +90,22 @@
                 </button>
             </div>
         </div>
+        </div>
 
-        <h1 class="text-3xl sm:text-4xl font-bold mb-2">🎟️ Door Scanner</h1>
-        <p class="text-zinc-400 text-sm mb-4">Tap start, then point at the guest's QR code</p>
+        <div id="door-scanner-panel" class="md:col-start-1 md:col-span-7 md:row-start-1 md:row-span-2">
 
-        <div id="reader" class="w-full aspect-[5/6] bg-black rounded-3xl overflow-hidden mb-4 border-4 border-zinc-700 hidden"></div>
+        <h1 class="text-3xl sm:text-4xl lg:text-5xl font-bold mb-2 md:mb-3">🎟️ Door Scanner</h1>
+        <p class="text-zinc-400 text-sm mb-4 md:text-base md:mb-5">Tap start, then point at the guest's QR code</p>
+
+        <div id="reader" class="w-full aspect-[5/6] md:aspect-[4/3] bg-black rounded-3xl overflow-hidden mb-4 border-4 border-zinc-700 hidden"></div>
+        <div class="door-camera-placeholder w-full aspect-[4/3] mb-4 rounded-3xl border-4 border-dashed border-zinc-800 bg-zinc-900/40 flex-col items-center justify-center gap-2 text-zinc-500" aria-hidden="true">
+            <span class="text-5xl">📷</span>
+            <span class="text-sm">Camera preview appears here</span>
+        </div>
 
         <button id="start-btn"
                 onclick="startScanner()"
-                class="w-full py-4 mb-4 bg-white text-black font-semibold rounded-2xl text-lg">
+                class="w-full py-4 mb-4 bg-white md:hover:bg-zinc-200 text-black font-semibold rounded-2xl text-lg md:text-xl">
             Start Scanner
         </button>
 
@@ -96,14 +113,16 @@
 
         <button id="scan-again-btn"
                 onclick="restartScanner()"
-                class="hidden mt-6 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm">
+                class="hidden mt-6 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm md:text-base md:px-8">
             Scan Another Ticket
         </button>
+        </div>
 
-        <div id="reset-history" class="hidden mt-8 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-            <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Count reset log</p>
-            <p class="text-[11px] text-zinc-500 mb-3">Resets zero the live door counters only. Already-scanned tickets stay void. Create a new event in Admin to start the next sale.</p>
-            <ul id="reset-history-list" class="space-y-2 text-xs text-zinc-400 max-h-48 overflow-y-auto"></ul>
+        <div id="reset-history" class="hidden mt-8 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 md:mt-0 md:col-start-8 md:col-span-5 md:row-start-2 md:px-5 md:py-4">
+            <p class="text-[10px] md:text-xs uppercase tracking-wider text-zinc-500 mb-2">Count reset log</p>
+            <p class="text-[11px] md:text-xs text-zinc-500 mb-3">Resets zero the live door counters only. Already-scanned tickets stay void. Create a new event in Admin to start the next sale.</p>
+            <ul id="reset-history-list" class="space-y-2 text-xs md:text-sm text-zinc-400 max-h-48 md:max-h-64 overflow-y-auto"></ul>
+        </div>
         </div>
     </div>
 
