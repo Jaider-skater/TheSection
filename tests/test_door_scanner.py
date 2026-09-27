@@ -229,6 +229,11 @@ class DoorScannerTests(unittest.TestCase):
             self.assertIn(b'saveDoorEvent', page.data)
             self.assertIn(b'resetAdmissionTotals', page.data)
             self.assertIn(b'start-btn', page.data)
+            # Desktop two-column layout wrappers (mobile stays single column).
+            self.assertIn(b'id="door-layout"', page.data)
+            self.assertIn(b'id="door-scanner-panel"', page.data)
+            self.assertIn(b'id="door-controls"', page.data)
+            self.assertIn(b'md:max-w-5xl', page.data)
 
     def test_apple_pay_domain_file_is_public(self):
         client = thesection.app.test_client()
