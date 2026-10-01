@@ -163,7 +163,9 @@ PROTECTED_MAILING_LIST_EMAILS = frozenset({
     'hallieworkshop@gmail.com',
     'thesectionevents@gmail.com',
 })
-APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'America/Los_Angeles')
+# Idaho Falls, ID is on Mountain time (America/Boise follows the same rules as
+# America/Denver). Drives admin timestamps and the event-day ("today") logic.
+APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'America/Boise')
 stripe_webhook_secret = (os.getenv('STRIPE_WEBHOOK_SECRET') or '').strip()
 
 
@@ -275,6 +277,13 @@ HALLOWEEN_EVENT_DATE = '2026-10-24'
 # Local calendar date: purchases before this day are void at the door and omitted from Ticket Sales.
 TICKET_VALIDITY_CUTOFF_DATE = os.getenv('TICKET_VALIDITY_CUTOFF', '2026-09-08').strip() or '2026-09-08'
 TICKET_VALIDITY_RESET_TOKEN = 'void-before-2026-09-08-1'
+# The Sept 8 void ran while the app was on Pacific time, so production stored
+# midnight Sept 8 PDT (07:00 UTC) as the cutoff. Pin that exact instant so the
+# move to Mountain time doesn't shift which tickets the door treats as void.
+# Any other cutoff date is read as midnight in APP_TIMEZONE.
+PINNED_TICKET_VALIDITY_CUTOFFS = {
+    '2026-09-08': datetime(2026, 9, 8, 7, 0, tzinfo=timezone.utc),
+}
 
 TICKET_TYPES = {
     'general': {
@@ -3507,6 +3516,9 @@ def ticket_counts_for_current_period(scanned_at):
 def ticket_validity_cutoff():
     """First instant (app timezone) at which a purchase is still valid."""
     raw = TICKET_VALIDITY_CUTOFF_DATE
+    pinned = PINNED_TICKET_VALIDITY_CUTOFFS.get(raw[:10])
+    if pinned is not None:
+        return pinned
     try:
         year, month, day = (int(part) for part in raw.split('-')[:3])
     except Exception:
@@ -5476,7 +5488,7 @@ _display_tz = None
 def get_display_timezone():
     global _display_tz
     if _display_tz is None:
-        for key in (APP_TIMEZONE, 'America/Los_Angeles'):
+        for key in (APP_TIMEZONE, 'America/Boise'):
             try:
                 _display_tz = ZoneInfo(key)
                 break
