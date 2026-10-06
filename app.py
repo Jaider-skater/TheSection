@@ -3429,9 +3429,26 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
     return False
 
 
-def get_counting_epoch():
+def event_counting_epoch_raw(settings, event_id):
+    """ISO string (or None) of the counting epoch in force for one door event.
+
+    Resets are per event: ``counting_epochs`` maps event id -> epoch (None
+    means "count every scan"). Events that have not been reset since per-event
+    epochs existed fall back to the legacy global ``counting_epoch``.
+    """
+    target = (event_id or '').strip()
+    epochs = settings.get('counting_epochs')
+    if target and isinstance(epochs, dict) and target in epochs:
+        value = epochs.get(target)
+        return str(value) if value else None
+    legacy = settings.get('counting_epoch')
+    return str(legacy) if legacy else None
+
+
+def get_counting_epoch(event_id=None):
     settings = load_scanner_settings()
-    return parse_iso_datetime(settings.get('counting_epoch'))
+    target = (event_id or get_door_event_id() or '').strip()
+    return parse_iso_datetime(event_counting_epoch_raw(settings, target))
 
 
 def get_sales_epoch():
@@ -3502,15 +3519,19 @@ def ticket_belongs_to_current_event(record):
     return ticket_belongs_to_event(record, get_door_event_id())
 
 
-def ticket_counts_for_current_period(scanned_at):
-    """Whether a scan should count toward the live GA/VIP/total boards."""
-    scanned = parse_iso_datetime(scanned_at)
+def counts_since_epoch(timestamp, counting_epoch):
+    """True when a scan/comp timestamp is inside the counting period."""
+    scanned = parse_iso_datetime(timestamp)
     if not scanned:
         return False
-    counting_epoch = get_counting_epoch()
     if counting_epoch is None:
         return True
     return scanned >= counting_epoch
+
+
+def ticket_counts_for_current_period(scanned_at, event_id=None):
+    """Whether a scan should count toward the live GA/VIP/total boards."""
+    return counts_since_epoch(scanned_at, get_counting_epoch(event_id))
 
 
 def ticket_validity_cutoff():
@@ -3557,7 +3578,7 @@ def ticket_counts_for_current_sales_period(purchased_at):
     return purchased >= epoch
 
 
-def get_reset_history():
+def get_reset_history(annotate=False):
     settings = load_scanner_settings()
     history = settings.get('reset_history', [])
     if not isinstance(history, list):
@@ -3573,6 +3594,8 @@ def get_reset_history():
             settings = load_scanner_settings()
             settings['reset_history'] = history[-50:]  # bound growth
             save_scanner_settings(settings)
+    if annotate:
+        return annotate_reset_history(load_scanner_settings(), history)
     return history
 
 
@@ -3603,44 +3626,186 @@ def delete_reset_history_entry(entry_id):
         return True
 
 
-def reset_admission_counts():
+def reset_admission_counts(event_id=None):
     """Zero live counts for a new period WITHOUT making old tickets reusable.
 
-    Scanned tickets keep scanned_at forever (void). Counts only include scans
-    at/after counting_epoch. Each reset is logged for the door team.
+    Resets are per door event: only that event's counting epoch moves to now.
+    Scanned tickets keep scanned_at forever (void) and free-girl comps are
+    kept on disk, so a reset only hides them from the live boards. Each reset
+    is logged with the epoch it replaced, which is what makes it restorable.
     """
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
-    counts = compute_admission_counts()
+    target = (event_id or get_door_event_id() or '').strip()
+    counts = compute_admission_counts(target or None)
+    event = get_event(target) if target else None
 
     with scanner_settings_lock:
         settings = load_scanner_settings()
         history = settings.get('reset_history', [])
         if not isinstance(history, list):
             history = []
-        history.append({
+        entry = {
             'id': secrets.token_hex(8),
             'reset_at': now_iso,
             'ga': counts['ga'],
             'vip': counts['vip'],
             'total': counts['total'],
             'free_girls': counts.get('free_girls', 0),
-        })
+        }
+        if target:
+            epochs = settings.get('counting_epochs')
+            if not isinstance(epochs, dict):
+                epochs = {}
+            entry['event_id'] = target
+            entry['event_name'] = (event or {}).get('name') or ''
+            entry['previous_epoch'] = event_counting_epoch_raw(settings, target)
+            epochs[target] = now_iso
+            settings['counting_epochs'] = epochs
+        else:
+            # No door event picked: nothing is counted anyway. Keep the old
+            # global behaviour (not restorable; logged for the record).
+            settings['counting_epoch'] = now_iso
+        history.append(entry)
         # Keep last 50 resets
         settings['reset_history'] = history[-50:]
-        settings['counting_epoch'] = now_iso
-        # First-hour comps follow the same counting period as scanned tickets.
-        settings['free_girls_entries'] = []
         save_scanner_settings(settings)
 
     return {
         'reset_at': now_iso,
+        'event_id': target or None,
         'ga': counts['ga'],
         'vip': counts['vip'],
         'total': counts['total'],
         'free_girls': counts.get('free_girls', 0),
         'cleared': 0,  # tickets stay void; not cleared
     }
+
+
+def reset_entry_supports_restore(entry):
+    """Entries logged before restore existed lack the epoch they replaced."""
+    return (
+        isinstance(entry, dict)
+        and bool((entry.get('event_id') or '').strip())
+        and bool(entry.get('reset_at'))
+        and 'previous_epoch' in entry
+    )
+
+
+def annotate_reset_history(settings, history):
+    """Copies of the reset log rows with restore state for the scanner UI.
+
+    A reset can be restored only while it is the reset currently in force for
+    its event (the event's counting epoch still equals its reset_at). That
+    makes restore exact: moving the epoch back to previous_epoch brings back
+    the before-reset counts and keeps everything counted since. Older resets
+    become restorable once the later ones are restored (newest first).
+    A restore can be undone while the epoch is still the one it put back.
+    """
+    rows = []
+    undo_pick = {}
+    for entry in history if isinstance(history, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        row = dict(entry)
+        row['can_restore'] = False
+        row['can_undo_restore'] = False
+        row['restore_block'] = None
+        if not reset_entry_supports_restore(entry):
+            row['restore_block'] = 'legacy'
+        else:
+            event_id = entry['event_id'].strip()
+            current = event_counting_epoch_raw(settings, event_id)
+            if entry.get('restored_at'):
+                row['restore_block'] = 'restored'
+                if current == (entry.get('previous_epoch') or None):
+                    best = undo_pick.get(event_id)
+                    if best is None or str(entry.get('restored_at')) >= str(rows[best].get('restored_at')):
+                        undo_pick[event_id] = len(rows)
+            elif current == str(entry['reset_at']):
+                row['can_restore'] = True
+            else:
+                row['restore_block'] = 'superseded'
+        rows.append(row)
+    for index in undo_pick.values():
+        rows[index]['can_undo_restore'] = True
+    return rows
+
+
+def _reset_history_index(history, entry_id):
+    target = (entry_id or '').strip()
+    if not target or not isinstance(history, list):
+        return None
+    for index, entry in enumerate(history):
+        if isinstance(entry, dict) and str(entry.get('id') or entry.get('reset_at') or '') == target:
+            return index
+    return None
+
+
+RESTORE_BLOCK_MESSAGES = {
+    'legacy': 'This reset was logged before restore existed, so it cannot be restored.',
+    'restored': 'This reset was already restored.',
+    'superseded': 'A later reset for this event is still in effect. Restore the newest reset first.',
+}
+
+
+def restore_reset_history_entry(entry_id):
+    """Undo one count reset. Returns (ok, error_message, http_status)."""
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        history = settings.get('reset_history', [])
+        index = _reset_history_index(history, entry_id)
+        if index is None:
+            return False, 'Reset history entry not found', 404
+        entry = history[index]
+        state = next(
+            (row for row in annotate_reset_history(settings, history)
+             if str(row.get('id') or row.get('reset_at') or '') == str(entry.get('id') or entry.get('reset_at') or '')),
+            None,
+        )
+        if not state or not state['can_restore']:
+            block = (state or {}).get('restore_block') or 'superseded'
+            return False, RESTORE_BLOCK_MESSAGES.get(block, 'This reset cannot be restored.'), 409
+        epochs = settings.get('counting_epochs')
+        if not isinstance(epochs, dict):
+            epochs = {}
+        epochs[entry['event_id'].strip()] = entry.get('previous_epoch') or None
+        settings['counting_epochs'] = epochs
+        entry['restored_at'] = datetime.now(timezone.utc).isoformat()
+        settings['reset_history'] = history
+        if not save_scanner_settings(settings):
+            return False, 'Could not save. Try again.', 500
+    return True, None, 200
+
+
+def undo_reset_restore(entry_id):
+    """Re-apply a restored reset at its original time. Returns (ok, error, status)."""
+    with scanner_settings_lock:
+        settings = load_scanner_settings()
+        history = settings.get('reset_history', [])
+        index = _reset_history_index(history, entry_id)
+        if index is None:
+            return False, 'Reset history entry not found', 404
+        entry = history[index]
+        key = str(entry.get('id') or entry.get('reset_at') or '')
+        state = next(
+            (row for row in annotate_reset_history(settings, history)
+             if str(row.get('id') or row.get('reset_at') or '') == key),
+            None,
+        )
+        if not state or not state['can_undo_restore']:
+            return False, 'This restore cannot be undone (counts changed by a newer reset or restore).', 409
+        epochs = settings.get('counting_epochs')
+        if not isinstance(epochs, dict):
+            epochs = {}
+        epochs[entry['event_id'].strip()] = entry['reset_at']
+        settings['counting_epochs'] = epochs
+        entry.pop('restored_at', None)
+        entry['restore_undone_at'] = datetime.now(timezone.utc).isoformat()
+        settings['reset_history'] = history
+        if not save_scanner_settings(settings):
+            return False, 'Could not save. Try again.', 500
+    return True, None, 200
 
 
 def reset_ticket_sales():
@@ -4945,6 +5110,9 @@ def admission_entry_type(ticket):
     return 'vip' if ticket.get('ticket_type') == 'vip' else 'ga'
 
 
+FREE_GIRLS_RETENTION = 5000
+
+
 def normalize_free_girls_entries(raw):
     if not isinstance(raw, list):
         return []
@@ -4976,11 +5144,12 @@ def compute_free_girls_count(event_id=None):
     if not target:
         return 0
     settings = load_scanner_settings()
+    epoch = parse_iso_datetime(event_counting_epoch_raw(settings, target))
     total = 0
     for entry in normalize_free_girls_entries(settings.get('free_girls_entries')):
         if entry['event_id'] != target:
             continue
-        if not ticket_counts_for_current_period(entry.get('at')):
+        if not counts_since_epoch(entry.get('at'), epoch):
             continue
         total += entry['quantity']
     return total
@@ -5006,6 +5175,7 @@ def add_free_girls(delta=1, event_id=None):
     with scanner_settings_lock:
         settings = load_scanner_settings()
         entries = normalize_free_girls_entries(settings.get('free_girls_entries'))
+        epoch = parse_iso_datetime(event_counting_epoch_raw(settings, target))
         if change > 0:
             now_iso = datetime.now(timezone.utc).isoformat()
             for _ in range(change):
@@ -5022,17 +5192,14 @@ def add_free_girls(delta=1, event_id=None):
                 if (
                     remaining
                     and entry['event_id'] == target
-                    and ticket_counts_for_current_period(entry.get('at'))
+                    and counts_since_epoch(entry.get('at'), epoch)
                 ):
                     remaining -= 1
                     continue
                 kept.append(entry)
             entries = list(reversed(kept))
-        pruned = [
-            entry for entry in entries
-            if ticket_counts_for_current_period(entry.get('at'))
-        ]
-        settings['free_girls_entries'] = pruned[-2000:]
+        # Comps from before a reset stay on disk so the reset can be restored.
+        settings['free_girls_entries'] = entries[-FREE_GIRLS_RETENTION:]
         if not save_scanner_settings(settings):
             return None
     return get_admission_totals()
@@ -5045,9 +5212,10 @@ def compute_admission_counts(event_id=None):
     vip = 0
     if not target:
         return {'ga': 0, 'vip': 0, 'total': 0, 'free_girls': 0}
+    epoch = get_counting_epoch(target)
     for ticket in load_tickets():
         scanned_at = ticket.get('scanned_at')
-        if not scanned_at or not ticket_counts_for_current_period(scanned_at):
+        if not scanned_at or not counts_since_epoch(scanned_at, epoch):
             continue
         if not ticket_belongs_to_event(ticket, target):
             continue
@@ -5179,8 +5347,9 @@ def get_admission_totals():
         'max_vip_capacity': max_vip_capacity,
         'vip_capacity_reached': vip_capacity_reached,
         'vip_spots_remaining': vip_spots_remaining,
-        'reset_history': get_reset_history(),
-        'counting_epoch': settings.get('counting_epoch'),
+        'reset_history': get_reset_history(annotate=True),
+        'counting_epoch': event_counting_epoch_raw(settings, door_event_id),
+        'display_timezone': APP_TIMEZONE,
         'sales_epoch': settings.get('sales_epoch'),
         'current_event_id': door_event_id,
         'featured_event_id': get_featured_event_id(),
@@ -6485,6 +6654,32 @@ def delete_admission_reset_history():
     entry_id = data.get('id') or request.args.get('id') or ''
     if not delete_reset_history_entry(entry_id):
         return jsonify({'error': 'Reset history entry not found'}), 404
+    return jsonify(get_admission_totals())
+
+
+@app.route('/api/admission-totals/reset-history/restore', methods=['POST'])
+def restore_admission_reset_history():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get('id') or request.args.get('id') or ''
+    ok, error, status = restore_reset_history_entry(entry_id)
+    if not ok:
+        return jsonify({'error': error, **get_admission_totals()}), status
+    return jsonify(get_admission_totals())
+
+
+@app.route('/api/admission-totals/reset-history/undo-restore', methods=['POST'])
+def undo_restore_admission_reset_history():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get('id') or request.args.get('id') or ''
+    ok, error, status = undo_reset_restore(entry_id)
+    if not ok:
+        return jsonify({'error': error, **get_admission_totals()}), status
     return jsonify(get_admission_totals())
 
 
