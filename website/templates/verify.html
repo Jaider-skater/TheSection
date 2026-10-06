@@ -120,7 +120,7 @@
 
         <div id="reset-history" class="hidden mt-8 text-left rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 md:mt-0 md:col-start-8 md:col-span-5 md:row-start-2 md:px-5 md:py-4">
             <p class="text-[10px] md:text-xs uppercase tracking-wider text-zinc-500 mb-2">Count reset log</p>
-            <p class="text-[11px] md:text-xs text-zinc-500 mb-3">Resets zero the live door counters only. Already-scanned tickets stay void. Create a new event in Admin to start the next sale.</p>
+            <p id="reset-help" class="text-[11px] md:text-xs text-zinc-500 mb-3">Resets zero the live door counters for that event only. Already-scanned tickets stay void. Reset by mistake? Tap <span class="text-emerald-400 font-semibold">Restore</span> on the newest reset to bring its counts back; scans and free girls added since are kept. Create a new event in Admin to start the next sale.</p>
             <ul id="reset-history-list" class="space-y-2 text-xs md:text-sm text-zinc-400 max-h-48 md:max-h-64 overflow-y-auto"></ul>
         </div>
         </div>
@@ -213,20 +213,44 @@
             }
         }
 
+        if (totals.display_timezone) siteTimeZone = totals.display_timezone;
         updateResetHistory(totals.reset_history);
+    }
+
+    let siteTimeZone = {{ (admission_totals.display_timezone or 'America/Boise') | tojson }};
+    let resetHistoryById = {};
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[ch]));
     }
 
     function formatResetTimestamp(iso) {
         if (!iso) return 'Unknown time';
         const date = new Date(iso);
         if (Number.isNaN(date.getTime())) return iso;
-        return date.toLocaleString(undefined, {
+        const options = {
             month: 'short',
             day: 'numeric',
             year: 'numeric',
             hour: 'numeric',
             minute: '2-digit',
-        });
+        };
+        try {
+            return date.toLocaleString(undefined, { ...options, timeZone: siteTimeZone });
+        } catch (err) {
+            return date.toLocaleString(undefined, options);
+        }
+    }
+
+    function resetBeforeSummary(entry) {
+        const ga = entry.ga ?? 0;
+        const vip = entry.vip ?? 0;
+        const total = entry.total ?? (ga + vip);
+        const freeGirls = entry.free_girls ?? 0;
+        const freeNote = freeGirls ? ` · ${freeGirls} free` : '';
+        return `GA ${ga} · VIP ${vip} · ${total} total${freeNote}`;
     }
 
     function updateResetHistory(history) {
@@ -242,33 +266,111 @@
         }
 
         section.classList.remove('hidden');
+        resetHistoryById = {};
         list.innerHTML = entries.map(entry => {
             const when = formatResetTimestamp(entry.reset_at);
-            const ga = entry.ga ?? 0;
-            const vip = entry.vip ?? 0;
-            const total = entry.total ?? (ga + vip);
-            const freeGirls = entry.free_girls ?? 0;
-            const freeNote = freeGirls ? ` · ${freeGirls} free` : '';
-            const entryId = entry.id || entry.reset_at || '';
-            const safeId = String(entryId).replace(/"/g, '&quot;');
-            return `<li class="flex items-center justify-between gap-3 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
-                <div class="min-w-0 text-left">
-                    <span class="text-zinc-300 block">${when}</span>
-                    <span class="tabular-nums text-zinc-500 text-[11px]">Was GA ${ga} · VIP ${vip} · ${total} total${freeNote}</span>
-                </div>
-                <button type="button"
+            const entryId = String(entry.id || entry.reset_at || '');
+            resetHistoryById[entryId] = entry;
+            const safeId = escapeHtml(entryId);
+            const eventName = entry.event_name ? `<span class="text-zinc-500"> · ${escapeHtml(entry.event_name)}</span>` : '';
+            let status = '';
+            if (entry.restored_at) {
+                status = `<span class="block text-[11px] text-emerald-400">Restored ${formatResetTimestamp(entry.restored_at)}</span>`;
+            } else if (entry.restore_block === 'superseded') {
+                status = '<span class="block text-[11px] text-zinc-600">Restore the newer reset first</span>';
+            } else if (entry.restore_block === 'legacy') {
+                status = '<span class="block text-[11px] text-zinc-600">Logged before restore existed</span>';
+            }
+            let action = '';
+            if (entry.can_restore) {
+                action = `<button type="button"
                         data-reset-id="${safeId}"
-                        onclick="deleteResetHistoryEntry(this.dataset.resetId)"
-                        class="shrink-0 text-[11px] text-zinc-500 hover:text-red-400 transition-colors px-2 py-1">
-                    Delete
-                </button>
+                        onclick="restoreResetHistoryEntry(this.dataset.resetId)"
+                        class="reset-restore-btn text-[11px] font-semibold text-emerald-300 border border-emerald-500/50 hover:bg-emerald-500/10 rounded-lg px-2.5 py-1 transition-colors">
+                    Restore
+                </button>`;
+            } else if (entry.can_undo_restore) {
+                action = `<button type="button"
+                        data-reset-id="${safeId}"
+                        onclick="undoRestoreResetHistoryEntry(this.dataset.resetId)"
+                        class="reset-undo-restore-btn text-[11px] text-zinc-400 hover:text-amber-300 px-2 py-1 transition-colors">
+                    Undo restore
+                </button>`;
+            }
+            return `<li class="flex items-center justify-between gap-2 border-b border-zinc-800/80 pb-2 last:border-0 last:pb-0">
+                <div class="min-w-0 text-left">
+                    <span class="text-zinc-300 block">${when}${eventName}</span>
+                    <span class="tabular-nums text-zinc-500 text-[11px]">Was ${resetBeforeSummary(entry)}</span>
+                    ${status}
+                </div>
+                <div class="shrink-0 flex items-center gap-1">
+                    ${action}
+                    <button type="button"
+                            data-reset-id="${safeId}"
+                            onclick="deleteResetHistoryEntry(this.dataset.resetId)"
+                            class="text-[11px] text-zinc-500 hover:text-red-400 transition-colors px-2 py-1">
+                        Delete
+                    </button>
+                </div>
             </li>`;
         }).join('');
     }
 
+    async function postResetHistoryAction(url, entryId, failMessage) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ id: entryId }),
+            });
+            if (response.status === 401) {
+                redirectToScannerLogin();
+                return;
+            }
+            const payload = await response.json().catch(() => null);
+            if (payload && payload.reset_history) updateAdmissionTotals(payload);
+            if (!response.ok) {
+                alert((payload && payload.error) || failMessage);
+            }
+        } catch (err) {
+            console.warn(failMessage, err);
+            alert(failMessage + ' Check your connection.');
+        }
+    }
+
+    async function restoreResetHistoryEntry(entryId) {
+        const entry = resetHistoryById[entryId];
+        if (!entryId || !entry) return;
+        const confirmed = window.confirm(
+            'Restore the counts from this reset?\n\n' +
+            `Reset at ${formatResetTimestamp(entry.reset_at)}${entry.event_name ? ' (' + entry.event_name + ')' : ''}.\n` +
+            `Before it: ${resetBeforeSummary(entry)}.\n\n` +
+            'The counters go back to those numbers PLUS everything scanned or added since the reset.\n' +
+            'Tickets stay void either way.'
+        );
+        if (!confirmed) return;
+        await postResetHistoryAction('/api/admission-totals/reset-history/restore', entryId, 'Could not restore that reset.');
+    }
+
+    async function undoRestoreResetHistoryEntry(entryId) {
+        const entry = resetHistoryById[entryId];
+        if (!entryId || !entry) return;
+        const confirmed = window.confirm(
+            'Undo this restore?\n\n' +
+            `Counts go back to zero as of the original reset (${formatResetTimestamp(entry.reset_at)}); ` +
+            'anything scanned since then still counts.'
+        );
+        if (!confirmed) return;
+        await postResetHistoryAction('/api/admission-totals/reset-history/undo-restore', entryId, 'Could not undo that restore.');
+    }
+
     async function deleteResetHistoryEntry(entryId) {
         if (!entryId) return;
-        if (!window.confirm('Delete this reset log entry?')) return;
+        const entry = resetHistoryById[entryId] || {};
+        const message = entry.can_restore
+            ? 'Delete this reset log entry?\n\nThis reset has NOT been restored. Deleting the entry removes the Restore option for good (counts stay as they are now).'
+            : 'Delete this reset log entry?';
+        if (!window.confirm(message)) return;
         try {
             const response = await fetch('/api/admission-totals/reset-history', {
                 method: 'DELETE',
@@ -393,11 +495,11 @@
 
     async function resetAdmissionTotals() {
         const confirmed = window.confirm(
-            'Reset admission counts?\n\n' +
+            'Reset admission counts for tonight\'s door event?\n\n' +
             'GA, VIP, free girls, and Total go back to 0 for a new counting period.\n' +
             'Already-scanned tickets stay VOID and cannot be scanned again.\n' +
             'This does not reset ticket sales or reopen the ticket cap.\n' +
-            'This reset is saved in the log at the bottom of the page.'
+            'This reset is saved in the log, where you can Restore it if it was a mistake.'
         );
         if (!confirmed) return;
 
