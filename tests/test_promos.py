@@ -81,6 +81,10 @@ class PromoTestBase(unittest.TestCase):
             mock.patch.object(thesection, 'load_full_mailing_list', side_effect=lambda: list(self.full_list)),
             mock.patch.object(thesection.smtplib, 'SMTP', FakeSMTP),
             mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.dict(thesection.app.config, {
+                'MAIL_SERVER': 'smtp.gmail.com', 'MAIL_PORT': 587, 'MAIL_USE_TLS': True,
+                'MAIL_USERNAME': '', 'MAIL_PASSWORD': '', 'MAIL_DEFAULT_SENDER': '',
+            }),
         ]
         for patcher in self.patches:
             patcher.start()
@@ -460,14 +464,15 @@ class PromoSendingTests(PromoTestBase):
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
         self.assertIn('Email sending isn’t connected yet', html)
-        self.assertIn('GMAIL_APP_PASSWORD', html)
+        self.assertIn('MAIL_PASSWORD', html)
+        self.assertNotIn('GMAIL_APP_PASSWORD', html)
         self.assertIn('Approved · waiting for email setup', html)
 
         later = datetime.now(timezone.utc) + timedelta(days=10)
         self.assertEqual(thesection.run_due_promos(now=later), [])
         ok, message = thesection.send_promo_now(promo['id'], background=False)
         self.assertFalse(ok)
-        self.assertIn('GMAIL_APP_PASSWORD', message)
+        self.assertIn('MAIL_PASSWORD', message)
         resp = client.post('/admin/promos', data={'csrf_token': client.csrf, 'action': 'send_now', 'promo_id': promo['id']},
                            follow_redirects=True)
         self.assertIn('isn’t connected yet', resp.get_data(as_text=True))
@@ -618,3 +623,51 @@ class PromoSendingTests(PromoTestBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PromoMailLoginReuseTests(PromoTestBase):
+    def use_ticket_login(self, username='tickets@example.com', sender=None, password='wxyz wxyz wxyz wxyz'):
+        thesection.app.config.update({
+            'MAIL_SERVER': 'smtp.example.com', 'MAIL_PORT': 2525, 'MAIL_USE_TLS': True,
+            'MAIL_USERNAME': username, 'MAIL_PASSWORD': password,
+            'MAIL_DEFAULT_SENDER': sender if sender is not None else username,
+        })
+
+    def test_ticket_login_enables_sending(self):
+        self.assertFalse(thesection.promo_sending_configured())
+        self.use_ticket_login()
+        self.assertTrue(thesection.promo_sending_configured())
+        self.assertEqual(thesection.promo_email_address(), 'tickets@example.com')
+
+    def test_sends_with_ticket_login_and_matching_from(self):
+        self.use_ticket_login()
+        self.subscribers(full=['a@example.com'])
+        promo = self.make_promo(status='approved')
+        thesection.run_due_promos(now=datetime.fromisoformat(promo['scheduled_for']) + timedelta(minutes=1))
+        self.assertEqual(thesection.get_promo(promo['id'])['status'], 'sent')
+        conn = self.smtp['connections'][0]
+        self.assertEqual((conn.host, conn.port), ('smtp.example.com', 2525))
+        self.assertEqual(conn.logged_in, ('tickets@example.com', 'wxyzwxyzwxyzwxyz'))
+        self.assertIn('tickets@example.com', self.smtp['sent'][0]['From'])
+
+    def test_from_uses_login_when_default_sender_differs(self):
+        self.use_ticket_login(sender='someone-else@example.com')
+        self.assertEqual(thesection.promo_email_address(), 'tickets@example.com')
+        self.use_ticket_login(sender='The Section <tickets@example.com>')
+        self.assertEqual(thesection.promo_email_address(), 'tickets@example.com')
+
+    def test_gmail_app_password_overrides_ticket_login(self):
+        self.use_ticket_login()
+        os.environ['GMAIL_APP_PASSWORD'] = APP_PASSWORD
+        os.environ['PROMO_EMAIL_ADDRESS'] = 'promo@example.com'
+        settings = thesection.promo_mail_settings()
+        self.assertEqual(settings['username'], 'promo@example.com')
+        self.assertEqual(settings['sender'], 'promo@example.com')
+        self.assertEqual(settings['host'], 'smtp.gmail.com')
+
+    def test_page_shows_sender_but_never_password(self):
+        self.use_ticket_login(password='secretpass123')
+        html = self.admin_client().get('/admin/promos').get_data(as_text=True)
+        self.assertIn('tickets@example.com', html)
+        self.assertNotIn('secretpass123', html)
+        self.assertNotIn('Email sending isn’t connected yet', html)
