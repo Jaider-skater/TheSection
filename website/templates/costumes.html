@@ -108,9 +108,9 @@
                             <input type="checkbox" name="photo_consent" value="1" id="photo-consent"
                                    {% if my_entry and my_entry.photo_consent %}checked{% endif %}
                                    class="mt-1 rounded border-zinc-600 bg-zinc-950 text-white focus:ring-zinc-500">
-                            <span>{{ consent_text }}</span>
+                            <span class="font-semibold">Can we post your costume?</span>
                         </label>
-                        <p class="mt-2 text-xs text-zinc-500">Optional. You can change this anytime from your profile, and it doesn't affect entering or voting.</p>
+                        <p class="mt-2 text-xs text-zinc-500">{{ consent_text }} Optional. You can change this anytime from your profile, and it doesn't affect entering or voting.</p>
                     </div>
                 <button type="submit"
                         class="w-full py-3.5 rounded-2xl border-2 border-white bg-black text-white font-semibold
