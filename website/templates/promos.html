@@ -97,6 +97,39 @@
             {% endif %}
         </section>
 
+        <section class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+            <h2 class="font-semibold">Ticket reminders</h2>
+            <p class="text-sm text-zinc-400 mb-3">Each ticket holder automatically gets one reminder 7 days before the event at 12:00 PM Mountain, with a link to log in and see their ticket. One email per person, sent once.</p>
+            {% if not sending_configured %}
+            <p class="text-sm text-amber-300 mb-3">Email sending isn't connected (MAIL_USERNAME / MAIL_PASSWORD on Render), so reminders won't send.</p>
+            {% endif %}
+            {% if ticket_reminders %}
+            <ul class="divide-y divide-zinc-800">
+                {% for r in ticket_reminders %}
+                <li class="py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div>
+                        <p class="font-medium">{{ r.event_name }}</p>
+                        <p class="text-xs text-zinc-400">Sends {{ r.send_at }} · {{ r.holder_count }} ticket holder{{ '' if r.holder_count == 1 else 's' }}{% if r.sent_at %} · sent {{ r.sent_at }}{% endif %}</p>
+                        {% if r.error %}<p class="text-xs text-red-300">{{ r.error }}</p>{% endif %}
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        {{ status_badge(r) }}
+                        <form method="POST" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="action" value="reminder_toggle">
+                            <input type="hidden" name="event_id" value="{{ r.event_id }}">
+                            <input type="hidden" name="enabled" value="{{ '0' if r.enabled else '1' }}">
+                            <button class="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 hover:bg-zinc-800">{{ 'Turn off' if r.enabled else 'Turn on' }}</button>
+                        </form>
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="text-sm text-zinc-500">No upcoming events.</p>
+            {% endif %}
+        </section>
+
         <h2 class="text-xl font-semibold mb-1">Planned <span class="text-zinc-500 font-normal text-base">({{ planned|length }})</span></h2>
         <p class="text-sm text-zinc-500 mb-4">Drafts and approved promos, soonest first.</p>
         {% if planned %}
