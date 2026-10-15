@@ -8852,6 +8852,11 @@ def _promo_scheduler_loop():
                 run_due_promos()
         except Exception as e:
             print('Promo scheduler pass failed:', e)
+        try:
+            with app.app_context():
+                run_due_ticket_reminders()
+        except Exception as e:
+            print('Ticket reminder pass failed:', e)
         time.sleep(PROMO_SCHEDULER_INTERVAL_SECONDS)
 
 
@@ -8880,6 +8885,332 @@ def promo_scheduler_before_request():
     except Exception as e:
         print('Could not start promo scheduler:', e)
     return None
+
+
+# ----- 7-day ticket reminders ----------------------------------------------
+
+TICKET_REMINDER_DAYS_BEFORE = 7
+TICKET_REMINDER_SEND_HOUR = 12  # noon Mountain
+TICKET_REMINDER_TIMEZONE_NAME = 'America/Boise'
+TICKET_REMINDER_RETRY_MINUTES = 30
+TICKET_REMINDER_SUBJECT = 'See you soon: your ticket for {name}'
+MEMBERS_LOGIN_URL_PATH = '/members'
+_ticket_reminder_thread_lock = threading.Lock()
+
+
+def ticket_reminder_timezone():
+    try:
+        return ZoneInfo(TICKET_REMINDER_TIMEZONE_NAME)
+    except Exception:
+        return get_promo_timezone()
+
+
+def ticket_reminders_path():
+    return os.getenv('TICKET_REMINDERS_FILE') or os.path.join(
+        os.path.dirname(promos_file), 'ticket_reminders.json')
+
+
+@contextmanager
+def ticket_reminder_store_lock():
+    with _promo_file_lock('reminders.lock'):
+        yield
+
+
+def load_ticket_reminders():
+    path = ticket_reminders_path()
+    if not ensure_data_dir(path):
+        return {}
+    data = _locked_json_read(path, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_ticket_reminders(data):
+    path = ticket_reminders_path()
+    if not ensure_data_dir(path):
+        return False
+    return _locked_json_write(path, data)
+
+
+def _mutate_ticket_reminder(event_id, fn):
+    with ticket_reminder_store_lock():
+        data = load_ticket_reminders()
+        entry = data.get(event_id) if isinstance(data.get(event_id), dict) else {}
+        result = fn(entry)
+        data[event_id] = entry
+        save_ticket_reminders(data)
+        return result, dict(entry)
+
+
+def ticket_reminder_send_time(event):
+    """Noon Mountain (Boise), 7 days before the event date."""
+    day = parse_event_date((event or {}).get('date'))
+    if not day:
+        return None
+    send_day = day - timedelta(days=TICKET_REMINDER_DAYS_BEFORE)
+    return datetime(send_day.year, send_day.month, send_day.day,
+                    TICKET_REMINDER_SEND_HOUR, 0, tzinfo=ticket_reminder_timezone())
+
+
+def ticket_reminder_event_start(event):
+    start = _event_start_datetime(event)
+    return start.astimezone(ticket_reminder_timezone()) if start else None
+
+
+def ticket_reminders_enabled_for(event_id, data=None):
+    data = load_ticket_reminders() if data is None else data
+    entry = data.get(event_id) or {}
+    return entry.get('enabled', True) is not False
+
+
+def set_ticket_reminder_enabled(event_id, enabled):
+    event_id = (event_id or '').strip()
+    if not event_id or not get_event(event_id):
+        return False
+
+    def fn(entry):
+        entry['enabled'] = bool(enabled)
+    _mutate_ticket_reminder(event_id, fn)
+    return True
+
+
+def ticket_reminder_recipients(event_id):
+    """{email: [ticket links]} for valid, paid tickets for this exact event."""
+    grouped = {}
+    for ticket in load_tickets():
+        if not isinstance(ticket, dict):
+            continue
+        if not ticket_belongs_to_event(ticket, event_id):
+            continue
+        if not ticket_is_valid_purchase(ticket):
+            continue
+        email = (ticket.get('email') or '').strip().lower()
+        if not is_valid_email(email):
+            continue
+        links = grouped.setdefault(email, [])
+        try:
+            link = ticket_display_url(ticket.get('ticket_id'), ticket.get('view_token'))
+        except Exception:
+            link = None
+        if link and link not in links:
+            links.append(link)
+    return grouped
+
+
+def build_ticket_reminder_message(event, recipient, ticket_links, sender):
+    name = event.get('name') or 'The Section'
+    when = format_event_date_line(event.get('date')) or ''
+    try:
+        times = format_event_time_line(event.get('time_start'), event.get('time_end')) or ''
+    except Exception:
+        times = ''
+    when_line = ' · '.join(p for p in (when, times) if p)
+    venue = (event.get('venue') or event.get('location') or '').strip()
+    login_url = f'{base_url}{MEMBERS_LOGIN_URL_PATH}'
+    lines = [
+        f"One week to go! You're on the list for {name}.",
+        '',
+        f'Event: {name}',
+    ]
+    if when_line:
+        lines.append(f'When: {when_line}')
+    if venue:
+        lines.append(f'Where: {venue}')
+    lines += ['', f'Log in to see your ticket: {login_url}']
+    if ticket_links:
+        lines.append('Or open your ticket directly:')
+        lines += [f'  {link}' for link in ticket_links]
+    lines += ['', 'Show your QR code at the door. Costumes encouraged, there is a costume contest!',
+              '', 'See you there,', 'The Section']
+    plain = '\n'.join(lines) + '\n'
+    esc = html.escape
+    links_html = ''.join(
+        f'<li><a href="{esc(link)}">{esc(link)}</a></li>' for link in ticket_links)
+    html_body = (
+        f'<p>One week to go! You&#39;re on the list for <strong>{esc(name)}</strong>.</p>'
+        f'<p><strong>Event:</strong> {esc(name)}<br>'
+        + (f'<strong>When:</strong> {esc(when_line)}<br>' if when_line else '')
+        + (f'<strong>Where:</strong> {esc(venue)}' if venue else '')
+        + '</p>'
+        f'<p><a href="{esc(login_url)}" style="display:inline-block;padding:10px 16px;background:#18181b;color:#fff;border-radius:8px;text-decoration:none">Log in to see your ticket</a></p>'
+        + (f'<p>Or open your ticket directly:</p><ul>{links_html}</ul>' if links_html else '')
+        + '<p>Show your QR code at the door. Costumes encouraged, there is a costume contest!</p>'
+        '<p>See you there,<br>The Section</p>'
+    )
+    msg = EmailMessage()
+    msg['Subject'] = TICKET_REMINDER_SUBJECT.format(name=name)[:PROMO_SUBJECT_MAX]
+    msg['From'] = formataddr(('The Section', sender))
+    msg['To'] = recipient
+    msg['Reply-To'] = sender
+    msg['Date'] = formatdate(localtime=False)
+    msg['Message-ID'] = make_msgid(domain=sender.split('@')[-1] or 'thesection')
+    msg.set_content(plain)
+    msg.add_alternative(html_body, subtype='html')
+    return msg
+
+
+def ticket_reminder_is_due(event, entry, now):
+    if entry.get('enabled', True) is False:
+        return False
+    if entry.get('status') == 'sent':
+        return False
+    send_at = ticket_reminder_send_time(event)
+    start = ticket_reminder_event_start(event)
+    if not send_at or not start or now < send_at or now >= start:
+        return False
+    if entry.get('status') == 'failed':
+        last = parse_iso_datetime(entry.get('finished_at'))
+        if last and now - last < timedelta(minutes=TICKET_REMINDER_RETRY_MINUTES):
+            return False
+    return True
+
+
+def send_ticket_reminder_for_event(event, now=None):
+    """Send one event's reminders. Caller must hold the reminder sender guard."""
+    now = now or promo_now()
+    event_id = event['id']
+    entry = load_ticket_reminders().get(event_id) or {}
+    if not ticket_reminder_is_due(event, entry, now):
+        return 0
+    settings = promo_mail_settings()
+    recipients = ticket_reminder_recipients(event_id)
+    already = {e.lower() for e in entry.get('delivered_to') or []}
+    pending = [(email, links) for email, links in sorted(recipients.items()) if email not in already]
+
+    def start(e):
+        e['status'] = 'sending'
+        e['started_at'] = now.isoformat()
+    _mutate_ticket_reminder(event_id, start)
+
+    sent = 0
+    failed = []
+    error = None
+    smtp = None
+    try:
+        if pending:
+            smtp = _open_promo_smtp(settings)
+        for email, links in pending:
+            try:
+                smtp.send_message(build_ticket_reminder_message(event, email, links, settings['sender']))
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPAuthenticationError):
+                raise
+            except Exception as exc:
+                failed.append(email)
+                print(f'Ticket reminder failed for {email}:', _short_error(exc))
+                continue
+            sent += 1
+
+            def record(e, email=email):
+                lst = e.setdefault('delivered_to', [])
+                if email not in lst:
+                    lst.append(email)
+            _mutate_ticket_reminder(event_id, record)
+            delay = promo_send_delay_seconds()
+            if delay:
+                time.sleep(delay)
+    except Exception as exc:
+        error = _short_error(exc)
+    finally:
+        if smtp is not None:
+            try:
+                smtp.quit()
+            except Exception:
+                pass
+
+    def finish(e):
+        e['finished_at'] = promo_now().isoformat()
+        e['failed_to'] = failed
+        if error:
+            e['status'] = 'failed'
+            e['error'] = error
+        else:
+            e['status'] = 'sent'
+            e['error'] = None
+            e['sent_at'] = e['finished_at']
+            e['sent_count'] = len(e.get('delivered_to') or [])
+    _mutate_ticket_reminder(event_id, finish)
+    return sent
+
+
+@contextmanager
+def _ticket_reminder_sender_guard():
+    if not _ticket_reminder_thread_lock.acquire(blocking=False):
+        yield False
+        return
+    try:
+        with _promo_file_lock('reminders.sender.lock', blocking=False) as got:
+            yield got
+    finally:
+        _ticket_reminder_thread_lock.release()
+
+
+def run_due_ticket_reminders(now=None):
+    """Send any due 7-day reminders. Safe to call from every worker."""
+    if not promo_sending_configured():
+        return 0
+    now = now or promo_now()
+    total = 0
+    with _ticket_reminder_sender_guard() as acquired:
+        if not acquired:
+            return 0
+        data = load_ticket_reminders()
+        for event in load_events():
+            if not event.get('id'):
+                continue
+            if not ticket_reminder_is_due(event, data.get(event['id']) or {}, now):
+                continue
+            try:
+                total += send_ticket_reminder_for_event(event, now)
+            except Exception as e:
+                print('Ticket reminder pass failed:', e)
+    return total
+
+
+def _safe_ticket_reminder_rows(now=None):
+    try:
+        return ticket_reminder_rows(now)
+    except Exception as e:
+        print('Ticket reminder rows failed:', e)
+        return []
+
+
+def ticket_reminder_rows(now=None):
+    now = now or promo_now()
+    tz = ticket_reminder_timezone()
+    data = load_ticket_reminders()
+    rows = []
+    for event in upcoming_events_for_promos():
+        entry = data.get(event['id']) or {}
+        send_at = ticket_reminder_send_time(event)
+        start = ticket_reminder_event_start(event)
+        enabled = entry.get('enabled', True) is not False
+        status = entry.get('status')
+        if status == 'sent':
+            label, tone = f"Sent to {entry.get('sent_count', 0)}" + (f" ({len(entry.get('failed_to') or [])} failed)" if entry.get('failed_to') else ''), 'emerald'
+        elif status == 'sending':
+            label, tone = 'Sending…', 'sky'
+        elif status == 'failed':
+            label, tone = 'Failed · will retry', 'red'
+        elif not enabled:
+            label, tone = 'Off', 'zinc'
+        elif start and now >= start:
+            label, tone = 'Event started · not sent', 'zinc'
+        elif send_at and now >= send_at:
+            label, tone = 'Going out within a minute', 'emerald'
+        else:
+            label, tone = 'Scheduled', 'emerald'
+        rows.append({
+            'event_id': event['id'],
+            'event_name': event.get('name') or event['id'],
+            'send_at': send_at.astimezone(tz).strftime('%a %b %-d, %Y at %-I:%M %p %Z') if send_at else '—',
+            'sent_at': (parse_iso_datetime(entry.get('sent_at')).astimezone(tz).strftime('%a %b %-d at %-I:%M %p %Z')
+                        if entry.get('sent_at') and parse_iso_datetime(entry.get('sent_at')) else ''),
+            'enabled': enabled,
+            'status_label': label,
+            'status_tone': tone,
+            'error': entry.get('error') if status == 'failed' else '',
+            'holder_count': len(ticket_reminder_recipients(event['id'])),
+        })
+    return rows
 
 
 # ----- Admin UI ------------------------------------------------------------
@@ -8979,6 +9310,12 @@ def admin_promos():
                 promo, error = failed_promo_back_to_draft(promo_id)
                 if promo:
                     success = 'Moved back to draft. Addresses that already got it will be skipped.'
+            elif action == 'reminder_toggle':
+                on = (request.form.get('enabled') or '') == '1'
+                if set_ticket_reminder_enabled(request.form.get('event_id'), on):
+                    success = 'Ticket reminder turned on.' if on else 'Ticket reminder turned off for that event.'
+                else:
+                    error = 'Event not found.'
             elif action == 'mark_failed':
                 promo, error = mark_stuck_promo_failed(promo_id)
                 if promo:
@@ -9034,6 +9371,7 @@ def admin_promos():
         promo_sender=promo_email_address(),
         audience_counts=promo_audience_counts(),
         load_error=load_error,
+        ticket_reminders=_safe_ticket_reminder_rows(now),
     )
 
 
