@@ -956,6 +956,18 @@ COSTUME_MAX_RANKS = 3
 COSTUME_RANK_POINTS = (3, 2, 1)  # Borda: 1st=3, 2nd=2, 3rd=1
 
 
+COSTUME_PHOTO_CONSENT_VERSION = '2026-10-15-v1'
+COSTUME_PHOTO_CONSENT_TEXT = (
+    'I give permission for The Section Events (thesectionevents) and Hallie Workshop '
+    'to use photos of my Halloween costume in promotional material for future events.'
+)
+
+
+def costume_consent_from_form(form):
+    """Unchecked checkboxes are omitted from the form, so absence means no consent."""
+    return (form.get('photo_consent') or '').strip().lower() in ('1', 'on', 'true', 'yes')
+
+
 def _empty_costumes_store():
     return {'entries': [], 'ballots': {}, 'contest_open': True}
 
@@ -977,6 +989,8 @@ def _migrate_costumes_store(store):
             continue
         cleaned = dict(entry)
         cleaned.pop('votes', None)
+        # Entries created before photo consent existed have not consented.
+        cleaned['photo_consent'] = cleaned.get('photo_consent') is True
         cleaned_entries.append(cleaned)
     raw_ballots = store.get('ballots')
     if not isinstance(raw_ballots, dict):
@@ -1112,8 +1126,28 @@ def find_costume_entry_for_email(email):
     return None
 
 
-def submit_costume_entry(owner_email, display_name, costume):
-    """Create or update the member's single costume entry. Returns (ok, error_or_entry)."""
+def _apply_costume_photo_consent(entry, photo_consent, now):
+    """Set consent on an entry; record timestamp + text version whenever it changes."""
+    if photo_consent is None:
+        entry['photo_consent'] = entry.get('photo_consent') is True
+        return
+    new_value = bool(photo_consent)
+    if entry.get('photo_consent') is True and new_value and entry.get('photo_consent_at'):
+        return  # unchanged: keep original consent time/version
+    if entry.get('photo_consent') is not True and not new_value and 'photo_consent_at' not in entry:
+        entry['photo_consent'] = False
+        return  # never consented: nothing to record
+    entry['photo_consent'] = new_value
+    entry['photo_consent_at'] = now
+    entry['photo_consent_version'] = COSTUME_PHOTO_CONSENT_VERSION
+    entry['photo_consent_text'] = COSTUME_PHOTO_CONSENT_TEXT
+
+
+def submit_costume_entry(owner_email, display_name, costume, photo_consent=None):
+    """Create or update the member's single costume entry. Returns (ok, error_or_entry).
+
+    photo_consent: True/False to set it, None to leave it unchanged (new entries default False).
+    """
     email = (owner_email or '').strip().lower()
     name = ' '.join((display_name or '').split())
     desc = ' '.join((costume or '').split())
@@ -1141,6 +1175,7 @@ def submit_costume_entry(owner_email, display_name, costume):
             existing['costume'] = desc
             existing['updated_at'] = now
             existing.pop('votes', None)
+            _apply_costume_photo_consent(existing, photo_consent, now)
             if not existing.get('id'):
                 existing['id'] = secrets.token_hex(16)
             saved = existing
@@ -1152,7 +1187,9 @@ def submit_costume_entry(owner_email, display_name, costume):
                 'costume': desc,
                 'created_at': now,
                 'updated_at': now,
+                'photo_consent': False,
             }
+            _apply_costume_photo_consent(saved, photo_consent, now)
             entries.append(saved)
         if not save_costumes(store):
             return False, 'Could not save your costume. Try again.'
@@ -1356,10 +1393,10 @@ def apply_costume_photo_upload_or_remove(entry, upload=None, remove_photo=False)
 
 
 def submit_costume_entry_with_photo(
-    owner_email, display_name, costume, upload=None, remove_photo=False,
+    owner_email, display_name, costume, upload=None, remove_photo=False, photo_consent=None,
 ):
     """Create/update costume text then apply photo changes. Returns (ok, error_or_entry)."""
-    ok, result = submit_costume_entry(owner_email, display_name, costume)
+    ok, result = submit_costume_entry(owner_email, display_name, costume, photo_consent=photo_consent)
     if not ok:
         return False, result
     entry = result
@@ -6890,6 +6927,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'my_costume_score': my_costume_score,
         'display_name_max': COSTUME_DISPLAY_NAME_MAX,
         'costume_max': COSTUME_DESCRIPTION_MAX,
+        'consent_text': COSTUME_PHOTO_CONSENT_TEXT,
         'show_costume_entry': is_costume_contest_open() or require_admin(),
     }
 
@@ -7157,6 +7195,7 @@ def legacy_portal():
                 request.form.get('costume', ''),
                 upload=upload if has_upload else None,
                 remove_photo=remove_photo,
+                photo_consent=costume_consent_from_form(request.form),
             )
             if not ok:
                 return render_template(
@@ -7461,6 +7500,7 @@ def admin_dashboard():
         costume_contest_open=is_costume_contest_open(),
         contest_flash=contest_flash,
         planned_promo_count=planned_promo_count(),
+        costume_consent_count=sum(1 for e in costume_consent_rows() if e['photo_consent']),
     )
 
 
@@ -7481,6 +7521,65 @@ def admin_costume_contest_toggle():
     if next_url and path_only != '/admin/costume-contest':
         return redirect(next_url)
     return redirect(url_for('admin_dashboard', contest=contest_status))
+
+
+def costume_consent_rows():
+    """Admin-only view of costume entries with photo consent details."""
+    rows = []
+    for entry in (load_costumes().get('entries') or []):
+        rows.append({
+            'id': entry.get('id') or '',
+            'display_name': entry.get('display_name') or '',
+            'costume': entry.get('costume') or '',
+            'owner_email': entry.get('owner_email') or '',
+            'photo_url': costume_photo_url(entry.get('photo')),
+            'photo_consent': entry.get('photo_consent') is True,
+            'photo_consent_at': entry.get('photo_consent_at') or '',
+            'photo_consent_version': entry.get('photo_consent_version') or '',
+        })
+    rows.sort(key=lambda r: (not r['photo_consent'], r['display_name'].lower()))
+    return rows
+
+
+@app.route('/admin/costume-consent')
+def admin_costume_consent():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    rows = costume_consent_rows()
+    consented_only = request.args.get('consented') == '1'
+    shown = [r for r in rows if r['photo_consent']] if consented_only else rows
+    return render_template(
+        'costume_consent.html',
+        rows=shown,
+        total=len(rows),
+        consented_count=sum(1 for r in rows if r['photo_consent']),
+        consented_only=consented_only,
+        consent_text=COSTUME_PHOTO_CONSENT_TEXT,
+        consent_version=COSTUME_PHOTO_CONSENT_VERSION,
+    )
+
+
+@app.route('/admin/costume-consent.csv')
+def admin_costume_consent_csv():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['name', 'costume', 'member_email', 'photo_link', 'consent_time_utc', 'consent_version'])
+    base = request.url_root.rstrip('/')
+    for row in costume_consent_rows():
+        if not row['photo_consent']:
+            continue
+        writer.writerow([
+            row['display_name'], row['costume'], row['owner_email'],
+            (base + row['photo_url']) if row['photo_url'] else '',
+            row['photo_consent_at'], row['photo_consent_version'],
+        ])
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': 'attachment; filename=costume-photo-consent.csv'},
+    )
 
 
 @app.route('/admin/tickets.csv')
@@ -9559,6 +9658,7 @@ def costumes():
                         request.form.get('costume', ''),
                         upload=upload if has_upload else None,
                         remove_photo=remove_photo,
+                        photo_consent=costume_consent_from_form(request.form),
                     )
                     if ok:
                         return redirect(url_for('costumes', saved=1))
@@ -9611,6 +9711,7 @@ def costumes():
         success=success,
         display_name_max=COSTUME_DISPLAY_NAME_MAX,
         costume_max=COSTUME_DESCRIPTION_MAX,
+        consent_text=COSTUME_PHOTO_CONSENT_TEXT,
     ), status
 
 

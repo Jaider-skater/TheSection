@@ -76,6 +76,10 @@
                    class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
                     Open contest page
                 </a>
+                <a href="{{ url_for('admin_costume_consent') }}"
+                   class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">
+                    Photo consent ({{ costume_consent_count|default(0) }} Photo OK)
+                </a>
                 <form method="POST" action="{{ url_for('admin_costume_contest_toggle') }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit"
