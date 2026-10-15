@@ -26,7 +26,7 @@ import sys
 import ssl
 import smtplib
 from email.message import EmailMessage
-from email.utils import formataddr, formatdate, make_msgid
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 try:
     import fcntl
 except ImportError:  # Windows
@@ -7969,17 +7969,45 @@ def promo_now():
     return datetime.now(timezone.utc)
 
 
-def promo_email_address():
-    return (os.getenv('PROMO_EMAIL_ADDRESS') or '').strip() or PROMO_DEFAULT_SENDER
-
-
-def promo_app_password():
+def _promo_override_password():
     # Gmail shows app passwords in groups of four; spaces are not part of it.
     return re.sub(r'\s+', '', os.getenv('GMAIL_APP_PASSWORD') or '')
 
 
+def promo_mail_settings():
+    """SMTP settings for promos. Reuses the ticket MAIL_* login unless GMAIL_APP_PASSWORD overrides it.
+
+    The From address always matches the login account so Gmail won't rewrite or reject it.
+    """
+    override = _promo_override_password()
+    if override:
+        login = (os.getenv('PROMO_EMAIL_ADDRESS') or '').strip() or PROMO_DEFAULT_SENDER
+        return {'host': PROMO_SMTP_HOST, 'port': PROMO_SMTP_PORT, 'tls': True,
+                'username': login, 'password': override, 'sender': login, 'source': 'GMAIL_APP_PASSWORD'}
+    username = (app.config.get('MAIL_USERNAME') or '').strip()
+    password = re.sub(r'\s+', '', app.config.get('MAIL_PASSWORD') or '')
+    default_sender = app.config.get('MAIL_DEFAULT_SENDER') or ''
+    if isinstance(default_sender, (tuple, list)):
+        default_sender = default_sender[-1] if default_sender else ''
+    default_addr = parseaddr(str(default_sender))[1].strip()
+    sender = default_addr if default_addr and default_addr.lower() == username.lower() else username
+    return {'host': app.config.get('MAIL_SERVER') or PROMO_SMTP_HOST,
+            'port': int(app.config.get('MAIL_PORT') or PROMO_SMTP_PORT),
+            'tls': bool(app.config.get('MAIL_USE_TLS', True)),
+            'username': username, 'password': password, 'sender': sender, 'source': 'MAIL_PASSWORD'}
+
+
+def promo_email_address():
+    return promo_mail_settings()['sender']
+
+
+def promo_app_password():
+    return promo_mail_settings()['password']
+
+
 def promo_sending_configured():
-    return bool(promo_app_password()) and is_valid_email(promo_email_address())
+    settings = promo_mail_settings()
+    return bool(settings['password']) and bool(settings['username']) and is_valid_email(settings['sender'])
 
 
 def new_promo_id():
@@ -8667,17 +8695,19 @@ def _finish_promo(promo_id, delivered_now, failed, error=None):
 def _short_error(exc):
     text = str(exc) or exc.__class__.__name__
     if isinstance(exc, smtplib.SMTPAuthenticationError):
-        text = 'Gmail rejected the login. Check GMAIL_APP_PASSWORD (it must be a Gmail app password).'
+        key = promo_mail_settings()['source']
+        text = f'Gmail rejected the login. Check MAIL_USERNAME / {key} on Render (it must be a Gmail app password).'
     return text.replace('\n', ' ')[:300]
 
 
-def _open_promo_smtp(sender, password):
-    smtp = smtplib.SMTP(PROMO_SMTP_HOST, PROMO_SMTP_PORT, timeout=30)
+def _open_promo_smtp(settings):
+    smtp = smtplib.SMTP(settings['host'], settings['port'], timeout=30)
     try:
         smtp.ehlo()
-        smtp.starttls(context=ssl.create_default_context())
-        smtp.ehlo()
-        smtp.login(sender, password)
+        if settings.get('tls', True):
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.ehlo()
+        smtp.login(settings['username'], settings['password'])
     except Exception:
         try:
             smtp.close()
@@ -8700,10 +8730,10 @@ def deliver_promo(promo):
         return _finish_promo(promo_id, [], [], error='Nobody is on that mailing list, so nothing was sent.')
     if not to_send:
         return _finish_promo(promo_id, [], [], error=None)
-    sender = promo_email_address()
-    password = promo_app_password()
-    if not password:
-        return _finish_promo(promo_id, [], to_send, error='Sending is not connected (GMAIL_APP_PASSWORD is missing).')
+    settings = promo_mail_settings()
+    sender = settings['sender']
+    if not promo_sending_configured():
+        return _finish_promo(promo_id, [], to_send, error='Sending is not connected (MAIL_USERNAME / MAIL_PASSWORD are missing).')
     plain_body = promo_plain_body(promo)
     html_body = promo_html_body(promo)
     delay = promo_send_delay_seconds()
@@ -8713,7 +8743,7 @@ def deliver_promo(promo):
     consecutive_failures = 0
     unsaved = 0
     try:
-        smtp = _open_promo_smtp(sender, password)
+        smtp = _open_promo_smtp(settings)
     except Exception as e:
         print('Promo SMTP login failed:', e.__class__.__name__)
         return _finish_promo(promo_id, [], to_send, error=f'Could not connect to Gmail: {_short_error(e)}')
@@ -8724,7 +8754,7 @@ def deliver_promo(promo):
                 try:
                     smtp.send_message(msg)
                 except smtplib.SMTPServerDisconnected:
-                    smtp = _open_promo_smtp(sender, password)
+                    smtp = _open_promo_smtp(settings)
                     smtp.send_message(msg)
                 delivered.append(email)
                 unsaved += 1
@@ -8792,7 +8822,7 @@ def run_due_promos(now=None):
 def send_promo_now(promo_id, background=True):
     """Admin 'Send now' for an approved promo. Returns (ok, message)."""
     if not promo_sending_configured():
-        return False, 'Sending isn’t connected yet. Add GMAIL_APP_PASSWORD on Render first.'
+        return False, 'Sending isn’t connected yet. Set MAIL_USERNAME and MAIL_PASSWORD (the ticket email login) on Render first.'
     claimed = claim_promo_for_sending(promo_id, require_due=False)
     if not claimed:
         return False, 'Only approved promos can be sent (it may already be sending).'

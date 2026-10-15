@@ -54,8 +54,8 @@ services:
         value: /opt/render/project/src/data/flyers
       - key: PROMOS_FILE
         value: /opt/render/project/src/data/promos.json
-      - key: PROMO_EMAIL_ADDRESS
-        value: thesectionevents@gmail.com
+      # Promos reuse the ticket MAIL_USERNAME/MAIL_PASSWORD login by default.
+      # Optional override: set GMAIL_APP_PASSWORD (+ PROMO_EMAIL_ADDRESS) to send promos from another Gmail.
       - key: GMAIL_APP_PASSWORD
         sync: false
       - key: LEGACY_BOOTSTRAP_EMAIL
