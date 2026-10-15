@@ -238,6 +238,7 @@
                     <p class="font-semibold text-lg truncate">{{ my_costume_entry.display_name }}</p>
                     <p class="text-zinc-300">{{ my_costume_entry.costume }}</p>
                     <p class="text-zinc-500 text-xs mt-2">{{ my_costume_score }} pt{{ '' if my_costume_score == 1 else 's' }} (3–2–1)</p>
+                    <p class="text-zinc-500 text-xs mt-1">Photo permission: {% if my_costume_entry.photo_consent %}given{% else %}not given{% endif %} · change it under Edit entry</p>
                 </div>
             </div>
 
@@ -287,6 +288,15 @@
                             Remove current photo
                         </label>
                         {% endif %}
+                    </div>
+                    <div class="rounded-2xl border border-zinc-700 bg-zinc-950 p-4">
+                        <label class="flex items-start gap-3 text-sm text-zinc-200 cursor-pointer">
+                            <input type="checkbox" name="photo_consent" value="1" id="photo-consent-edit"
+                                   {% if my_costume_entry.photo_consent %}checked{% endif %}
+                                   class="mt-1 rounded border-zinc-600 bg-zinc-950 text-white focus:ring-zinc-500">
+                            <span>{{ consent_text }}</span>
+                        </label>
+                        <p class="mt-2 text-xs text-zinc-500">Optional. You can change this anytime from your profile, and it doesn't affect entering or voting.</p>
                     </div>
                     <button type="submit"
                             class="w-full py-3 rounded-2xl border-2 border-white bg-black text-white font-semibold
@@ -349,6 +359,15 @@
                                type="file"
                                accept="image/jpeg,image/png,image/webp,image/gif"
                                class="block w-full text-sm text-zinc-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border file:border-zinc-600 file:bg-zinc-950 file:text-white hover:file:border-white">
+                    </div>
+                    <div class="rounded-2xl border border-zinc-700 bg-zinc-950 p-4">
+                        <label class="flex items-start gap-3 text-sm text-zinc-200 cursor-pointer">
+                            <input type="checkbox" name="photo_consent" value="1" id="photo-consent-new"
+                                   {% if false %}checked{% endif %}
+                                   class="mt-1 rounded border-zinc-600 bg-zinc-950 text-white focus:ring-zinc-500">
+                            <span>{{ consent_text }}</span>
+                        </label>
+                        <p class="mt-2 text-xs text-zinc-500">Optional. You can change this anytime from your profile, and it doesn't affect entering or voting.</p>
                     </div>
                     <button type="submit"
                             class="w-full py-3 rounded-2xl border-2 border-white bg-black text-white font-semibold
