@@ -3216,17 +3216,26 @@ def get_logged_in_member():
 
 
 def ticket_recipient_email(stripe_email=None, metadata=None):
-    logged_in_email = ''
-    if has_request_context():
-        logged_in_email = (session.get('legacy_member_email') or '').strip().lower()
-    if logged_in_email:
-        return logged_in_email
+    """Who owns a paid ticket.
+
+    The member who started checkout (stamped in Stripe metadata) wins, then the
+    email the buyer typed into Stripe. The browser's current login is only a
+    last resort: /success can be opened in a different browser, on a shared
+    phone, or by staff recovering a purchase, and must not hand the ticket to
+    whoever happens to be signed in there.
+    """
     if metadata:
         meta_email = (metadata.get('member_email') or '').strip().lower()
         if meta_email:
             return meta_email
     normalized = (stripe_email or '').strip().lower()
-    return normalized or None
+    if normalized:
+        return normalized
+    if has_request_context() and not (metadata or {}).get('door_sale') == 'true':
+        logged_in_email = (session.get('legacy_member_email') or '').strip().lower()
+        if logged_in_email:
+            return logged_in_email
+    return None
 
 
 def bulk_discount_rate(ticket_type):
@@ -6073,6 +6082,8 @@ def _create_stripe_checkout_session(
     }
     if member_email:
         checkout_kwargs['customer_email'] = member_email
+    # Save the buyer as a Stripe Customer so payments don't show up as "Guest".
+    checkout_kwargs['customer_creation'] = 'always'
     # Exclusive 20% sessions expire with the hold so a second 20% cannot be opened later
     # and the first unpaid session paid after the hold lapses.
     if exclusive_reserved:
