@@ -775,6 +775,7 @@ def inject_security_template_globals():
         'show_staff_nav': is_staff_user() or admin_authenticated(),
         'member_logged_in': bool(get_logged_in_member()),
         'costume_contest_open': is_costume_contest_open(),
+        'costume_contest_access': member_can_use_costume_contest(is_admin=admin_authenticated() or is_staff_user()),
     }
 
 
@@ -1016,10 +1017,18 @@ def _migrate_costumes_store(store):
     contest_open = store.get('contest_open')
     if not isinstance(contest_open, bool):
         contest_open = True
+    raw_access = store.get('access_emails')
+    access_emails = []
+    if isinstance(raw_access, list):
+        for email in raw_access:
+            key = (email or '').strip().lower() if isinstance(email, str) else ''
+            if key and key not in access_emails:
+                access_emails.append(key)
     return {
         'entries': cleaned_entries,
         'ballots': cleaned_ballots,
         'contest_open': contest_open,
+        'access_emails': access_emails,
     }
 
 
@@ -1041,6 +1050,80 @@ def is_costume_contest_open(store=None):
     """Whether the public costume contest menu/page is visible."""
     store = store if store is not None else load_costumes()
     return bool(store.get('contest_open', True))
+
+
+COSTUME_SCAN_GATE_MESSAGE = 'The costume contest opens once your ticket is scanned at the door.'
+
+
+def costume_contest_event_id():
+    """Event whose scanned tickets unlock the contest: Halloween, else tonight's door event."""
+    halloween = find_halloween_event()
+    if halloween and halloween.get('id'):
+        return halloween['id']
+    return get_door_event_id() or HALLOWEEN_EVENT_SLUG
+
+
+def member_has_scanned_contest_ticket(member, event_id=None):
+    """True if this member owns a door-scanned ticket for the contest event.
+
+    Uses the ticket's own scanned_at. Scanner count resets only move the live
+    counting epoch (scanned_at is kept), so a reset or restore never revokes access.
+    """
+    if not member:
+        return False
+    email = (member.get('email') or '').strip().lower()
+    if not email:
+        return False
+    event_id = event_id or costume_contest_event_id()
+    saved = {normalize_ticket_id(t) for t in (member.get('saved_tickets') or []) if t}
+    for ticket in load_tickets():
+        if not ticket.get('scanned_at'):
+            continue
+        stamped = (ticket.get('event_id') or '').strip()
+        if event_id and stamped and stamped != event_id:
+            continue
+        owner = (ticket.get('email') or '').strip().lower()
+        if owner == email or normalize_ticket_id(ticket.get('ticket_id')) in saved:
+            return True
+    return False
+
+
+def costume_access_emails(store=None):
+    store = store if store is not None else load_costumes()
+    return list(store.get('access_emails') or [])
+
+
+def set_costume_access_email(email, granted):
+    """Admin override (e.g. Stripe-app door sales with no site ticket)."""
+    key = (email or '').strip().lower()
+    if not key or not is_valid_email(key):
+        return False
+    with costumes_lock:
+        store = load_costumes()
+        emails = [e for e in store.get('access_emails') or [] if e != key]
+        if granted:
+            emails.append(key)
+        store['access_emails'] = emails
+        return save_costumes(store)
+
+
+def member_can_use_costume_contest(member=None, is_admin=None):
+    """Contest must be shown; then admins, scanned guests, or admin-granted emails."""
+    if is_admin is None:
+        is_admin = bool(has_request_context() and require_admin())
+    if is_admin:
+        return True
+    store = load_costumes()
+    if not is_costume_contest_open(store):
+        return False
+    if member is None and has_request_context():
+        member = get_logged_in_member()
+    if not member:
+        return False
+    email = (member.get('email') or '').strip().lower()
+    if email and email in costume_access_emails(store):
+        return True
+    return member_has_scanned_contest_ticket(member)
 
 
 def set_costume_contest_open(open_flag):
@@ -6939,7 +7022,7 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'display_name_max': COSTUME_DISPLAY_NAME_MAX,
         'costume_max': COSTUME_DESCRIPTION_MAX,
         'consent_text': COSTUME_PHOTO_CONSENT_TEXT,
-        'show_costume_entry': is_costume_contest_open() or require_admin(),
+        'show_costume_entry': member_can_use_costume_contest(),
     }
 
 
@@ -7177,7 +7260,7 @@ def legacy_portal():
         if action == 'costume_submit':
             if not member:
                 return redirect(url_for('legacy_portal'))
-            if not is_costume_contest_open() and not require_admin():
+            if not member_can_use_costume_contest(member):
                 return redirect(url_for('legacy_portal'))
             if not rate_limit_allow('costume_submit', 20, 300):
                 return render_template(
@@ -7221,7 +7304,7 @@ def legacy_portal():
         if action == 'costume_delete':
             if not member:
                 return redirect(url_for('legacy_portal'))
-            if not is_costume_contest_open() and not require_admin():
+            if not member_can_use_costume_contest(member):
                 return redirect(url_for('legacy_portal'))
             if not rate_limit_allow('costume_delete_own', 20, 300):
                 return render_template(
@@ -7337,6 +7420,8 @@ def serve_event_flyer(filename):
 @app.route('/costume-photos/<filename>')
 def serve_costume_photo(filename):
     if not costume_photo_is_safe_filename(filename):
+        abort(404)
+    if not member_can_use_costume_contest():
         abort(404)
     return send_from_directory(costume_photos_dir, filename)
 
@@ -7509,10 +7594,23 @@ def admin_dashboard():
         signup_count=signup_count,
         invite_count=invite_count,
         costume_contest_open=is_costume_contest_open(),
+        costume_access_emails=costume_access_emails(),
+        costume_access_status=request.args.get('costume_access'),
         contest_flash=contest_flash,
         planned_promo_count=planned_promo_count(),
         costume_consent_count=sum(1 for e in costume_consent_rows() if e['photo_consent']),
     )
+
+
+@app.route('/admin/costume-access', methods=['POST'])
+def admin_costume_access():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    email = request.form.get('email', '')
+    granted = (request.form.get('grant') or '1') != '0'
+    ok = set_costume_access_email(email, granted)
+    status = ('granted' if granted else 'revoked') if ok else 'error'
+    return redirect(url_for('admin_dashboard', costume_access=status))
 
 
 @app.route('/admin/costume-contest', methods=['POST'])
@@ -9632,6 +9730,19 @@ def costumes():
 
     if not is_costume_contest_open() and not is_admin:
         return redirect(url_for('home'))
+
+    if not member_can_use_costume_contest(member, is_admin=is_admin):
+        if request.method == 'POST':
+            if (request.form.get('action') or '').strip().lower() == 'admin_remove':
+                abort(403)
+            if not member:
+                return redirect(url_for('legacy_portal', next='/costumes'))
+            status = 403
+        return render_template(
+            'costumes_locked.html',
+            member=member,
+            message=COSTUME_SCAN_GATE_MESSAGE,
+        ), status
 
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip().lower()

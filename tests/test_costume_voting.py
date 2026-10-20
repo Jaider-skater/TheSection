@@ -32,6 +32,8 @@ class CostumeVotingTests(unittest.TestCase):
             mock.patch.object(thesection, 'costumes_file', os.path.join(root, 'costumes.json')),
             mock.patch.object(thesection, 'costume_photos_dir', os.path.join(root, 'costume_photos')),
             mock.patch.object(thesection, 'get_display_timezone', return_value=timezone.utc),
+            # These suites cover the contest for guests already scanned in at the door.
+            mock.patch.object(thesection, 'member_has_scanned_contest_ticket', return_value=True),
         ]
         for patcher in self.patches:
             patcher.start()
@@ -84,8 +86,8 @@ class CostumeVotingTests(unittest.TestCase):
         page = client.get('/costumes')
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
-        self.assertIn('Members only', html)
-        self.assertIn('Sign in at Member Portal', html)
+        # Contest is gated to scanned guests: anonymous visitors get the lock screen.
+        self.assertIn(thesection.COSTUME_SCAN_GATE_MESSAGE, html)
         self.assertIn('next=/costumes', html)
         token = page.headers.get('X-CSRF-Token')
         resp = client.post(
@@ -327,7 +329,7 @@ class CostumeVotingTests(unittest.TestCase):
         self.assertEqual(thesection.load_costumes().get('ballots'), {})
 
     def test_copy_has_no_stranded_contest_heading(self):
-        client = self.app.test_client()
+        client = self._login()
         html = client.get('/costumes').get_data(as_text=True)
         self.assertIn('Costume contest', html)
         self.assertIn('The board', html)
@@ -578,6 +580,8 @@ class CostumeContestVisibilityTests(unittest.TestCase):
             mock.patch.object(thesection, 'scanner_settings_file', os.path.join(root, 'scanner.json')),
             mock.patch.object(thesection, 'costumes_file', os.path.join(root, 'costumes.json')),
             mock.patch.object(thesection, 'get_display_timezone', return_value=timezone.utc),
+            # These suites cover the contest for guests already scanned in at the door.
+            mock.patch.object(thesection, 'member_has_scanned_contest_ticket', return_value=True),
         ]
         for patcher in self.patches:
             patcher.start()
@@ -641,8 +645,9 @@ class CostumeContestVisibilityTests(unittest.TestCase):
         client = self.app.test_client()
         page = client.get('/costumes')
         self.assertEqual(page.status_code, 200)
-        home = client.get('/')
-        self.assertIn('Costume contest', home.get_data(as_text=True))
+        # Anonymous: lock screen, no menu link (link needs a scanned ticket).
+        self.assertIn(thesection.COSTUME_SCAN_GATE_MESSAGE, page.get_data(as_text=True))
+        self.assertNotIn('Costume contest</a>', client.get('/').get_data(as_text=True))
         with self.app.test_request_context('/'):
             thesection.app.preprocess_request()
             injected = thesection.inject_security_template_globals()

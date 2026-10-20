@@ -31,6 +31,8 @@ class ProfileCostumeEntryTests(unittest.TestCase):
             mock.patch.object(thesection, 'costumes_file', os.path.join(root, 'costumes.json')),
             mock.patch.object(thesection, 'costume_photos_dir', os.path.join(root, 'costume_photos')),
             mock.patch.object(thesection, 'get_display_timezone', return_value=timezone.utc),
+            # These suites cover the contest for guests already scanned in at the door.
+            mock.patch.object(thesection, 'member_has_scanned_contest_ticket', return_value=True),
         ]
         for patcher in self.patches:
             patcher.start()
