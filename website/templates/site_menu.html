@@ -14,7 +14,7 @@
                 <a href="/" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Home</a>
                 {% endif %}
                 <a href="{{ url_for('legacy_portal') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Member Portal</a>
-                {% if costume_contest_open and not show_staff_nav %}
+                {% if costume_contest_access and not show_staff_nav %}
                 <a href="{{ url_for('costumes') }}" class="block px-4 py-3 text-sm hover:bg-zinc-800 transition-colors">Costume contest</a>
                 {% endif %}
                 {% if show_staff_nav %}
