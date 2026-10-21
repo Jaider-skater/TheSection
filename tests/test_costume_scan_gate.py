@@ -81,20 +81,12 @@ class CostumeScanGateTests(_voting.CostumeVotingTests):
         client = self._login()
         self.assertNotIn(thesection.COSTUME_SCAN_GATE_MESSAGE, client.get('/costumes').get_data(as_text=True))
 
-    def test_admin_grant_by_email_and_revoke(self):
+    def test_stored_grant_and_revoke(self):
         self.assertTrue(thesection.set_costume_access_email('Guest@Example.com', True))
         client = self._login()
         self.assertNotIn(thesection.COSTUME_SCAN_GATE_MESSAGE, client.get('/costumes').get_data(as_text=True))
         self.assertTrue(thesection.set_costume_access_email('guest@example.com', False))
         self.assertIn(thesection.COSTUME_SCAN_GATE_MESSAGE, client.get('/costumes').get_data(as_text=True))
-
-    def test_admin_access_route_requires_admin(self):
-        client = self._login()
-        client.post('/admin/costume-access', data={
-            'email': 'guest@example.com', 'grant': '1',
-            'csrf_token': client.get('/legacy').headers.get('X-CSRF-Token'),
-        })
-        self.assertEqual(thesection.costume_access_emails(), [])
 
     def test_admin_always_has_access_even_when_hidden(self):
         thesection.set_costume_contest_open(False)
@@ -104,12 +96,6 @@ class CostumeScanGateTests(_voting.CostumeVotingTests):
         page = admin.get('/costumes')
         self.assertEqual(page.status_code, 200)
         self.assertNotIn(thesection.COSTUME_SCAN_GATE_MESSAGE, page.get_data(as_text=True))
-        resp = admin.post('/admin/costume-access', data={
-            'email': 'door@example.com', 'grant': '1',
-            'csrf_token': admin.get('/admin').headers.get('X-CSRF-Token') or token,
-        })
-        self.assertEqual(resp.status_code, 302)
-        self.assertEqual(thesection.costume_access_emails(), ['door@example.com'])
 
     def test_hidden_contest_still_hidden_for_scanned_guest(self):
         self._ticket(scan=True)

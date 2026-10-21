@@ -1029,6 +1029,7 @@ def _migrate_costumes_store(store):
         'ballots': cleaned_ballots,
         'contest_open': contest_open,
         'access_emails': access_emails,
+        'join_code': store.get('join_code') if isinstance(store.get('join_code'), str) else '',
     }
 
 
@@ -1105,6 +1106,40 @@ def set_costume_access_email(email, granted):
             emails.append(key)
         store['access_emails'] = emails
         return save_costumes(store)
+
+
+def get_costume_join_code(create=True):
+    """Secret code in the door QR (/costumes/join/<code>). Created on first use."""
+    store = load_costumes()
+    code = store.get('join_code') or ''
+    if code or not create:
+        return code
+    return regenerate_costume_join_code()
+
+
+def regenerate_costume_join_code():
+    """New door code; the old QR stops working. Existing grants are kept."""
+    code = secrets.token_urlsafe(18)
+    with costumes_lock:
+        store = load_costumes()
+        store['join_code'] = code
+        if not save_costumes(store):
+            return ''
+    return code
+
+
+def costume_join_url(code=None):
+    code = code or get_costume_join_code()
+    return f"{get_public_base_url()}/costumes/join/{code}"
+
+
+def build_costume_join_qr_png(code=None):
+    qr = qrcode.QRCode(box_size=14, border=4)
+    qr.add_data(costume_join_url(code))
+    qr.make(fit=True)
+    buffered = BytesIO()
+    qr.make_image(fill_color="black", back_color="white").save(buffered, format="PNG")
+    return buffered.getvalue()
 
 
 def member_can_use_costume_contest(member=None, is_admin=None):
@@ -7594,23 +7629,58 @@ def admin_dashboard():
         signup_count=signup_count,
         invite_count=invite_count,
         costume_contest_open=is_costume_contest_open(),
-        costume_access_emails=costume_access_emails(),
-        costume_access_status=request.args.get('costume_access'),
+        costume_join_url=costume_join_url(),
+        costume_qr_status=request.args.get('costume_qr'),
         contest_flash=contest_flash,
         planned_promo_count=planned_promo_count(),
         costume_consent_count=sum(1 for e in costume_consent_rows() if e['photo_consent']),
     )
 
 
-@app.route('/admin/costume-access', methods=['POST'])
-def admin_costume_access():
+@app.route('/admin/costume-qr.png')
+def admin_costume_qr_png():
     if not require_admin():
         return redirect(url_for('admin_login'))
-    email = request.form.get('email', '')
-    granted = (request.form.get('grant') or '1') != '0'
-    ok = set_costume_access_email(email, granted)
-    status = ('granted' if granted else 'revoked') if ok else 'error'
-    return redirect(url_for('admin_dashboard', costume_access=status))
+    resp = app.response_class(build_costume_join_qr_png(), mimetype='image/png')
+    resp.headers['Cache-Control'] = 'no-store'
+    if request.args.get('download') == '1':
+        resp.headers['Content-Disposition'] = 'attachment; filename="costume-contest-qr.png"'
+    return resp
+
+
+@app.route('/admin/costume-qr')
+def admin_costume_qr():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    return render_template('costume_qr_print.html', join_url=costume_join_url())
+
+
+@app.route('/admin/costume-qr/regenerate', methods=['POST'])
+def admin_costume_qr_regenerate():
+    if not require_admin():
+        return redirect(url_for('admin_login'))
+    status = 'regenerated' if regenerate_costume_join_code() else 'error'
+    return redirect(url_for('admin_dashboard', costume_qr=status))
+
+
+@app.route('/costumes/join/<code>')
+def costume_join(code):
+    """Door QR: unlock the contest for this account, then land on /costumes."""
+    if not rate_limit_allow('costume_join', 30, 300):
+        return render_template('costumes_locked.html', member=get_logged_in_member(),
+                               message='Too many tries. Please wait a few minutes.'), 429
+    expected = get_costume_join_code(create=False)
+    if not expected or not secure_equals(code or '', expected):
+        return render_template(
+            'costumes_locked.html', member=get_logged_in_member(),
+            message='That costume contest code is not valid. Scan the QR code at the door again.',
+        ), 404
+    member = get_logged_in_member()
+    if not member:
+        # Login and sign-up both honor next; it brings them back here to finish.
+        return redirect(url_for('legacy_portal', next=f'/costumes/join/{code}'))
+    set_costume_access_email(member.get('email'), True)
+    return redirect(url_for('costumes'))
 
 
 @app.route('/admin/costume-contest', methods=['POST'])

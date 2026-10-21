@@ -32,6 +32,7 @@
                 <li>Rank up to three favorites — 1st, 2nd, 3rd</li>
                 <li>No ranking your own costume</li>
                 <li>Scored 3–2–1</li>
+                <li class="text-amber-300 font-semibold">Fake entries will be deleted.</li>
             </ul>
         </div>
 
@@ -59,6 +60,7 @@
             <form method="POST" action="{{ url_for('costumes') }}" enctype="multipart/form-data" class="space-y-5">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="submit">
+                <p class="text-sm text-amber-300 mb-3">Fake entries will be deleted.</p>
                 <div>
                     <label for="display_name" class="block text-sm text-zinc-300 mb-2">Display name</label>
                     <input type="text"

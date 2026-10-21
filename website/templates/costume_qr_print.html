@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Costume contest QR • The Section</title>
+    <style>
+        body { font-family: -apple-system, Helvetica, Arial, sans-serif; text-align: center; color: #000; background: #fff; margin: 0; padding: 40px 20px; }
+        h1 { font-size: 44px; margin: 0 0 8px; }
+        p { font-size: 22px; margin: 8px 0; }
+        img { width: 420px; max-width: 90vw; height: auto; margin: 24px auto; display: block; }
+        .small { font-size: 14px; color: #555; word-break: break-all; }
+        button { font-size: 16px; padding: 10px 20px; margin-top: 16px; }
+        @media print { button { display: none; } }
+    </style>
+</head>
+<body>
+    <h1>Costume contest</h1>
+    <p>Scan to enter and vote</p>
+    <img src="{{ url_for('admin_costume_qr_png') }}" alt="Costume contest QR code">
+    <p>Sign in or make a profile, then enter your costume.</p>
+    <p><strong>Fake entries will be deleted.</strong></p>
+    <p class="small">{{ join_url }}</p>
+    <button onclick="window.print()">Print</button>
+</body>
+</html>

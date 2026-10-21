@@ -90,34 +90,27 @@
             </div>
         </div>
 
-        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-            <h2 class="font-semibold">Costume contest access</h2>
-            <p class="text-sm text-zinc-400 mt-1">Guests get in once their ticket is scanned at the door. Grant access by email for Stripe-app door sales (no site ticket).</p>
-            {% if costume_access_status == 'granted' %}<p class="text-sm text-emerald-400 mt-2">Access granted.</p>
-            {% elif costume_access_status == 'revoked' %}<p class="text-sm text-zinc-300 mt-2">Access removed.</p>
-            {% elif costume_access_status == 'error' %}<p class="text-sm text-red-400 mt-2">Enter a valid email.</p>{% endif %}
-            <form method="POST" action="{{ url_for('admin_costume_access') }}" class="mt-3 flex flex-wrap gap-2">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <input type="hidden" name="grant" value="1">
-                <input type="email" name="email" required placeholder="guest@email.com"
-                       class="flex-1 min-w-[12rem] px-3 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm">
-                <button type="submit" class="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm">Grant access</button>
-            </form>
-            {% if costume_access_emails %}
-            <ul class="mt-3 space-y-1 text-sm">
-                {% for email in costume_access_emails %}
-                <li class="flex items-center justify-between gap-2">
-                    <span class="text-zinc-300">{{ email }}</span>
-                    <form method="POST" action="{{ url_for('admin_costume_access') }}">
+        <div class="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 flex flex-col sm:flex-row gap-4 sm:items-center">
+            <img src="{{ url_for('admin_costume_qr_png') }}" alt="Costume contest door QR code"
+                 class="w-40 h-40 rounded-xl bg-white p-1">
+            <div class="flex-1">
+                <h2 class="font-semibold">Costume contest door QR</h2>
+                <p class="text-sm text-zinc-400 mt-1">Guests scan this at the door to unlock the contest. They sign in (or make a profile) and land on the contest page. Guests with a scanned ticket get in automatically.</p>
+                <p class="text-xs text-zinc-500 mt-2 break-all">{{ costume_join_url }}</p>
+                {% if costume_qr_status == 'regenerated' %}<p class="text-sm text-emerald-400 mt-2">New code made. Old QR codes no longer work — reprint.</p>
+                {% elif costume_qr_status == 'error' %}<p class="text-sm text-red-400 mt-2">Could not make a new code.</p>{% endif %}
+                <div class="flex flex-wrap gap-3 mt-3">
+                    <a href="{{ url_for('admin_costume_qr') }}" target="_blank"
+                       class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">Print</a>
+                    <a href="{{ url_for('admin_costume_qr_png', download=1) }}"
+                       class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm">Download PNG</a>
+                    <form method="POST" action="{{ url_for('admin_costume_qr_regenerate') }}"
+                          onsubmit="return confirm('Make a new code? The current QR will stop working.');">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <input type="hidden" name="grant" value="0">
-                        <input type="hidden" name="email" value="{{ email }}">
-                        <button type="submit" class="text-zinc-400 hover:text-white">Remove</button>
+                        <button type="submit" class="px-4 py-2 bg-zinc-100 hover:bg-white text-black font-semibold rounded-xl text-sm">Regenerate code</button>
                     </form>
-                </li>
-                {% endfor %}
-            </ul>
-            {% endif %}
+                </div>
+            </div>
         </div>
 
         <h2 class="text-xl font-semibold mb-4">Ticket sales</h2>
