@@ -375,9 +375,30 @@ def client_ip():
     return forwarded or (request.remote_addr or 'unknown')
 
 
-def rate_limit_allow(scope, limit, window_seconds):
+def _rate_limit_key(scope, key=None):
+    return f'{scope}:{key if key is not None else client_ip()}'
+
+
+def rate_limit_blocked(scope, limit, window_seconds, key=None):
+    """True if the bucket is already full. Does not record a hit."""
+    now = time.time()
+    k = _rate_limit_key(scope, key)
+    with _rate_limit_lock:
+        bucket = [ts for ts in _rate_limit_buckets.get(k, []) if now - ts < window_seconds]
+        _rate_limit_buckets[k] = bucket
+        return len(bucket) >= limit
+
+
+def rate_limit_record(scope, key=None):
+    """Record one hit (e.g. a failure) without checking."""
+    k = _rate_limit_key(scope, key)
+    with _rate_limit_lock:
+        _rate_limit_buckets.setdefault(k, []).append(time.time())
+
+
+def rate_limit_allow(scope, limit, window_seconds, key=None):
     """Simple process-local rate limit. Returns True if allowed."""
-    key = f'{scope}:{client_ip()}'
+    key = _rate_limit_key(scope, key)
     now = time.time()
     with _rate_limit_lock:
         bucket = _rate_limit_buckets.get(key, [])
@@ -7124,7 +7145,7 @@ def legacy_portal():
         next_url = safe_next_url(request.form.get('next') or request.args.get('next'), '')
 
         if action == 'register':
-            if not rate_limit_allow('member_register', 8, 600):
+            if not rate_limit_allow('member_register', 60, 600):
                 return render_template(
                     'legacy_portal.html',
                     **portal_context(error='Too many attempts. Please wait a few minutes.', next_url=next_url, active_tab='register'),
@@ -7171,7 +7192,10 @@ def legacy_portal():
             )
 
         if action == 'login':
-            if not rate_limit_allow('member_login', 15, 300):
+            _login_email = request.form.get('email', '').strip().lower()
+            # Failures only: per IP (loose, venue Wi-Fi is shared) and per account (tight).
+            if (rate_limit_blocked('member_login_fail', 100, 300)
+                    or rate_limit_blocked('member_login_fail_acct', 10, 300, key=_login_email)):
                 return render_template(
                     'legacy_portal.html',
                     **portal_context(
@@ -7194,6 +7218,8 @@ def legacy_portal():
                 if next_url:
                     return redirect(next_url)
                 return redirect(url_for('legacy_portal'))
+            rate_limit_record('member_login_fail')
+            rate_limit_record('member_login_fail_acct', key=_login_email)
             return render_template(
                 'legacy_portal.html',
                 **portal_context(
@@ -7297,7 +7323,7 @@ def legacy_portal():
                 return redirect(url_for('legacy_portal'))
             if not member_can_use_costume_contest(member):
                 return redirect(url_for('legacy_portal'))
-            if not rate_limit_allow('costume_submit', 20, 300):
+            if not rate_limit_allow('costume_submit', 150, 300):
                 return render_template(
                     'legacy_portal.html',
                     **portal_context(
@@ -7310,7 +7336,7 @@ def legacy_portal():
             remove_photo = (request.form.get('remove_photo') or '').strip().lower() in (
                 '1', 'on', 'true', 'yes',
             )
-            if has_upload and not rate_limit_allow('costume_photo_upload', 10, 300):
+            if has_upload and not rate_limit_allow('costume_photo_upload', 100, 300):
                 return render_template(
                     'legacy_portal.html',
                     **portal_context(
@@ -7666,11 +7692,14 @@ def admin_costume_qr_regenerate():
 @app.route('/costumes/join/<code>')
 def costume_join(code):
     """Door QR: unlock the contest for this account, then land on /costumes."""
-    if not rate_limit_allow('costume_join', 30, 300):
-        return render_template('costumes_locked.html', member=get_logged_in_member(),
-                               message='Too many tries. Please wait a few minutes.'), 429
+    # Only invalid codes count toward the limit, so a crowd on one venue Wi-Fi
+    # IP scanning the real QR is never blocked.
     expected = get_costume_join_code(create=False)
     if not expected or not secure_equals(code or '', expected):
+        if rate_limit_blocked('costume_join_fail', 20, 300):
+            return render_template('costumes_locked.html', member=get_logged_in_member(),
+                                   message='Too many tries. Please wait a few minutes.'), 429
+        rate_limit_record('costume_join_fail')
         return render_template(
             'costumes_locked.html', member=get_logged_in_member(),
             message='That costume contest code is not valid. Scan the QR code at the door again.',
@@ -9831,7 +9860,7 @@ def costumes():
         elif not member:
             return redirect(url_for('legacy_portal', next='/costumes'))
         elif action == 'submit':
-            if not rate_limit_allow('costume_submit', 20, 300):
+            if not rate_limit_allow('costume_submit', 150, 300):
                 error = 'Too many attempts. Please wait a few minutes.'
                 status = 429
             else:
@@ -9840,7 +9869,7 @@ def costumes():
                 remove_photo = (request.form.get('remove_photo') or '').strip().lower() in (
                     '1', 'on', 'true', 'yes',
                 )
-                if has_upload and not rate_limit_allow('costume_photo_upload', 10, 300):
+                if has_upload and not rate_limit_allow('costume_photo_upload', 100, 300):
                     error = 'Too many photo uploads. Please wait a few minutes.'
                     status = 429
                 else:
@@ -9857,7 +9886,7 @@ def costumes():
                     error = result or 'Could not save your costume.'
         elif action in ('rank', 'ballot', 'vote', 'unvote'):
             # vote/unvote aliases kept so old forms fail softly into ranked save UX
-            if not rate_limit_allow('costume_vote', 60, 60):
+            if not rate_limit_allow('costume_vote', 300, 60):
                 error = 'Too many votes too quickly. Slow down a second.'
                 status = 429
             else:
