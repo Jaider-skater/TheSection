@@ -5570,7 +5570,10 @@ def _create_stripe_checkout_session(
             'exclusive_single_rate': 'true' if breakdown.get('returning_guest_single_ticket_rate') else 'false',
         },
         'success_url': f"{base_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
-        'cancel_url': f"{base_url}/",
+        'cancel_url': (
+            f"{base_url}/checkout/canceled?t={exclusive_cancel_token(member_email, sales_event_id)}"
+            if exclusive_reserved else f"{base_url}/"
+        ),
     }
     if member_email:
         checkout_kwargs['customer_email'] = member_email
@@ -5582,6 +5585,67 @@ def _create_stripe_checkout_session(
         checkout_kwargs['expires_at'] = int((datetime.now(timezone.utc) + EXCLUSIVE_HOLD_TTL).timestamp())
 
     return stripe.checkout.Session.create(**checkout_kwargs)
+
+
+def exclusive_cancel_token(email, event_id):
+    return URLSafeTimedSerializer(app.secret_key, salt='exclusive-cancel').dumps(
+        {'e': (email or '').strip().lower(), 'v': (event_id or '').strip()}
+    )
+
+
+def release_exclusive_hold_for_session(checkout_session_id, expire_stripe=False):
+    """Free the 20% hold tied to an unpaid Checkout Session. Returns True if released."""
+    if not checkout_session_id:
+        return False
+    with exclusive_holds_lock:
+        holds = load_exclusive_holds()
+        prune_exclusive_holds(holds)
+        key = next(
+            (k for k, h in holds.items() if (h or {}).get('checkout_session_id') == checkout_session_id),
+            None,
+        )
+        if not key:
+            save_exclusive_holds(holds)
+            return False
+        if expire_stripe:
+            try:
+                cs = stripe.checkout.Session.retrieve(checkout_session_id)
+                if checkout_session_is_paid(cs):
+                    return False
+                if (cs.get('status') if isinstance(cs, dict) else getattr(cs, 'status', None)) == 'open':
+                    stripe.checkout.Session.expire(checkout_session_id)
+            except Exception as e:
+                # If we cannot confirm it is closed, keep the hold so it cannot be double-used.
+                print('Could not expire exclusive checkout session:', e)
+                return False
+        holds.pop(key, None)
+        save_exclusive_holds(holds)
+        return True
+
+
+def release_exclusive_hold_on_cancel(email, event_id):
+    email = (email or '').strip().lower()
+    event_id = (event_id or '').strip()
+    if not email or not event_id:
+        return False
+    with exclusive_holds_lock:
+        hold = load_exclusive_holds().get(exclusive_hold_key(email, event_id)) or {}
+    session_id = hold.get('checkout_session_id')
+    if not session_id:
+        return False
+    return release_exclusive_hold_for_session(session_id, expire_stripe=True)
+
+
+@app.route('/checkout/canceled')
+def checkout_canceled():
+    try:
+        data = URLSafeTimedSerializer(app.secret_key, salt='exclusive-cancel').loads(
+            request.args.get('t', ''), max_age=24 * 3600
+        )
+        release_exclusive_hold_on_cancel(data.get('e'), data.get('v'))
+    except Exception as e:
+        print('Checkout cancel release skipped:', e)
+    return redirect('/?open_tickets=1')
 
 
 def door_stripe_error_message(exc):
@@ -5872,6 +5936,13 @@ def stripe_webhook():
         except Exception as e:
             print('Stripe webhook fulfill error:', e)
             return jsonify({'error': 'Fulfillment failed'}), 500
+
+    if event_type == 'checkout.session.expired':
+        try:
+            session_id = data_object.get('id') if isinstance(data_object, dict) else data_object.id
+            release_exclusive_hold_for_session(session_id)
+        except Exception as e:
+            print('Stripe webhook expired release error:', e)
 
     if event_type == 'payment_intent.succeeded':
         try:
