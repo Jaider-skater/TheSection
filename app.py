@@ -138,10 +138,6 @@ exclusive_holds_file = os.getenv(
     'EXCLUSIVE_HOLDS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'exclusive_holds.json'),
 )
-costumes_file = os.getenv(
-    'COSTUMES_FILE',
-    os.path.join(os.path.dirname(__file__), 'data', 'costumes.json'),
-)
 events_file = os.getenv(
     'EVENTS_FILE',
     os.path.join(os.path.dirname(__file__), 'data', 'events.json'),
@@ -149,10 +145,6 @@ events_file = os.getenv(
 flyers_dir = os.getenv(
     'FLYERS_DIR',
     os.path.join(os.path.dirname(__file__), 'data', 'flyers'),
-)
-costume_photos_dir = os.getenv(
-    'COSTUME_PHOTOS_DIR',
-    os.path.join(os.path.dirname(__file__), 'data', 'costume_photos'),
 )
 promos_file = os.getenv(
     'PROMOS_FILE',
@@ -223,7 +215,6 @@ full_list_lock = threading.Lock()
 mailing_list_log_lock = threading.Lock()
 _mailing_send_lock = threading.Lock()
 exclusive_holds_lock = threading.Lock()
-costumes_lock = threading.Lock()
 promos_lock = threading.Lock()
 _presence_lock = threading.Lock()
 _presence_seen = {}
@@ -795,8 +786,6 @@ def inject_security_template_globals():
         'csrf_field': f'<input type="hidden" name="csrf_token" value="{ensure_csrf_token()}">',
         'show_staff_nav': is_staff_user() or admin_authenticated(),
         'member_logged_in': bool(get_logged_in_member()),
-        'costume_contest_open': is_costume_contest_open(),
-        'costume_contest_access': member_can_use_costume_contest(is_admin=admin_authenticated() or is_staff_user()),
     }
 
 
@@ -967,417 +956,6 @@ def save_members(members):
     return _locked_json_write(members_file, members)
 
 
-COSTUME_DISPLAY_NAME_MAX = 80
-COSTUME_DESCRIPTION_MAX = 200
-COSTUME_PHOTO_MAX_BYTES = 8 * 1024 * 1024
-COSTUME_PHOTO_MAX_DIMENSION = 1200
-COSTUME_PHOTO_JPEG_QUALITY = 82
-
-
-COSTUME_MAX_RANKS = 3
-COSTUME_RANK_POINTS = (3, 2, 1)  # Borda: 1st=3, 2nd=2, 3rd=1
-
-
-COSTUME_PHOTO_CONSENT_VERSION = '2026-10-15-v1'
-COSTUME_PHOTO_CONSENT_TEXT = (
-    'I give permission for The Section Events (thesectionevents) and Hallie Workshop '
-    'to use photos of my Halloween costume in promotional material for future events.'
-)
-
-
-def costume_consent_from_form(form):
-    """Unchecked checkboxes are omitted from the form, so absence means no consent."""
-    return (form.get('photo_consent') or '').strip().lower() in ('1', 'on', 'true', 'yes')
-
-
-def _empty_costumes_store():
-    return {'entries': [], 'ballots': {}, 'contest_open': True}
-
-
-def _migrate_costumes_store(store):
-    """Normalize store shape. Legacy per-entry `votes` arrays are discarded;
-    ranked-choice ballots live in top-level `ballots` (start fresh).
-    """
-    if isinstance(store, list):
-        store = {'entries': store}
-    if not isinstance(store, dict):
-        return _empty_costumes_store()
-    entries = store.get('entries')
-    if not isinstance(entries, list):
-        entries = []
-    cleaned_entries = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        cleaned = dict(entry)
-        cleaned.pop('votes', None)
-        # Entries created before photo consent existed have not consented.
-        cleaned['photo_consent'] = cleaned.get('photo_consent') is True
-        cleaned_entries.append(cleaned)
-    raw_ballots = store.get('ballots')
-    if not isinstance(raw_ballots, dict):
-        raw_ballots = {}
-    cleaned_ballots = {}
-    for voter, ranks in raw_ballots.items():
-        key = (voter or '').strip().lower()
-        if not key or not isinstance(ranks, list):
-            continue
-        cleaned_ranks = []
-        seen = set()
-        for eid in ranks:
-            eid = (eid or '').strip()
-            if not eid or eid in seen:
-                continue
-            cleaned_ranks.append(eid)
-            seen.add(eid)
-            if len(cleaned_ranks) >= COSTUME_MAX_RANKS:
-                break
-        if cleaned_ranks:
-            cleaned_ballots[key] = cleaned_ranks
-    # Default True so existing live stores stay visible until an admin hides the contest.
-    contest_open = store.get('contest_open')
-    if not isinstance(contest_open, bool):
-        contest_open = True
-    raw_access = store.get('access_emails')
-    access_emails = []
-    if isinstance(raw_access, list):
-        for email in raw_access:
-            key = (email or '').strip().lower() if isinstance(email, str) else ''
-            if key and key not in access_emails:
-                access_emails.append(key)
-    return {
-        'entries': cleaned_entries,
-        'ballots': cleaned_ballots,
-        'contest_open': contest_open,
-        'access_emails': access_emails,
-        'join_code': store.get('join_code') if isinstance(store.get('join_code'), str) else '',
-    }
-
-
-def load_costumes():
-    if not ensure_data_dir(costumes_file):
-        return _empty_costumes_store()
-    data = _locked_json_read(costumes_file, _empty_costumes_store())
-    return _migrate_costumes_store(data)
-
-
-def save_costumes(store):
-    if not ensure_data_dir(costumes_file):
-        return False
-    store = _migrate_costumes_store(store)
-    return _locked_json_write(costumes_file, store)
-
-
-def is_costume_contest_open(store=None):
-    """Whether the public costume contest menu/page is visible."""
-    store = store if store is not None else load_costumes()
-    return bool(store.get('contest_open', True))
-
-
-COSTUME_SCAN_GATE_MESSAGE = 'The costume contest opens once your ticket is scanned at the door.'
-
-
-def costume_contest_event_id():
-    """Event whose scanned tickets unlock the contest: Halloween, else tonight's door event."""
-    halloween = find_halloween_event()
-    if halloween and halloween.get('id'):
-        return halloween['id']
-    return get_door_event_id() or HALLOWEEN_EVENT_SLUG
-
-
-def member_has_scanned_contest_ticket(member, event_id=None):
-    """True if this member owns a door-scanned ticket for the contest event.
-
-    Uses the ticket's own scanned_at. Scanner count resets only move the live
-    counting epoch (scanned_at is kept), so a reset or restore never revokes access.
-    """
-    if not member:
-        return False
-    email = (member.get('email') or '').strip().lower()
-    if not email:
-        return False
-    event_id = event_id or costume_contest_event_id()
-    saved = {normalize_ticket_id(t) for t in (member.get('saved_tickets') or []) if t}
-    for ticket in load_tickets():
-        if not ticket.get('scanned_at'):
-            continue
-        stamped = (ticket.get('event_id') or '').strip()
-        if event_id and stamped and stamped != event_id:
-            continue
-        owner = (ticket.get('email') or '').strip().lower()
-        if owner == email or normalize_ticket_id(ticket.get('ticket_id')) in saved:
-            return True
-    return False
-
-
-def costume_access_emails(store=None):
-    store = store if store is not None else load_costumes()
-    return list(store.get('access_emails') or [])
-
-
-def set_costume_access_email(email, granted):
-    """Admin override (e.g. Stripe-app door sales with no site ticket)."""
-    key = (email or '').strip().lower()
-    if not key or not is_valid_email(key):
-        return False
-    with costumes_lock:
-        store = load_costumes()
-        emails = [e for e in store.get('access_emails') or [] if e != key]
-        if granted:
-            emails.append(key)
-        store['access_emails'] = emails
-        return save_costumes(store)
-
-
-def get_costume_join_code(create=True):
-    """Secret code in the door QR (/costumes/join/<code>). Created on first use."""
-    store = load_costumes()
-    code = store.get('join_code') or ''
-    if code or not create:
-        return code
-    return regenerate_costume_join_code()
-
-
-def regenerate_costume_join_code():
-    """New door code; the old QR stops working. Existing grants are kept."""
-    code = secrets.token_urlsafe(18)
-    with costumes_lock:
-        store = load_costumes()
-        store['join_code'] = code
-        if not save_costumes(store):
-            return ''
-    return code
-
-
-def costume_join_url(code=None):
-    code = code or get_costume_join_code()
-    return f"{get_public_base_url()}/costumes/join/{code}"
-
-
-def build_costume_join_qr_png(code=None):
-    qr = qrcode.QRCode(box_size=14, border=4)
-    qr.add_data(costume_join_url(code))
-    qr.make(fit=True)
-    buffered = BytesIO()
-    qr.make_image(fill_color="black", back_color="white").save(buffered, format="PNG")
-    return buffered.getvalue()
-
-
-def member_can_use_costume_contest(member=None, is_admin=None):
-    """Contest must be shown; then admins, scanned guests, or admin-granted emails."""
-    if is_admin is None:
-        is_admin = bool(has_request_context() and require_admin())
-    if is_admin:
-        return True
-    store = load_costumes()
-    if not is_costume_contest_open(store):
-        return False
-    if member is None and has_request_context():
-        member = get_logged_in_member()
-    if not member:
-        return False
-    email = (member.get('email') or '').strip().lower()
-    if email and email in costume_access_emails(store):
-        return True
-    return member_has_scanned_contest_ticket(member)
-
-
-def set_costume_contest_open(open_flag):
-    """Persist contest visibility. Returns True on success."""
-    with costumes_lock:
-        store = load_costumes()
-        store['contest_open'] = bool(open_flag)
-        return save_costumes(store)
-
-
-def costume_borda_scores(store=None):
-    """Map entry_id -> Borda score from ranked ballots (3/2/1)."""
-    store = store if store is not None else load_costumes()
-    scores = {}
-    for ranks in (store.get('ballots') or {}).values():
-        if not isinstance(ranks, list):
-            continue
-        for i, eid in enumerate(ranks[:COSTUME_MAX_RANKS]):
-            eid = (eid or '').strip()
-            if not eid:
-                continue
-            scores[eid] = scores.get(eid, 0) + COSTUME_RANK_POINTS[i]
-    return scores
-
-
-def get_costume_ballot(voter_email, store=None):
-    """Return voter's ranked entry ids (up to 3), or []."""
-    email = (voter_email or '').strip().lower()
-    if not email:
-        return []
-    store = store if store is not None else load_costumes()
-    ranks = (store.get('ballots') or {}).get(email) or []
-    if not isinstance(ranks, list):
-        return []
-    return [str(eid).strip() for eid in ranks if (eid or '').strip()][:COSTUME_MAX_RANKS]
-
-
-def costume_entry_score(entry_id, store=None):
-    if not entry_id:
-        return 0
-    return int(costume_borda_scores(store).get(entry_id, 0))
-
-
-def list_costume_entries_public(viewer_email=None):
-    """Public-safe costume listings: no emails. Sorted by Borda score desc, then newest."""
-    viewer = (viewer_email or '').strip().lower()
-    store = load_costumes()
-    entries = list(store.get('entries') or [])
-    scores = costume_borda_scores(store)
-    my_ballot = get_costume_ballot(viewer, store) if viewer else []
-    my_rank_by_id = {eid: (i + 1) for i, eid in enumerate(my_ballot)}
-    entries.sort(key=lambda e: (
-        scores.get(e.get('id') or '', 0),
-        e.get('updated_at') or e.get('created_at') or '',
-    ), reverse=True)
-    public = []
-    for entry in entries:
-        eid = entry.get('id') or ''
-        owner = (entry.get('owner_email') or '').strip().lower()
-        score = int(scores.get(eid, 0))
-        public.append({
-            'id': eid,
-            'display_name': entry.get('display_name') or '',
-            'costume': entry.get('costume') or '',
-            'photo_url': costume_photo_url(entry.get('photo')),
-            'score': score,
-            'vote_count': score,  # alias for templates/tests that expect a count-like field
-            'my_rank': my_rank_by_id.get(eid),
-            'is_mine': bool(viewer and viewer == owner),
-            'created_at': entry.get('created_at') or '',
-            'updated_at': entry.get('updated_at') or '',
-        })
-    return public
-
-
-def find_costume_entry_for_email(email):
-    target = (email or '').strip().lower()
-    if not target:
-        return None
-    for entry in (load_costumes().get('entries') or []):
-        if (entry.get('owner_email') or '').strip().lower() == target:
-            return entry
-    return None
-
-
-def _apply_costume_photo_consent(entry, photo_consent, now):
-    """Set consent on an entry; record timestamp + text version whenever it changes."""
-    if photo_consent is None:
-        entry['photo_consent'] = entry.get('photo_consent') is True
-        return
-    new_value = bool(photo_consent)
-    if entry.get('photo_consent') is True and new_value and entry.get('photo_consent_at'):
-        return  # unchanged: keep original consent time/version
-    if entry.get('photo_consent') is not True and not new_value and 'photo_consent_at' not in entry:
-        entry['photo_consent'] = False
-        return  # never consented: nothing to record
-    entry['photo_consent'] = new_value
-    entry['photo_consent_at'] = now
-    entry['photo_consent_version'] = COSTUME_PHOTO_CONSENT_VERSION
-    entry['photo_consent_text'] = COSTUME_PHOTO_CONSENT_TEXT
-
-
-def submit_costume_entry(owner_email, display_name, costume, photo_consent=None):
-    """Create or update the member's single costume entry. Returns (ok, error_or_entry).
-
-    photo_consent: True/False to set it, None to leave it unchanged (new entries default False).
-    """
-    email = (owner_email or '').strip().lower()
-    name = ' '.join((display_name or '').split())
-    desc = ' '.join((costume or '').split())
-    if not email:
-        return False, 'You must be signed in.'
-    if not name:
-        return False, 'Enter a display name.'
-    if not desc:
-        return False, 'Describe your costume.'
-    if len(name) > COSTUME_DISPLAY_NAME_MAX:
-        return False, f'Display name must be {COSTUME_DISPLAY_NAME_MAX} characters or fewer.'
-    if len(desc) > COSTUME_DESCRIPTION_MAX:
-        return False, f'Costume description must be {COSTUME_DESCRIPTION_MAX} characters or fewer.'
-    now = datetime.now(timezone.utc).isoformat()
-    with costumes_lock:
-        store = load_costumes()
-        entries = store.setdefault('entries', [])
-        existing = None
-        for entry in entries:
-            if (entry.get('owner_email') or '').strip().lower() == email:
-                existing = entry
-                break
-        if existing:
-            existing['display_name'] = name
-            existing['costume'] = desc
-            existing['updated_at'] = now
-            existing.pop('votes', None)
-            _apply_costume_photo_consent(existing, photo_consent, now)
-            if not existing.get('id'):
-                existing['id'] = secrets.token_hex(16)
-            saved = existing
-        else:
-            saved = {
-                'id': secrets.token_hex(16),
-                'owner_email': email,
-                'display_name': name,
-                'costume': desc,
-                'created_at': now,
-                'updated_at': now,
-                'photo_consent': False,
-            }
-            _apply_costume_photo_consent(saved, photo_consent, now)
-            entries.append(saved)
-        if not save_costumes(store):
-            return False, 'Could not save your costume. Try again.'
-        return True, saved
-
-
-def set_costume_ballot(voter_email, ranked_entry_ids):
-    """Set a member's ranked-choice ballot (up to 3 distinct other entries).
-
-    Partial ballots are OK (e.g. only 1st). Empty list clears the ballot.
-    Returns (ok, error_message).
-    """
-    email = (voter_email or '').strip().lower()
-    if not email:
-        return False, 'You must be signed in to vote.'
-    raw = ranked_entry_ids if isinstance(ranked_entry_ids, (list, tuple)) else []
-    cleaned = []
-    seen = set()
-    for eid in raw:
-        eid = (eid or '').strip()
-        if not eid:
-            continue
-        if eid in seen:
-            return False, 'Each costume can only appear once in your rankings.'
-        cleaned.append(eid)
-        seen.add(eid)
-        if len(cleaned) > COSTUME_MAX_RANKS:
-            return False, f'You can rank at most {COSTUME_MAX_RANKS} costumes.'
-    with costumes_lock:
-        store = load_costumes()
-        entries = store.get('entries') or []
-        by_id = {e.get('id'): e for e in entries if e.get('id')}
-        for eid in cleaned:
-            target = by_id.get(eid)
-            if not target:
-                return False, 'That costume entry was not found.'
-            owner = (target.get('owner_email') or '').strip().lower()
-            if owner == email:
-                return False, 'You cannot vote for your own costume.'
-        ballots = store.setdefault('ballots', {})
-        if cleaned:
-            ballots[email] = cleaned
-        else:
-            ballots.pop(email, None)
-        if not save_costumes(store):
-            return False, 'Could not save your rankings. Try again.'
-        return True, None
-
-
 def _purge_entry_from_ballots(store, entry_id):
     """Remove an entry id from every ballot (after delete). Mutates store."""
     eid = (entry_id or '').strip()
@@ -1395,227 +973,6 @@ def _purge_entry_from_ballots(store, entry_id):
             ballots[voter] = cleaned
         else:
             ballots.pop(voter, None)
-
-
-def toggle_costume_vote(entry_id, voter_email):
-    """Legacy helper removed; ranked ballots replace toggle votes."""
-    return False, 'Costume voting now uses ranked choice (1st–3rd).', None
-
-
-def costume_photo_is_safe_filename(filename):
-    """Same basename rules as event flyers (no path traversal)."""
-    return flyer_is_safe_filename(filename)
-
-
-def costume_photo_url(filename):
-    name = (filename or '').strip()
-    if name and costume_photo_is_safe_filename(name):
-        return f'/costume-photos/{name}'
-    return None
-
-
-def delete_costume_photo_file(filename):
-    if not costume_photo_is_safe_filename(filename):
-        return
-    path = os.path.join(costume_photos_dir, filename)
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-    except OSError:
-        pass
-
-
-def set_costume_entry_photo(entry_id, photo_filename):
-    """Set or clear photo on an entry by id. Returns (ok, error_or_entry)."""
-    target_id = (entry_id or '').strip()
-    if not target_id:
-        return False, 'Missing costume entry.'
-    with costumes_lock:
-        store = load_costumes()
-        for entry in (store.get('entries') or []):
-            if entry.get('id') == target_id:
-                if photo_filename:
-                    entry['photo'] = photo_filename
-                else:
-                    entry.pop('photo', None)
-                entry['updated_at'] = datetime.now(timezone.utc).isoformat()
-                if not save_costumes(store):
-                    return False, 'Could not save photo. Try again.'
-                return True, entry
-        return False, 'That costume entry was not found.'
-
-
-def delete_costume_entry(entry_id):
-    """Admin moderation: remove a costume entry and its photo. Returns (ok, error_or_removed)."""
-    target_id = (entry_id or '').strip()
-    if not target_id:
-        return False, 'Missing costume entry.'
-    removed = None
-    with costumes_lock:
-        store = load_costumes()
-        entries = store.get('entries') if isinstance(store.get('entries'), list) else []
-        kept = []
-        for entry in entries:
-            if entry.get('id') == target_id and removed is None:
-                removed = entry
-                continue
-            kept.append(entry)
-        if removed is None:
-            return False, 'That costume entry was not found.'
-        store['entries'] = kept
-        _purge_entry_from_ballots(store, target_id)
-        if not save_costumes(store):
-            return False, 'Could not remove that costume. Try again.'
-    photo = (removed.get('photo') or '').strip()
-    if photo:
-        delete_costume_photo_file(photo)
-    return True, removed
-
-
-def delete_own_costume_entry(owner_email):
-    """Member deletes their own costume entry (by session email). Returns (ok, error_or_removed)."""
-    email = (owner_email or '').strip().lower()
-    if not email:
-        return False, 'You must be signed in.'
-    removed = None
-    with costumes_lock:
-        store = load_costumes()
-        entries = store.get('entries') if isinstance(store.get('entries'), list) else []
-        kept = []
-        for entry in entries:
-            owner = (entry.get('owner_email') or '').strip().lower()
-            if owner == email and removed is None:
-                removed = entry
-                continue
-            kept.append(entry)
-        if removed is None:
-            return False, 'You do not have a costume entry.'
-        store['entries'] = kept
-        _purge_entry_from_ballots(store, removed.get('id'))
-        if not save_costumes(store):
-            return False, 'Could not delete your costume. Try again.'
-    photo = (removed.get('photo') or '').strip()
-    if photo:
-        delete_costume_photo_file(photo)
-    return True, removed
-
-
-def apply_costume_photo_upload_or_remove(entry, upload=None, remove_photo=False):
-    """Apply optional photo upload or removal to an existing entry.
-
-    Shared by /costumes and the member portal so validation stays in sync.
-    Returns (ok, error_message_or_None).
-    """
-    if not entry or not entry.get('id'):
-        return False, 'Missing costume entry.'
-    has_upload = bool(upload and getattr(upload, 'filename', None))
-    if has_upload:
-        try:
-            filename = save_costume_photo(entry.get('id'), upload)
-        except ValueError as exc:
-            return False, str(exc)
-        if filename:
-            old_photo = (entry.get('photo') or '').strip()
-            photo_ok, photo_result = set_costume_entry_photo(entry.get('id'), filename)
-            if not photo_ok:
-                return False, photo_result or 'Could not save photo.'
-            if old_photo and old_photo != filename:
-                delete_costume_photo_file(old_photo)
-        return True, None
-    if remove_photo and entry.get('photo'):
-        old_photo = entry.get('photo')
-        photo_ok, photo_result = set_costume_entry_photo(entry.get('id'), None)
-        if not photo_ok:
-            return False, photo_result or 'Could not remove photo.'
-        delete_costume_photo_file(old_photo)
-    return True, None
-
-
-def submit_costume_entry_with_photo(
-    owner_email, display_name, costume, upload=None, remove_photo=False, photo_consent=None,
-):
-    """Create/update costume text then apply photo changes. Returns (ok, error_or_entry)."""
-    ok, result = submit_costume_entry(owner_email, display_name, costume, photo_consent=photo_consent)
-    if not ok:
-        return False, result
-    entry = result
-    photo_ok, photo_error = apply_costume_photo_upload_or_remove(
-        entry, upload=upload, remove_photo=remove_photo,
-    )
-    if not photo_ok:
-        return False, photo_error
-    refreshed = find_costume_entry_for_email(owner_email) or entry
-    return True, refreshed
-
-
-def save_costume_photo(entry_id, file_storage):
-    """Validate, resize, and compress a costume photo to JPEG on disk.
-
-    Accepts jpeg/png/webp/gif. Animated GIFs use the first frame only.
-    Max upload 8MB; longest side capped at 1200px; saved as JPEG quality 82.
-    """
-    from PIL import Image
-
-    if not file_storage or not getattr(file_storage, 'filename', None):
-        return None
-    raw = file_storage.read()
-    if not raw:
-        return None
-    if len(raw) > COSTUME_PHOTO_MAX_BYTES:
-        raise ValueError('Photo must be 8MB or smaller.')
-    if not detect_image_extension(raw):
-        raise ValueError('Photo must be a JPG, PNG, WEBP, or GIF image.')
-
-    try:
-        img = Image.open(BytesIO(raw))
-        img.load()
-    except Exception as exc:
-        raise ValueError('Could not read that image. Try another file.') from exc
-
-    # Animated / multi-frame: keep first frame only.
-    try:
-        if getattr(img, 'n_frames', 1) > 1:
-            img.seek(0)
-            img = img.copy()
-    except Exception:
-        pass
-
-    if img.mode in ('RGBA', 'LA'):
-        background = Image.new('RGB', img.size, (24, 24, 27))
-        alpha = img.split()[-1]
-        background.paste(img.convert('RGBA'), mask=alpha)
-        img = background
-    elif img.mode == 'P':
-        img = img.convert('RGBA')
-        background = Image.new('RGB', img.size, (24, 24, 27))
-        background.paste(img, mask=img.split()[-1])
-        img = background
-    elif img.mode != 'RGB':
-        img = img.convert('RGB')
-
-    width, height = img.size
-    longest = max(width, height)
-    if longest > COSTUME_PHOTO_MAX_DIMENSION:
-        scale = COSTUME_PHOTO_MAX_DIMENSION / float(longest)
-        new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.LANCZOS)
-        img = img.resize(new_size, resample)
-
-    if not ensure_data_dir(os.path.join(costume_photos_dir, 'placeholder')):
-        raise ValueError('Could not save photo.')
-
-    safe_id = secure_filename(str(entry_id or '')) or secrets.token_hex(8)
-    filename = f'{safe_id}_{secrets.token_hex(6)}.jpg'
-    if not costume_photo_is_safe_filename(filename):
-        raise ValueError('Could not save photo.')
-    path = os.path.join(costume_photos_dir, filename)
-
-    buffer = BytesIO()
-    img.save(buffer, format='JPEG', quality=COSTUME_PHOTO_JPEG_QUALITY, optimize=True)
-    with open(path, 'wb') as handle:
-        handle.write(buffer.getvalue())
-    return filename
-
 
 
 def bootstrap_legacy_members():
@@ -3088,7 +2445,6 @@ def send_test_broadcast_email(subject, body):
     return sent, failed, skipped, leftover
 
 
-
 def clear_returning_guest_discount_if_purchased(email):
     """No-op: exclusive members keep 20% on one single ticket per event."""
     return
@@ -3328,8 +2684,6 @@ def active_member_discount_rate(quantity=1, require_active=True, event_id=None, 
         return rate if rate > 0 else 0.20
     rate = member_discount if member_discount > 0 else 0.0
     return rate if rate > 0 else 0.10
-
-
 
 
 def sync_member_tickets_from_email(member):
@@ -5823,7 +5177,6 @@ def deliver_password_reset_email(customer_email, token, reset_url=None):
     return sent
 
 
-
 def parse_iso_datetime(raw):
     if not raw:
         return None
@@ -7043,14 +6396,6 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         logged_in = get_logged_in_member() or logged_in
     discount_eligible = member_discount_eligible(logged_in) if logged_in else False
     has_returning = member_has_returning_guest_discount(logged_in) if logged_in else False
-    my_costume_entry = None
-    my_costume_photo_url = None
-    my_costume_score = 0
-    if logged_in:
-        my_costume_entry = find_costume_entry_for_email(logged_in.get('email'))
-        if my_costume_entry:
-            my_costume_photo_url = costume_photo_url(my_costume_entry.get('photo'))
-            my_costume_score = costume_entry_score(my_costume_entry.get('id'))
     return {
         'error': error,
         'success': success,
@@ -7072,13 +6417,6 @@ def portal_context(member=None, saved_ticket_details=None, error=None, success=N
         'next_url': next_url,
         'active_tab': active_tab,
         'show_scanner_link': is_scanner_admin_member(),
-        'my_costume_entry': my_costume_entry,
-        'my_costume_photo_url': my_costume_photo_url,
-        'my_costume_score': my_costume_score,
-        'display_name_max': COSTUME_DISPLAY_NAME_MAX,
-        'costume_max': COSTUME_DESCRIPTION_MAX,
-        'consent_text': COSTUME_PHOTO_CONSENT_TEXT,
-        'show_costume_entry': member_can_use_costume_contest(),
     }
 
 
@@ -7318,83 +6656,19 @@ def legacy_portal():
             remove_saved_ticket_for_member(member['email'], ticket_id)
             return redirect(url_for('legacy_portal'))
 
-        if action == 'costume_submit':
-            if not member:
-                return redirect(url_for('legacy_portal'))
-            if not member_can_use_costume_contest(member):
-                return redirect(url_for('legacy_portal'))
-            if not rate_limit_allow('costume_submit', 150, 300):
-                return render_template(
-                    'legacy_portal.html',
-                    **portal_context(
-                        error='Too many attempts. Please wait a few minutes.',
-                        next_url=next_url,
-                    ),
-                ), 429
-            upload = request.files.get('photo')
-            has_upload = bool(upload and getattr(upload, 'filename', None))
-            remove_photo = (request.form.get('remove_photo') or '').strip().lower() in (
-                '1', 'on', 'true', 'yes',
-            )
-            if has_upload and not rate_limit_allow('costume_photo_upload', 100, 300):
-                return render_template(
-                    'legacy_portal.html',
-                    **portal_context(
-                        error='Too many photo uploads. Please wait a few minutes.',
-                        next_url=next_url,
-                    ),
-                ), 429
-            ok, result = submit_costume_entry_with_photo(
-                member.get('email'),
-                request.form.get('display_name', ''),
-                request.form.get('costume', ''),
-                upload=upload if has_upload else None,
-                remove_photo=remove_photo,
-                photo_consent=costume_consent_from_form(request.form),
-            )
-            if not ok:
-                return render_template(
-                    'legacy_portal.html',
-                    **portal_context(
-                        error=result or 'Could not save your costume.',
-                        next_url=next_url,
-                    ),
-                )
-            return redirect(url_for('legacy_portal', costume_saved=1))
-
-        if action == 'costume_delete':
-            if not member:
-                return redirect(url_for('legacy_portal'))
-            if not member_can_use_costume_contest(member):
-                return redirect(url_for('legacy_portal'))
-            if not rate_limit_allow('costume_delete_own', 20, 300):
-                return render_template(
-                    'legacy_portal.html',
-                    **portal_context(
-                        error='Too many attempts. Please wait a few minutes.',
-                        next_url=next_url,
-                    ),
-                ), 429
-            ok, result = delete_own_costume_entry(member.get('email'))
-            if not ok:
-                return render_template(
-                    'legacy_portal.html',
-                    **portal_context(
-                        error=result or 'Could not delete your costume.',
-                        next_url=next_url,
-                    ),
-                )
-            return redirect(url_for('legacy_portal', costume_deleted=1))
-
     success = None
-    if request.args.get('costume_saved') == '1':
-        success = 'Costume saved. Good luck!'
-    elif request.args.get('costume_deleted') == '1':
-        success = 'Costume entry deleted.'
     return render_template(
         'legacy_portal.html',
         **portal_context(next_url=next_url, success=success),
     )
+
+
+@app.route('/costumes', methods=['GET', 'POST'])
+@app.route('/costumes/join/<path:code>')
+@app.route('/costume-photos/<path:filename>')
+def costume_contest_removed(code=None, filename=None):
+    """Costume contest moved on stage; old links go home."""
+    return redirect(url_for('home'))
 
 
 @app.route('/admin/login', methods=['GET', 'POST'])
@@ -7476,15 +6750,6 @@ def serve_event_flyer(filename):
     if not flyer_is_safe_filename(filename):
         abort(404)
     return send_from_directory(flyers_dir, filename)
-
-
-@app.route('/costume-photos/<filename>')
-def serve_costume_photo(filename):
-    if not costume_photo_is_safe_filename(filename):
-        abort(404)
-    if not member_can_use_costume_contest():
-        abort(404)
-    return send_from_directory(costume_photos_dir, filename)
 
 
 @app.route('/admin/events', methods=['GET', 'POST'])
@@ -7641,11 +6906,6 @@ def admin_dashboard():
     except Exception as e:
         print('Signup/invite count failed:', e)
         signup_count, invite_count = 0, 0
-    contest_flash = None
-    if request.args.get('contest') == 'shown':
-        contest_flash = 'Costume contest is now visible in the menu.'
-    elif request.args.get('contest') == 'hidden':
-        contest_flash = 'Costume contest is now hidden from the public menu.'
     return render_template(
         'admin.html',
         tickets=safe_tickets,
@@ -7654,139 +6914,7 @@ def admin_dashboard():
         unique_buyers=unique_buyers,
         signup_count=signup_count,
         invite_count=invite_count,
-        costume_contest_open=is_costume_contest_open(),
-        costume_join_url=costume_join_url(),
-        costume_qr_status=request.args.get('costume_qr'),
-        contest_flash=contest_flash,
         planned_promo_count=planned_promo_count(),
-        costume_consent_count=sum(1 for e in costume_consent_rows() if e['photo_consent']),
-    )
-
-
-@app.route('/admin/costume-qr.png')
-def admin_costume_qr_png():
-    if not require_admin():
-        return redirect(url_for('admin_login'))
-    resp = app.response_class(build_costume_join_qr_png(), mimetype='image/png')
-    resp.headers['Cache-Control'] = 'no-store'
-    if request.args.get('download') == '1':
-        resp.headers['Content-Disposition'] = 'attachment; filename="costume-contest-qr.png"'
-    return resp
-
-
-@app.route('/admin/costume-qr')
-def admin_costume_qr():
-    if not require_admin():
-        return redirect(url_for('admin_login'))
-    return render_template('costume_qr_print.html', join_url=costume_join_url())
-
-
-@app.route('/admin/costume-qr/regenerate', methods=['POST'])
-def admin_costume_qr_regenerate():
-    if not require_admin():
-        return redirect(url_for('admin_login'))
-    status = 'regenerated' if regenerate_costume_join_code() else 'error'
-    return redirect(url_for('admin_dashboard', costume_qr=status))
-
-
-@app.route('/costumes/join/<code>')
-def costume_join(code):
-    """Door QR: unlock the contest for this account, then land on /costumes."""
-    # Only invalid codes count toward the limit, so a crowd on one venue Wi-Fi
-    # IP scanning the real QR is never blocked.
-    expected = get_costume_join_code(create=False)
-    if not expected or not secure_equals(code or '', expected):
-        if rate_limit_blocked('costume_join_fail', 20, 300):
-            return render_template('costumes_locked.html', member=get_logged_in_member(),
-                                   message='Too many tries. Please wait a few minutes.'), 429
-        rate_limit_record('costume_join_fail')
-        return render_template(
-            'costumes_locked.html', member=get_logged_in_member(),
-            message='That costume contest code is not valid. Scan the QR code at the door again.',
-        ), 404
-    member = get_logged_in_member()
-    if not member:
-        # Login and sign-up both honor next; it brings them back here to finish.
-        return redirect(url_for('legacy_portal', next=f'/costumes/join/{code}'))
-    set_costume_access_email(member.get('email'), True)
-    return redirect(url_for('costumes'))
-
-
-@app.route('/admin/costume-contest', methods=['POST'])
-def admin_costume_contest_toggle():
-    if not require_admin():
-        return redirect(url_for('admin_login'))
-    currently_open = is_costume_contest_open()
-    new_open = not currently_open
-    contest_status = 'error'
-    if set_costume_contest_open(new_open):
-        contest_status = 'shown' if new_open else 'hidden'
-
-    next_url = safe_next_url(request.form.get('next'), '')
-    path_only = next_url.split('?', 1)[0].rstrip('/') if next_url else ''
-    if path_only in ('', '/admin'):
-        return redirect(url_for('admin_dashboard', contest=contest_status))
-    if next_url and path_only != '/admin/costume-contest':
-        return redirect(next_url)
-    return redirect(url_for('admin_dashboard', contest=contest_status))
-
-
-def costume_consent_rows():
-    """Admin-only view of costume entries with photo consent details."""
-    rows = []
-    for entry in (load_costumes().get('entries') or []):
-        rows.append({
-            'id': entry.get('id') or '',
-            'display_name': entry.get('display_name') or '',
-            'costume': entry.get('costume') or '',
-            'owner_email': entry.get('owner_email') or '',
-            'photo_url': costume_photo_url(entry.get('photo')),
-            'photo_consent': entry.get('photo_consent') is True,
-            'photo_consent_at': entry.get('photo_consent_at') or '',
-            'photo_consent_version': entry.get('photo_consent_version') or '',
-        })
-    rows.sort(key=lambda r: (not r['photo_consent'], r['display_name'].lower()))
-    return rows
-
-
-@app.route('/admin/costume-consent')
-def admin_costume_consent():
-    if not require_admin():
-        return redirect(url_for('admin_login'))
-    rows = costume_consent_rows()
-    consented_only = request.args.get('consented') == '1'
-    shown = [r for r in rows if r['photo_consent']] if consented_only else rows
-    return render_template(
-        'costume_consent.html',
-        rows=shown,
-        total=len(rows),
-        consented_count=sum(1 for r in rows if r['photo_consent']),
-        consented_only=consented_only,
-        consent_text=COSTUME_PHOTO_CONSENT_TEXT,
-        consent_version=COSTUME_PHOTO_CONSENT_VERSION,
-    )
-
-
-@app.route('/admin/costume-consent.csv')
-def admin_costume_consent_csv():
-    if not require_admin():
-        return redirect(url_for('admin_login'))
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['name', 'costume', 'member_email', 'photo_link', 'consent_time_utc', 'consent_version'])
-    base = request.url_root.rstrip('/')
-    for row in costume_consent_rows():
-        if not row['photo_consent']:
-            continue
-        writer.writerow([
-            row['display_name'], row['costume'], row['owner_email'],
-            (base + row['photo_url']) if row['photo_url'] else '',
-            row['photo_consent_at'], row['photo_consent_version'],
-        ])
-    return Response(
-        output.getvalue(),
-        mimetype='text/csv',
-        headers={'Content-Disposition': 'attachment; filename=costume-photo-consent.csv'},
     )
 
 
@@ -7836,7 +6964,6 @@ def download_tickets_json():
         mimetype='application/json',
         headers={'Content-Disposition': 'attachment; filename=thesection-tickets.json'},
     )
-
 
 
 @app.route('/admin/mailing-list', methods=['GET', 'POST'])
@@ -9326,7 +8453,7 @@ def build_ticket_reminder_message(event, recipient, ticket_links, sender):
     if ticket_links:
         lines.append('Or open your ticket directly:')
         lines += [f'  {link}' for link in ticket_links]
-    lines += ['', 'Show your QR code at the door. Costumes encouraged, there is a costume contest!',
+    lines += ['', 'Show your QR code at the door. Costumes encouraged!',
               '', 'See you there,', 'The Section']
     plain = '\n'.join(lines) + '\n'
     esc = html.escape
@@ -9340,7 +8467,7 @@ def build_ticket_reminder_message(event, recipient, ticket_links, sender):
         + '</p>'
         f'<p><a href="{esc(login_url)}" style="display:inline-block;padding:10px 16px;background:#18181b;color:#fff;border-radius:8px;text-decoration:none">Log in to see your ticket</a></p>'
         + (f'<p>Or open your ticket directly:</p><ul>{links_html}</ul>' if links_html else '')
-        + '<p>Show your QR code at the door. Costumes encouraged, there is a costume contest!</p>'
+        + '<p>Show your QR code at the door. Costumes encouraged!</p>'
         '<p>See you there,<br>The Section</p>'
     )
     msg = EmailMessage()
@@ -9815,126 +8942,6 @@ def legacy_member_invite_signup():
         member_discount_percent=int(member_discount * 100),
         returning_guest_discount_percent=int(returning_guest_discount * 100),
     )
-
-
-
-@app.route('/costumes', methods=['GET', 'POST'])
-def costumes():
-    """Costume voting: members enter a costume and rank favorites (1st–3rd)."""
-    member = get_logged_in_member()
-    is_admin = require_admin()
-    error = None
-    success = None
-    status = 200
-
-    if not is_costume_contest_open() and not is_admin:
-        return redirect(url_for('home'))
-
-    if not member_can_use_costume_contest(member, is_admin=is_admin):
-        if request.method == 'POST':
-            if (request.form.get('action') or '').strip().lower() == 'admin_remove':
-                abort(403)
-            if not member:
-                return redirect(url_for('legacy_portal', next='/costumes'))
-            status = 403
-        return render_template(
-            'costumes_locked.html',
-            member=member,
-            message=COSTUME_SCAN_GATE_MESSAGE,
-        ), status
-
-    if request.method == 'POST':
-        action = (request.form.get('action') or '').strip().lower()
-        if action == 'admin_remove':
-            if not is_admin:
-                abort(403)
-            if not rate_limit_allow('costume_admin_remove', 30, 300):
-                error = 'Too many removals. Please wait a few minutes.'
-                status = 429
-            else:
-                ok, result = delete_costume_entry(request.form.get('entry_id', ''))
-                if not ok:
-                    error = result or 'Could not remove that costume.'
-                else:
-                    return redirect(url_for('costumes', removed=1))
-        elif not member:
-            return redirect(url_for('legacy_portal', next='/costumes'))
-        elif action == 'submit':
-            if not rate_limit_allow('costume_submit', 150, 300):
-                error = 'Too many attempts. Please wait a few minutes.'
-                status = 429
-            else:
-                upload = request.files.get('photo')
-                has_upload = bool(upload and getattr(upload, 'filename', None))
-                remove_photo = (request.form.get('remove_photo') or '').strip().lower() in (
-                    '1', 'on', 'true', 'yes',
-                )
-                if has_upload and not rate_limit_allow('costume_photo_upload', 100, 300):
-                    error = 'Too many photo uploads. Please wait a few minutes.'
-                    status = 429
-                else:
-                    ok, result = submit_costume_entry_with_photo(
-                        member.get('email'),
-                        request.form.get('display_name', ''),
-                        request.form.get('costume', ''),
-                        upload=upload if has_upload else None,
-                        remove_photo=remove_photo,
-                        photo_consent=costume_consent_from_form(request.form),
-                    )
-                    if ok:
-                        return redirect(url_for('costumes', saved=1))
-                    error = result or 'Could not save your costume.'
-        elif action in ('rank', 'ballot', 'vote', 'unvote'):
-            # vote/unvote aliases kept so old forms fail softly into ranked save UX
-            if not rate_limit_allow('costume_vote', 300, 60):
-                error = 'Too many votes too quickly. Slow down a second.'
-                status = 429
-            else:
-                ranks = [
-                    request.form.get('rank_1', ''),
-                    request.form.get('rank_2', ''),
-                    request.form.get('rank_3', ''),
-                ]
-                ok, vote_error = set_costume_ballot(member.get('email'), ranks)
-                if not ok:
-                    error = vote_error or 'Could not update your rankings.'
-                else:
-                    return redirect(url_for('costumes', ranked=1))
-        else:
-            error = 'Unknown action.'
-
-    if request.args.get('saved') == '1' and not error:
-        success = 'Costume saved. Good luck!'
-    elif request.args.get('removed') == '1' and not error:
-        success = 'Costume entry removed.'
-    elif request.args.get('ranked') == '1' and not error:
-        success = 'Rankings saved.'
-
-    viewer_email = (member or {}).get('email') if member else None
-    entries = list_costume_entries_public(viewer_email)
-    my_entry = find_costume_entry_for_email(viewer_email) if viewer_email else None
-    my_photo_url = costume_photo_url((my_entry or {}).get('photo')) if my_entry else None
-    my_ballot_ids = get_costume_ballot(viewer_email) if viewer_email else []
-    entry_by_id = {e['id']: e for e in entries if e.get('id')}
-    my_ballot = [entry_by_id[eid] for eid in my_ballot_ids if eid in entry_by_id]
-    rankable_entries = [e for e in entries if not e.get('is_mine')]
-    return render_template(
-        'costumes.html',
-        entries=entries,
-        member=member,
-        is_admin=is_admin,
-        my_entry=my_entry,
-        my_photo_url=my_photo_url,
-        my_ballot=my_ballot,
-        my_ballot_ids=my_ballot_ids,
-        rankable_entries=rankable_entries,
-        error=error,
-        success=success,
-        display_name_max=COSTUME_DISPLAY_NAME_MAX,
-        costume_max=COSTUME_DESCRIPTION_MAX,
-        consent_text=COSTUME_PHOTO_CONSENT_TEXT,
-    ), status
-
 
 
 # Start the promo sender in each gunicorn worker as soon as it boots (also started lazily
