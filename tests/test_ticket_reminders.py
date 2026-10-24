@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from test_promos import PromoTestBase, DENVER  # noqa: F401
+from mail_test_base import PromoTestBase, DENVER  # noqa: F401
 import app as thesection
 
 BOISE = thesection.ZoneInfo('America/Boise')
@@ -105,14 +105,28 @@ class TicketReminderTests(PromoTestBase):
     def test_admin_page_shows_reminders_and_toggle(self):
         client = self.admin_client()
         with mock.patch.object(thesection, 'promo_today', return_value=datetime(2026, 10, 14).date()):
-            html = client.get('/admin/promos').get_data(as_text=True)
+            html = client.get('/admin').get_data(as_text=True)
         self.assertIn('Ticket reminders', html)
         self.assertIn('Sat Oct 17, 2026 at 12:00 PM MDT', html)
         self.assertIn('Email sending isn', html)
-        resp = client.post('/admin/promos', data={'csrf_token': client.csrf, 'action': 'reminder_toggle',
-                                                   'event_id': 'halloween-2026', 'enabled': '0'})
+        self.assertNotIn('Promo emails', html)
+        resp = client.post('/admin/reminders', data={'csrf_token': client.csrf,
+                                                      'event_id': 'halloween-2026', 'enabled': '0'})
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(thesection.ticket_reminders_enabled_for('halloween-2026'))
+
+
+    def test_old_promos_urls_redirect_to_admin(self):
+        client = self.app.test_client()
+        for url in ('/admin/promos', '/admin/promos/new', '/admin/promos/abc123'):
+            resp = client.get(url)
+            self.assertEqual(resp.status_code, 302)
+            self.assertTrue(resp.headers['Location'].endswith('/admin'))
+
+    def test_reminder_toggle_requires_admin(self):
+        resp = self.app.test_client().post('/admin/reminders', data={'event_id': 'halloween-2026', 'enabled': '0'})
+        self.assertIn(resp.status_code, (302, 400))
+        self.assertTrue(thesection.ticket_reminders_enabled_for('halloween-2026'))
 
 
 if __name__ == '__main__':
