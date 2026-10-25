@@ -5854,6 +5854,14 @@ def success():
 
     if not session_id:
         return render_template('success.html', error="Missing session ID")
+    if session_id == 'cs_ipdiag':  # TEMP diagnostic, remove after checking Render proxy headers
+        xff = request.headers.get('X-Forwarded-For') or ''
+        print('IPDIAG', 'prod=', IS_PRODUCTION, 'cf=', bool(request.headers.get('CF-Connecting-IP')),
+              'xff_n=', len([p for p in xff.split(',') if p.strip()]),
+              'client_ip_matches_cf=', client_ip() == (request.headers.get('CF-Connecting-IP') or '').strip(),
+              'remote_matches_xff_last=', request.remote_addr == xff.split(',')[-1].strip(),
+              'cf_in_xff_at=', [i for i, p in enumerate(xff.split(',')) if p.strip() == (request.headers.get('CF-Connecting-IP') or '').strip()],
+              'bucket=', len(_rate_limit_buckets.get(_rate_limit_key('success'), [])), 'pid=', os.getpid())
     if not rate_limit_allow('success', 30, 60):
         return render_template('success.html', error="Too many requests. Please try again shortly.")
 
