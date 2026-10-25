@@ -362,8 +362,18 @@ def count_public_viewers():
 
 
 def client_ip():
-    forwarded = (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
-    return forwarded or (request.remote_addr or 'unknown')
+    """Client IP for rate limits. Never trusts the client-written X-Forwarded-For.
+
+    On Render all traffic comes through Cloudflare, which overwrites CF-Connecting-IP
+    with the real visitor address (clients cannot set it). Off Render (local/tests)
+    fall back to request.remote_addr, which ProxyFix(x_for=1) sets from the single
+    hop the proxy appended (the rightmost X-Forwarded-For entry), never the leftmost.
+    """
+    if IS_PRODUCTION:
+        cf_ip = (request.headers.get('CF-Connecting-IP') or '').strip()
+        if cf_ip and len(cf_ip) <= 64 and ',' not in cf_ip:
+            return cf_ip
+    return request.remote_addr or 'unknown'
 
 
 def _rate_limit_key(scope, key=None):
