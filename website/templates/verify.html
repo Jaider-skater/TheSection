@@ -61,6 +61,53 @@
             </div>
         </div>
 
+        <div id="door-register" class="bg-zinc-900 border border-amber-900/50 rounded-2xl p-3 mb-3 md:p-4 text-left">
+            <div class="flex items-start justify-between gap-3 mb-2">
+                <div class="min-w-0">
+                    <p class="text-[10px] md:text-xs uppercase tracking-wider text-amber-400 font-semibold">Door register</p>
+                    <p class="text-[11px] md:text-xs text-zinc-500">Charge in the Stripe app, then tap Sold to count it</p>
+                </div>
+                <div class="text-right shrink-0">
+                    <p class="text-[10px] uppercase tracking-wider text-zinc-500">Door / Online</p>
+                    <p class="text-sm font-semibold tabular-nums"><span id="door-sales-count">0</span> · $<span id="door-sales-dollars">0</span> <span class="text-zinc-500">/</span> <span id="online-sales-count">0</span></p>
+                    <p id="door-remaining" class="text-[10px] text-zinc-500 tabular-nums"></p>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2 mb-2" role="radiogroup" aria-label="Ticket type">
+                <button type="button" id="door-type-general" onclick="setDoorType('general')"
+                        class="door-type-btn py-3 rounded-xl border-2 font-semibold border-emerald-500 bg-emerald-600/20 text-emerald-300">
+                    GA $<span id="door-ga-price">15</span>
+                </button>
+                <button type="button" id="door-type-vip" onclick="setDoorType('vip')"
+                        class="door-type-btn py-3 rounded-xl border-2 font-semibold border-zinc-700 text-zinc-300">
+                    VIP $<span id="door-vip-price">30</span>
+                </button>
+            </div>
+            <div class="flex items-center justify-between gap-3 mb-3">
+                <div class="flex items-center gap-3">
+                    <button type="button" id="door-qty-minus" onclick="changeDoorQty(-1)" aria-label="Fewer"
+                            class="w-12 h-12 flex items-center justify-center border border-zinc-600 rounded-xl text-2xl font-bold active:bg-zinc-800">−</button>
+                    <span id="door-qty" class="text-3xl font-black tabular-nums w-8 text-center">1</span>
+                    <button type="button" id="door-qty-plus" onclick="changeDoorQty(1)" aria-label="More"
+                            class="w-12 h-12 flex items-center justify-center border border-zinc-600 rounded-xl text-2xl font-bold active:bg-zinc-800">+</button>
+                </div>
+                <p class="text-3xl font-black tabular-nums">$<span id="door-total">15</span></p>
+            </div>
+            <button type="button" id="door-sold-btn" onclick="recordDoorSale()"
+                    class="w-full py-5 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 disabled:opacity-50 text-black font-black rounded-2xl text-2xl">
+                Sold
+            </button>
+            <p id="door-register-msg" class="hidden mt-2 text-sm text-center"></p>
+            <div class="mt-3">
+                <p class="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Recent door sales</p>
+                <ul id="door-recent-list" class="space-y-1 text-sm max-h-56 overflow-y-auto"></ul>
+            </div>
+            <details id="door-void-log" class="mt-2 text-xs text-zinc-500">
+                <summary class="cursor-pointer">Void log (<span id="door-void-count">0</span>)</summary>
+                <ul id="door-void-list" class="mt-1 space-y-1 max-h-40 overflow-y-auto"></ul>
+            </details>
+        </div>
+
         <div id="capacity-banner"
              class="hidden mb-3 rounded-2xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
             Ticket cap reached — congrats on selling this place out!
@@ -153,6 +200,7 @@
         if (freeEl) freeEl.textContent = freeGirls;
         const undoBtn = document.getElementById('undo-free-girl-btn');
         if (undoBtn) undoBtn.disabled = freeGirls <= 0;
+        updateDoorRegister(totals);
 
         const vipProgressEl = document.getElementById('vip-capacity-progress');
         const bannerEl = document.getElementById('capacity-banner');
@@ -447,6 +495,125 @@
         await saveScannerSetting({ door_event_id: value }, 'door event');
     }
 
+    let doorType = 'general';
+    let doorQty = 1;
+    let doorBusy = false;
+    let doorPrices = { general: 1500, vip: 3000 };
+    let doorRemaining = null;
+    function newDoorToken() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+        return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    }
+    let doorToken = newDoorToken();
+    function dollars(cents) {
+        const n = Number(cents || 0) / 100;
+        return Number.isInteger(n) ? String(n) : n.toFixed(2);
+    }
+    function doorEsc(text) {
+        const d = document.createElement('div'); d.textContent = text == null ? '' : String(text); return d.innerHTML;
+    }
+    function doorTime(iso) {
+        try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'America/Boise' }); } catch (e) { return ''; }
+    }
+    function doorMaxQty() {
+        const cap = 20;
+        return doorRemaining == null ? cap : Math.max(0, Math.min(cap, doorRemaining));
+    }
+    function renderDoorRegister() {
+        const ga = document.getElementById('door-type-general');
+        const vip = document.getElementById('door-type-vip');
+        const on = 'door-type-btn py-3 rounded-xl border-2 font-semibold ';
+        ga.className = on + (doorType === 'general' ? 'border-emerald-500 bg-emerald-600/20 text-emerald-300' : 'border-zinc-700 text-zinc-300');
+        vip.className = on + (doorType === 'vip' ? 'border-purple-500 bg-purple-600/20 text-purple-300' : 'border-zinc-700 text-zinc-300');
+        ga.setAttribute('aria-checked', doorType === 'general');
+        vip.setAttribute('aria-checked', doorType === 'vip');
+        const max = doorMaxQty();
+        if (max > 0 && doorQty > max) doorQty = max;
+        if (doorQty < 1) doorQty = 1;
+        document.getElementById('door-qty').textContent = doorQty;
+        document.getElementById('door-total').textContent = dollars(doorQty * doorPrices[doorType]);
+        document.getElementById('door-qty-minus').disabled = doorQty <= 1;
+        document.getElementById('door-qty-plus').disabled = doorQty >= Math.max(1, max);
+        const sold = document.getElementById('door-sold-btn');
+        sold.disabled = doorBusy || max < 1;
+        sold.textContent = max < 1 ? 'Sold out' : (doorBusy ? 'Saving…' : 'Sold');
+    }
+    function setDoorType(type) { doorType = type === 'vip' ? 'vip' : 'general'; renderDoorRegister(); }
+    function changeDoorQty(delta) { doorQty = Math.max(1, Math.min(Math.max(1, doorMaxQty()), doorQty + delta)); renderDoorRegister(); }
+    function doorMsg(text, ok) {
+        const el = document.getElementById('door-register-msg');
+        if (!text) { el.classList.add('hidden'); return; }
+        el.textContent = text;
+        el.className = 'mt-2 text-sm text-center ' + (ok ? 'text-emerald-400' : 'text-red-400');
+    }
+    function updateDoorRegister(totals) {
+        if (!totals) return;
+        if (totals.door_ga_cents) doorPrices.general = totals.door_ga_cents;
+        if (totals.door_vip_cents) doorPrices.vip = totals.door_vip_cents;
+        document.getElementById('door-ga-price').textContent = dollars(doorPrices.general);
+        document.getElementById('door-vip-price').textContent = dollars(doorPrices.vip);
+        doorRemaining = totals.tickets_remaining == null ? null : Number(totals.tickets_remaining);
+        document.getElementById('door-remaining').textContent =
+            doorRemaining == null ? '' : `${totals.tickets_sold} sold · ${doorRemaining} left`;
+        const reg = totals.door_register || {};
+        document.getElementById('door-sales-count').textContent = reg.door_tickets || 0;
+        document.getElementById('door-sales-dollars').textContent = dollars(reg.door_cents || 0);
+        document.getElementById('online-sales-count').textContent = reg.online_tickets || 0;
+        const list = document.getElementById('door-recent-list');
+        const recent = reg.recent || [];
+        list.innerHTML = recent.length ? recent.map(sale => `
+            <li class="flex items-center justify-between gap-2 rounded-lg bg-zinc-950/60 px-2 py-1.5">
+                <span class="tabular-nums"><span class="${sale.ticket_type === 'vip' ? 'text-purple-300' : 'text-emerald-300'} font-semibold">${sale.ticket_type === 'vip' ? 'VIP' : 'GA'} ×${sale.quantity}</span>
+                · $${dollars(sale.amount_cents)} <span class="text-zinc-500">${doorEsc(doorTime(sale.purchased_at))}</span></span>
+                <button type="button" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-red-900 rounded-lg text-zinc-300"
+                        onclick="voidDoorSale('${doorEsc(sale.ticket_id)}')">Undo</button>
+            </li>`).join('') : '<li class="text-zinc-600 text-xs">No door sales yet.</li>';
+        const voids = reg.voids || [];
+        document.getElementById('door-void-count').textContent = reg.void_count || 0;
+        document.getElementById('door-void-list').innerHTML = voids.map(v =>
+            `<li>${v.ticket_type === 'vip' ? 'VIP' : 'GA'} ×${v.quantity} · $${dollars(v.amount_cents)} · sold ${doorEsc(doorTime(v.sold_at))}, voided ${doorEsc(doorTime(v.voided_at))}${v.voided_by ? ' by ' + doorEsc(v.voided_by) : ''}</li>`
+        ).join('');
+        renderDoorRegister();
+    }
+    async function recordDoorSale() {
+        if (doorBusy) return;
+        const doorSelect = document.getElementById('door-event-select');
+        if (doorSelect && !doorSelect.value) { alert('Pick tonight’s event first.'); return; }
+        doorBusy = true; doorMsg(''); renderDoorRegister();
+        const sale = { ticket_type: doorType, quantity: doorQty, token: doorToken, event_id: doorSelect ? doorSelect.value : '' };
+        try {
+            const response = await fetch('/api/door-register/sale', {
+                method: 'POST', headers: csrfHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(sale),
+            });
+            if (response.status === 401) { redirectToScannerLogin(); return; }
+            const payload = await response.json().catch(() => ({}));
+            if (payload.admission_totals) updateAdmissionTotals(payload.admission_totals);
+            if (!response.ok) { doorMsg(payload.error || 'Could not record. Try again.', false); if (response.status === 409) doorToken = newDoorToken(); return; }
+            doorToken = newDoorToken();
+            doorMsg(`Recorded ${sale.ticket_type === 'vip' ? 'VIP' : 'GA'} ×${sale.quantity} · $${dollars(sale.quantity * doorPrices[sale.ticket_type])}`, true);
+            doorQty = 1;
+        } catch (err) {
+            // Network failure: keep the same token so a retry can't double count.
+            doorMsg('No connection. Tap Sold again to retry (it won’t double count).', false);
+        } finally {
+            doorBusy = false; renderDoorRegister();
+        }
+    }
+    async function voidDoorSale(ticketId) {
+        if (!confirm('Undo this door sale?')) return;
+        try {
+            const response = await fetch('/api/door-register/void', {
+                method: 'POST', headers: csrfHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ ticket_id: ticketId }),
+            });
+            if (response.status === 401) { redirectToScannerLogin(); return; }
+            const payload = await response.json().catch(() => ({}));
+            if (payload.admission_totals) updateAdmissionTotals(payload.admission_totals);
+            doorMsg(response.ok ? 'Sale voided.' : (payload.error || 'Could not void.'), response.ok);
+        } catch (err) {
+            doorMsg('No connection. Try again.', false);
+        }
+    }
+
     let freeGirlBusy = false;
 
     async function addFreeGirl(delta) {
@@ -702,6 +869,9 @@
             door_event_id: {{ (admission_totals.door_event_id or admission_totals.current_event_id or none) | tojson }},
             events: {{ (admission_totals.events or []) | tojson }},
             reset_history: {{ (admission_totals.reset_history or []) | tojson }},
+            door_ga_cents: {{ admission_totals.door_ga_cents or 1500 }},
+            door_vip_cents: {{ admission_totals.door_vip_cents or 3000 }},
+            door_register: {{ (admission_totals.door_register or {}) | tojson }},
         });
         refreshAdmissionTotals();
         if (window.history.replaceState) {

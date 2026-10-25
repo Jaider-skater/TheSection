@@ -17,6 +17,7 @@
                 · {{ signup_count|default(0) }} signup{{ '' if signup_count|default(0) == 1 else 's' }} vs {{ invite_count|default(0) }} invite{{ '' if invite_count|default(0) == 1 else 's' }}
                 · <span id="live-viewing">0</span>
                 <span id="live-viewing-label">people viewing</span>
+                {% if sales_split %}<span id="sales-split" class="block">Online: {{ sales_split.online_tickets }} tickets · Door: {{ sales_split.door_tickets }} tickets (${{ '%.2f'|format(sales_split.door_cents / 100) }})</span>{% endif %}
             </p>
         </div>
 
@@ -107,6 +108,9 @@
                                 <span class="text-white font-medium">VIP</span>
                             {% else %}
                                 <span class="text-zinc-400">GA</span>
+                            {% endif %}
+                            {% if ticket.door_sale %}
+                                <span class="text-amber-400 text-xs block">door</span>
                             {% endif %}
                             {% if ticket.legacy_discount %}
                                 <span class="text-zinc-500 text-xs block">legacy discount</span>
