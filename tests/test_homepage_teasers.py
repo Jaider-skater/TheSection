@@ -25,6 +25,8 @@ class HomepageTeaserTests(unittest.TestCase):
             mock.patch.object(thesection, 'events_file', os.path.join(root, 'events.json')),
             mock.patch.object(thesection, 'full_mailing_list_file', os.path.join(root, 'full.json')),
             mock.patch.object(thesection, 'scanner_settings_file', os.path.join(root, 'scanner.json')),
+            # Pin "today" so fixtures dated Oct-Dec 2026 stay upcoming regardless of the real date.
+            mock.patch.object(thesection, 'today_iso', return_value='2026-08-18'),
         ]
         for patcher in self.patches:
             patcher.start()

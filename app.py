@@ -4908,7 +4908,211 @@ def get_admission_totals():
         'door_surcharge_cents': door_surcharge_cents(),
         'door_ga_cents': door_unit_price_cents('general'),
         'door_vip_cents': door_unit_price_cents('vip'),
+        'door_register': get_door_register_state(door_event_id),
     }
+
+
+# --- Door register (POS tally; payment is taken in the Stripe app) ---------
+
+door_register_lock = threading.Lock()
+DOOR_REGISTER_MAX_QTY = 20
+DOOR_REGISTER_VOID_LOG_LIMIT = 500
+_DOOR_REGISTER_TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
+
+
+def door_register_session_id(token):
+    return f'doorreg_{token}'
+
+
+def ticket_is_door_sale(ticket):
+    return bool((ticket or {}).get('door_sale'))
+
+
+def ticket_amount_cents(ticket):
+    """Dollar value of a sale: stored amount, else door or online unit price."""
+    raw = (ticket or {}).get('amount_cents')
+    try:
+        if raw is not None:
+            return int(raw)
+    except (TypeError, ValueError):
+        pass
+    qty = int((ticket or {}).get('quantity') or 1)
+    ttype = (ticket or {}).get('ticket_type') or 'general'
+    if ticket_is_door_sale(ticket):
+        return qty * door_unit_price_cents(ttype)
+    return qty * TICKET_TYPES.get(ttype, TICKET_TYPES['general'])['price_cents']
+
+
+def door_vs_online_summary(tickets):
+    door_qty = online_qty = door_cents = 0
+    door_orders = online_orders = 0
+    for ticket in tickets:
+        qty = int(ticket.get('quantity') or 1)
+        if ticket_is_door_sale(ticket):
+            door_qty += qty
+            door_orders += 1
+            door_cents += ticket_amount_cents(ticket)
+        else:
+            online_qty += qty
+            online_orders += 1
+    return {
+        'door_tickets': door_qty,
+        'door_orders': door_orders,
+        'door_cents': door_cents,
+        'online_tickets': online_qty,
+        'online_orders': online_orders,
+    }
+
+
+def _event_sales_tickets(event_id):
+    """Tickets that count toward this event's sold count."""
+    rows = []
+    for ticket in load_tickets():
+        if event_id:
+            if not ticket_belongs_to_event(ticket, event_id):
+                continue
+        elif not ticket_belongs_to_current_event(ticket):
+            continue
+        if not ticket_counts_for_current_sales_period(ticket.get('purchased_at')):
+            continue
+        rows.append(ticket)
+    return rows
+
+
+def get_door_register_state(event_id=None, recent_limit=25):
+    target = (event_id or get_door_event_id() or '').strip() or None
+    tickets = _event_sales_tickets(target) if target else []
+    summary = door_vs_online_summary(tickets)
+    recent = sorted(
+        [t for t in tickets if t.get('register_sale')],
+        key=lambda t: t.get('purchased_at') or '',
+        reverse=True,
+    )[:recent_limit]
+    voids = [
+        v for v in (load_scanner_settings().get('door_register_voids') or [])
+        if not target or v.get('event_id') == target
+    ]
+    return {
+        **summary,
+        'recent': [
+            {
+                'ticket_id': t.get('ticket_id'),
+                'ticket_type': t.get('ticket_type') or 'general',
+                'quantity': int(t.get('quantity') or 1),
+                'amount_cents': ticket_amount_cents(t),
+                'purchased_at': t.get('purchased_at'),
+                'sold_by': t.get('sold_by') or '',
+            }
+            for t in recent
+        ],
+        'voids': list(reversed(voids))[:recent_limit],
+        'void_count': len(voids),
+    }
+
+
+class DoorRegisterError(Exception):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def _door_register_staff_label():
+    return (session.get('verify_login_email') or '').strip().lower() if has_request_context() else ''
+
+
+def record_door_register_sale(ticket_type, quantity, token, event_id=None):
+    """Tally a walk-up sale charged in the Stripe app. Idempotent per token."""
+    token = (token or '').strip()
+    if not _DOOR_REGISTER_TOKEN_RE.match(token):
+        raise DoorRegisterError('Missing sale token. Refresh and try again.')
+    if ticket_type not in ('general', 'vip'):
+        raise DoorRegisterError('Pick GA or VIP.')
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        raise DoorRegisterError('Bad quantity.')
+    if quantity < 1 or quantity > DOOR_REGISTER_MAX_QTY:
+        raise DoorRegisterError(f'Quantity must be 1–{DOOR_REGISTER_MAX_QTY}.')
+    door_id = (event_id or get_door_event_id() or '').strip()
+    event = get_event(door_id) if door_id else None
+    if not event:
+        raise DoorRegisterError('Pick tonight’s event first.')
+    door_id = event.get('id')
+    session_id = door_register_session_id(token)
+    with door_register_lock:
+        existing = get_ticket_by_session(session_id)
+        if existing:
+            return existing, True
+        voided = load_scanner_settings().get('door_register_voids') or []
+        if any(v.get('session_id') == session_id for v in voided):
+            raise DoorRegisterError('That sale was already voided.', status=409)
+        cap = event_ticket_cap(event)
+        if cap:
+            sold = compute_ticket_sales_counts(door_id)['sold']
+            left = max(0, cap - sold)
+            if quantity > left:
+                if left <= 0:
+                    raise DoorRegisterError('Sold out — at capacity.', status=409)
+                raise DoorRegisterError(f'Only {left} left before capacity.', status=409)
+        ticket = record_ticket(
+            session_id,
+            new_ticket_id(),
+            '',
+            quantity,
+            ticket_type=ticket_type,
+            event_id=door_id,
+            door_sale=True,
+        )
+        with tickets_lock:
+            tickets = load_tickets()
+            for row in tickets:
+                if row.get('session_id') == session_id:
+                    row['register_sale'] = True
+                    row['amount_cents'] = quantity * door_unit_price_cents(ticket_type)
+                    row['sold_by'] = _door_register_staff_label()
+                    ticket = row
+                    break
+            save_tickets(tickets)
+    ticket, _note = admit_paid_door_ticket(ticket)
+    return ticket, False
+
+
+def void_door_register_sale(ticket_id, reason=''):
+    normalized = normalize_ticket_id(ticket_id)
+    if not normalized:
+        raise DoorRegisterError('Unknown sale.', status=404)
+    with door_register_lock:
+        with tickets_lock:
+            tickets = load_tickets()
+            target = None
+            for row in tickets:
+                if normalize_ticket_id(row.get('ticket_id')) == normalized:
+                    target = row
+                    break
+            if not target or not target.get('register_sale'):
+                raise DoorRegisterError('Sale not found (already voided?).', status=404)
+            tickets = [row for row in tickets if row is not target]
+            if not save_tickets(tickets):
+                raise DoorRegisterError('Could not save. Try again.', status=500)
+        with scanner_settings_lock:
+            settings = load_scanner_settings()
+            log = list(settings.get('door_register_voids') or [])
+            log.append({
+                'ticket_id': target.get('ticket_id'),
+                'session_id': target.get('session_id'),
+                'event_id': target.get('event_id'),
+                'ticket_type': target.get('ticket_type') or 'general',
+                'quantity': int(target.get('quantity') or 1),
+                'amount_cents': ticket_amount_cents(target),
+                'sold_at': target.get('purchased_at'),
+                'sold_by': target.get('sold_by') or '',
+                'voided_at': datetime.now(timezone.utc).isoformat(),
+                'voided_by': _door_register_staff_label(),
+                'reason': (reason or '').strip()[:200],
+            })
+            settings['door_register_voids'] = log[-DOOR_REGISTER_VOID_LOG_LIMIT:]
+            save_scanner_settings(settings)
+    return target
 
 
 def check_ticket(ticket_id):
@@ -6251,6 +6455,40 @@ def verify_door_paid():
         )
 
 
+@app.route('/api/door-register/sale', methods=['POST'])
+def door_register_sale_route():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    try:
+        ticket, duplicate = record_door_register_sale(
+            data.get('ticket_type'), data.get('quantity'), data.get('token'),
+            event_id=data.get('event_id'),
+        )
+    except DoorRegisterError as err:
+        return jsonify({'error': str(err), 'admission_totals': get_admission_totals()}), err.status
+    return jsonify({
+        'status': 'recorded',
+        'duplicate': duplicate,
+        'ticket_id': ticket.get('ticket_id'),
+        'admission_totals': get_admission_totals(),
+    })
+
+
+@app.route('/api/door-register/void', methods=['POST'])
+def door_register_void_route():
+    guard = protect_scanner_response()
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    try:
+        void_door_register_sale(data.get('ticket_id'), data.get('reason'))
+    except DoorRegisterError as err:
+        return jsonify({'error': str(err), 'admission_totals': get_admission_totals()}), err.status
+    return jsonify({'status': 'voided', 'admission_totals': get_admission_totals()})
+
+
 @app.route('/api/admission-totals/free-girl', methods=['POST'])
 def add_free_girl_route():
     guard = protect_scanner_response()
@@ -6987,8 +7225,10 @@ def admin_dashboard():
     except Exception as e:
         print('Signup/invite count failed:', e)
         signup_count, invite_count = 0, 0
+    sales_split = door_vs_online_summary(tickets)
     return render_template(
         'admin.html',
+        sales_split=sales_split,
         tickets=safe_tickets,
         tickets_json=json.dumps(safe_tickets, indent=2),
         total_admissions=total_admissions,
