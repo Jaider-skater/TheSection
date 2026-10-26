@@ -1,3 +1,4 @@
+import contextlib
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for, g, abort, send_from_directory, has_request_context, flash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -2910,6 +2911,18 @@ def remove_saved_ticket_for_member(email, ticket_id):
     return False
 
 
+def used_ticket_result(record, display_id, quantity, meta):
+    first = record.get('scanned_at')
+    dt = parse_iso_datetime(first) if first else None
+    first_local = dt.astimezone(get_display_timezone()).strftime('%-I:%M %p %Z') if dt else None
+    return {
+        'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta,
+        'first_scanned_at': first,
+        'first_scanned_display': first_local,
+        'register_sale': bool(record.get('register_sale')),
+    }
+
+
 def ticket_result_meta(record, admission_as=None):
     ticket_type = record.get('ticket_type', 'general')
     admitted = admission_as or record.get('admission_as')
@@ -2944,6 +2957,30 @@ def get_ticket_record(ticket_id):
     return None
 
 
+@contextlib.contextmanager
+def _scan_file_lock():
+    """Exclusive lock across processes so two scans of one ticket can't both win."""
+    path = f'{tickets_file}.scanlock'
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        if os.name != 'nt':
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name != 'nt':
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def mark_ticket_scanned(ticket_id, admission_as=None):
     """Record door entry. admission_as is 'vip' or 'ga'.
 
@@ -2953,7 +2990,7 @@ def mark_ticket_scanned(ticket_id, admission_as=None):
     normalized = normalize_ticket_id(ticket_id)
     if not normalized:
         return False
-    with tickets_lock:
+    with tickets_lock, _scan_file_lock():
         tickets = load_tickets()
         for ticket in tickets:
             if normalize_ticket_id(ticket.get('ticket_id')) == normalized:
@@ -4644,7 +4681,8 @@ def apply_one_time_pre_cutoff_ticket_void():
 
 try:
     seed_default_event()
-    apply_one_time_unused_ticket_reset()
+    # One-time scan reset already ran; never re-run it at startup (a settings
+    # read failure would otherwise wipe every scan and make tickets reusable).
     apply_one_time_sales_counter_reset()
     apply_one_time_pre_cutoff_ticket_void()
 except Exception as exc:
@@ -5161,8 +5199,8 @@ def check_ticket(ticket_id):
             'detail': 'This ticket is from an earlier sale and is not valid.',
         }
 
-    if record.get('scanned_at'):
-        return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+    if record.get('scanned_at') or record.get('register_sale'):
+        return used_ticket_result(record, display_id, quantity, meta)
 
     # VIP tickets: if VIP area is full, still admit but as GA (like before).
     admission_as = 'vip' if ticket_type == 'vip' else 'ga'
@@ -5176,7 +5214,7 @@ def check_ticket(ticket_id):
     if not mark_ticket_scanned(normalized, admission_as=admission_as):
         refreshed = get_ticket_record(normalized) or record
         if refreshed.get('scanned_at'):
-            return {'status': 'used', 'ticket_id': display_id, 'quantity': quantity, **meta}
+            return used_ticket_result(refreshed, display_id, quantity, meta)
         return {
             'status': 'error',
             'ticket_id': display_id,
@@ -6667,7 +6705,8 @@ def verify_ticket():
         if result['status'] == 'used':
             qty = result['quantity']
             guest_word = 'guest' if qty == 1 else 'guests'
-            return f"❌ Already used ({qty} {guest_word})"
+            when = result.get('first_scanned_display')
+            return f"❌ Already used ({qty} {guest_word})" + (f" — first entry {when}" if when else '')
         if result['status'] == 'sold_out':
             return '🎉 Ticket cap reached — congrats on selling this place out!'
         if result['status'] == 'wrong_event':

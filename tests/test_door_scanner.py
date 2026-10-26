@@ -536,3 +536,65 @@ class DoorScannerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SingleUseTicketTests(DoorScannerTests):
+    """A ticket admits once, whatever the client does."""
+
+    def test_second_scan_is_used_with_first_entry_time(self):
+        thesection.save_tickets([self._ticket('ONCE1', 'christmas-2026')])
+        thesection.set_door_event_id('christmas-2026')
+        self.assertEqual(thesection.check_ticket('ONCE1')['status'], 'accepted')
+        second = thesection.check_ticket('once-1')
+        self.assertEqual(second['status'], 'used')
+        self.assertTrue(second['first_scanned_at'])
+        self.assertTrue(second['first_scanned_display'])
+
+    def test_simultaneous_scans_admit_once(self):
+        import threading
+        thesection.save_tickets([self._ticket('RACE1', 'christmas-2026')])
+        thesection.set_door_event_id('christmas-2026')
+        results = []
+        barrier = threading.Barrier(8)
+
+        def scan():
+            barrier.wait()
+            results.append(thesection.check_ticket('RACE1')['status'])
+
+        threads = [threading.Thread(target=scan) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(results.count('accepted'), 1)
+        self.assertEqual(results.count('used'), 7)
+
+    def test_online_ticket_bought_at_door_is_single_use(self):
+        ticket = self._ticket('ATDOOR1', 'christmas-2026')
+        ticket['door_sale'] = True
+        thesection.save_tickets([ticket])
+        thesection.set_door_event_id('christmas-2026')
+        self.assertEqual(thesection.check_ticket('ATDOOR1')['status'], 'accepted')
+        self.assertEqual(thesection.check_ticket('ATDOOR1')['status'], 'used')
+
+    def test_register_sale_can_never_be_scanned_in(self):
+        ticket = self._ticket('REG1', 'christmas-2026')
+        ticket.update({'register_sale': True, 'door_sale': True, 'scanned_at': None})
+        thesection.save_tickets([ticket])
+        thesection.set_door_event_id('christmas-2026')
+        result = thesection.check_ticket('REG1')
+        self.assertEqual(result['status'], 'used')
+        self.assertTrue(result['register_sale'])
+
+    def test_startup_does_not_rerun_scan_reset(self):
+        import inspect
+        src = inspect.getsource(thesection)
+        self.assertNotIn('\n    apply_one_time_unused_ticket_reset()\n', src)
+
+    def test_scanner_page_keeps_scanning(self):
+        path = os.path.join(os.path.dirname(thesection.__file__), 'website', 'templates', 'verify.html')
+        html = open(path, encoding='utf-8').read()
+        body = html.split('function onScanSuccess', 1)[1].split('function onScanFailure', 1)[0]
+        self.assertNotIn('stopScanner()', body)
+        self.assertIn('resumeScanning()', body)
+        self.assertIn('SAME_CODE_COOLDOWN_MS', html)
