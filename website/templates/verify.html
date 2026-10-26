@@ -691,11 +691,36 @@
         }
     }
 
-    function onScanSuccess(decodedText) {
-        if (!scanning) return;
-        scanning = false;
+    // Continuous scanning: the camera stays on. While a scan is being checked
+    // (and for a short moment after) new reads are ignored, and the same QR is
+    // ignored for SAME_CODE_COOLDOWN_MS so it isn't re-read instantly.
+    const RESULT_HOLD_MS = 2500;
+    const SAME_CODE_COOLDOWN_MS = 5000;
+    let scanBusy = false;
+    let lastScanText = '';
+    let lastScanAt = 0;
+    let resumeTimer = null;
 
-        stopScanner();
+    function resumeScanning() {
+        clearTimeout(resumeTimer);
+        resumeTimer = setTimeout(() => {
+            scanBusy = false;
+            if (scanning) {
+                document.getElementById('scan-again-btn').classList.add('hidden');
+                const resultEl = document.getElementById('result');
+                resultEl.insertAdjacentHTML('beforeend', '<div class="text-zinc-400 text-sm mt-3">Ready for next scan</div>');
+            }
+        }, RESULT_HOLD_MS);
+    }
+
+    function onScanSuccess(decodedText) {
+        if (!scanning || scanBusy) return;
+        const now = Date.now();
+        if (decodedText === lastScanText && now - lastScanAt < SAME_CODE_COOLDOWN_MS) return;
+        scanBusy = true;
+        lastScanText = decodedText;
+        lastScanAt = now;
+        clearTimeout(resumeTimer);
 
         const resultEl = document.getElementById('result');
         resultEl.innerHTML = `<span class="text-yellow-400">Verifying ticket...</span>`;
@@ -742,9 +767,15 @@
                 `;
             } else if (result.status === 'used') {
                 const guestWord = result.quantity === 1 ? 'guest' : 'guests';
+                const firstEntry = result.register_sale
+                    ? 'Door sale — already counted at the register'
+                    : (result.first_scanned_display ? `First entry ${escapeHtml(result.first_scanned_display)}` : '');
                 resultEl.innerHTML = `
-                    <div class="text-red-400 text-2xl font-bold mb-2">❌ Already Used</div>
-                    <div class="text-zinc-300">${result.quantity} ${guestWord} on this ticket</div>
+                    <div class="rounded-xl bg-red-600/90 px-4 py-3">
+                        <div class="text-white text-3xl font-black mb-1">❌ ALREADY USED</div>
+                        <div class="text-white">${result.quantity} ${guestWord} on this ticket</div>
+                        ${firstEntry ? `<div class="text-white font-bold mt-1">${firstEntry}</div>` : ''}
+                    </div>
                 `;
             } else if (result.status === 'wrong_event') {
                 const ticketNight = result.ticket_event_name || 'another event';
@@ -767,11 +798,13 @@
             } else {
                 resultEl.innerHTML = `<span class="text-red-400 text-xl">Invalid ticket</span>`;
             }
-            document.getElementById('scan-again-btn').classList.remove('hidden');
+            resumeScanning();
         })
         .catch(() => {
             resultEl.innerHTML = `<span class="text-red-400">Verification failed - check connection</span>`;
-            document.getElementById('scan-again-btn').classList.remove('hidden');
+            // Let the same code be retried right away after a network error.
+            lastScanText = '';
+            resumeScanning();
         });
     }
 
@@ -833,6 +866,7 @@
             const camera = await pickCamera();
             await html5QrCode.start(camera, scannerConfig, onScanSuccess, onScanFailure);
             scanning = true;
+            scanBusy = false;
             sessionStorage.setItem('doorScannerAutostart', '1');
             resultEl.innerHTML = `<span class="text-zinc-400">Point camera at QR code</span>`;
         } catch (err) {
